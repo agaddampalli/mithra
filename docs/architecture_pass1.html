@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mithra — System Architecture Pass 1</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #f8fafc;
+    min-height: 100vh;
+    padding: 32px 24px;
+  }
+  .page {
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    color: #1b2a4a;
+    margin-bottom: 6px;
+  }
+  .subtitle {
+    font-size: 13px;
+    color: #64748b;
+    margin-bottom: 28px;
+  }
+  .diagram-card {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 28px 24px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .layer {
+    border-radius: 10px;
+    padding: 10px 14px 14px;
+    margin-bottom: 4px;
+    position: relative;
+  }
+  .layer-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    opacity: 0.8;
+  }
+  .boxes {
+    display: flex;
+    gap: 10px;
+  }
+  .box {
+    flex: 1;
+    background: rgba(255,255,255,0.72);
+    border: 1px solid rgba(0,0,0,0.10);
+    border-radius: 8px;
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: transform 0.12s, box-shadow 0.12s;
+    min-width: 0;
+  }
+  .box:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.10);
+  }
+  .box-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #1e293b;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .box-sub {
+    font-size: 11px;
+    color: #64748b;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* Layer colours */
+  .l-teal   { background: #e1f5ee; }
+  .l-teal   .layer-label { color: #0f6e56; }
+  .l-gray   { background: #f1efe8; }
+  .l-gray   .layer-label { color: #5f5e5a; }
+  .l-purple { background: #eeedfe; }
+  .l-purple .layer-label { color: #3c3489; }
+  .l-blue   { background: #e6f1fb; }
+  .l-blue   .layer-label { color: #0c447c; }
+  .l-amber  { background: #faeeda; }
+  .l-amber  .layer-label { color: #633806; }
+  .l-coral  { background: #faece7; }
+  .l-coral  .layer-label { color: #4a1b0c; }
+
+  /* Arrow between layers */
+  .arrow {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 22px;
+    color: #94a3b8;
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 1px solid #e2e8f0;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: #475569;
+  }
+  .legend-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  /* Notes section */
+  .notes {
+    margin-top: 22px;
+    padding: 14px 16px;
+    background: #eef2ff;
+    border-left: 3px solid #6366f1;
+    border-radius: 6px;
+    font-size: 13px;
+    color: #3730a3;
+    line-height: 1.6;
+  }
+
+  /* Bidirectional indicator on agent core */
+  .bidir-note {
+    font-size: 10px;
+    color: #7c3aed;
+    opacity: 0.7;
+    margin-top: 6px;
+    padding-left: 2px;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Mithra — System Architecture</h1>
+  <p class="subtitle">Pass 1 of 3 — Five-layer helicopter view. Click any component to explore it.</p>
+
+  <div class="diagram-card">
+
+    <!-- INPUT -->
+    <div class="layer l-teal">
+      <div class="layer-label">Input channels</div>
+      <div class="boxes">
+        <div class="box" title="Home Assistant Assist pipeline + Wyoming protocol">
+          <div class="box-title">Voice</div>
+          <div class="box-sub">HA + Wyoming</div>
+        </div>
+        <div class="box" title="Telegram Bot API — household commands and queries">
+          <div class="box-title">Telegram bot</div>
+          <div class="box-sub">Household input</div>
+        </div>
+        <div class="box" title="Progressive web app upload — receipts, docs, photos — OCR + LLM extraction">
+          <div class="box-title">Doc upload</div>
+          <div class="box-sub">PWA + OCR</div>
+        </div>
+        <div class="box" title="Gmail OAuth passive read + Google Contacts sync">
+          <div class="box-title">Email & data</div>
+          <div class="box-sub">Gmail + Contacts</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <!-- EDGE -->
+    <div class="layer l-gray">
+      <div class="layer-label">Edge layer — mithra-app.com</div>
+      <div class="boxes">
+        <div class="box" title="cloudflared tunnel — no port forwarding, stable public URL for all webhooks">
+          <div class="box-title">Cloudflare tunnel</div>
+          <div class="box-sub">api.mithra-app.com</div>
+        </div>
+        <div class="box" title="FastAPI / Nginx gateway — authentication, rate limiting, request routing to services">
+          <div class="box-title">API gateway</div>
+          <div class="box-sub">Auth + routing</div>
+        </div>
+        <div class="box" title="Cloudflare Access — Zero Trust, only you and your household can reach Mithra">
+          <div class="box-title">Zero Trust auth</div>
+          <div class="box-sub">Cloudflare Access</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <!-- AGENT CORE -->
+    <div class="layer l-purple">
+      <div class="layer-label">Agent core — the reasoning brain</div>
+      <div class="boxes">
+        <div class="box" title="AgentInterface abstraction — LangGraph is the first adapter, swappable via config">
+          <div class="box-title">Agent interface</div>
+          <div class="box-sub">LangGraph adapter</div>
+        </div>
+        <div class="box" title="LiteLLM proxy — routes to Phi-3 Mini (local) or Claude Sonnet (cloud) per task type">
+          <div class="box-title">LLM router</div>
+          <div class="box-sub">LiteLLM proxy</div>
+        </div>
+        <div class="box" title="ChromaDB for semantic search + SQLite for structured facts, state, and history">
+          <div class="box-title">Memory store</div>
+          <div class="box-sub">ChromaDB + SQLite</div>
+        </div>
+      </div>
+      <div class="bidir-note">↕ bidirectional access to domain plugins and storage below</div>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <!-- DOMAINS -->
+    <div class="layer l-blue">
+      <div class="layer-label">Domain plugins — 15 total, each an MCP tool set</div>
+      <div class="boxes">
+        <div class="box" title="Birthdays, relationships, gift tracking, auto WhatsApp messages, social CRM">
+          <div class="box-title">People</div>
+          <div class="box-sub">CRM, birthdays</div>
+        </div>
+        <div class="box" title="Expense logging, budget tracking, subscription audit, bill due dates">
+          <div class="box-title">Money</div>
+          <div class="box-sub">Spend & bills</div>
+        </div>
+        <div class="box" title="Appliance maintenance schedules, seasonal tasks, repair log, warranty tracking">
+          <div class="box-title">Home</div>
+          <div class="box-sub">Maintenance</div>
+        </div>
+        <div class="box" title="Pantry inventory, meal planning, auto grocery list, food expiry alerts">
+          <div class="box-title">Food</div>
+          <div class="box-sub">Pantry, meals</div>
+        </div>
+        <div class="box" title="Health, Vehicles, Documents, Goals, Travel, Environment, Legal, Shopping, Family, Digital Life, Time">
+          <div class="box-title">+ 11 more</div>
+          <div class="box-sub">Health, travel...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <!-- STORAGE -->
+    <div class="layer l-amber">
+      <div class="layer-label">Storage — BYOS model, user owns all data</div>
+      <div class="boxes">
+        <div class="box" title="StorageAdapter interface — all domain code calls this, never raw file paths. Swap OneDrive for Google Drive via config.">
+          <div class="box-title">StorageAdapter</div>
+          <div class="box-sub">Swappable interface</div>
+        </div>
+        <div class="box" title="OneDriveAdapter — Microsoft Graph API with local SQLite cache. Async write queue. Your existing files are already here.">
+          <div class="box-title">OneDrive</div>
+          <div class="box-sub">Primary — all domains</div>
+        </div>
+        <div class="box" title="LocalStorageAdapter — hardcoded for health domain. Never OneDrive, never cloud. Permanent architectural constraint.">
+          <div class="box-title">Local storage</div>
+          <div class="box-sub">Health only, always</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <!-- OUTPUT -->
+    <div class="layer l-coral">
+      <div class="layer-label">Output channels</div>
+      <div class="boxes">
+        <div class="box" title="Google Calendar API — events, reminders, deadline blocks, maintenance schedules">
+          <div class="box-title">Calendar</div>
+          <div class="box-sub">Google Calendar</div>
+        </div>
+        <div class="box" title="Baileys — personal WhatsApp outbound. Birthday messages, social check-ins, from your own number.">
+          <div class="box-title">WhatsApp</div>
+          <div class="box-sub">Baileys outbound</div>
+        </div>
+        <div class="box" title="Piper TTS — natural voice responses through Google Home Mini via Home Assistant Google Cast">
+          <div class="box-title">Voice out</div>
+          <div class="box-sub">Piper → Home Mini</div>
+        </div>
+        <div class="box" title="PWA push notifications for urgent alerts. Weekly email digest summarising all domain statuses.">
+          <div class="box-title">Alerts & digest</div>
+          <div class="box-sub">Push + email</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LEGEND -->
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#1d9e75"></div>
+        Input channels
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#888780"></div>
+        Edge layer
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#7f77dd"></div>
+        Agent core
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#378add"></div>
+        Domain plugins
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#ef9f27"></div>
+        Storage
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#d85a30"></div>
+        Output channels
+      </div>
+    </div>
+
+    <!-- NOTES -->
+    <div class="notes">
+      <strong>How data flows:</strong> Requests enter through input channels → pass through the Cloudflare edge →
+      reach the agent core for reasoning → agent invokes domain MCP tools (bidirectional) →
+      reads and writes storage (bidirectional) → sends results through output channels.
+      Storage and domains are not sequential — both are accessed directly by the agent core as needed.
+      Pass 2 will zoom into each layer. Pass 3 will trace three real end-to-end scenarios.
+    </div>
+
+  </div>
+</div>
+</body>
+</html>
