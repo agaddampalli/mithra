@@ -120,8 +120,8 @@ class AutononomyEngine(ABC):
     """Enforces autonomy levels and manages action confirmation flow."""
 
     @abstractmethod
-    def process(
-        self, result: "AgentResult", executor: "ActionExecutorRegistry"
+    async def process(
+        self, result: "AgentResult", user_id: str, executor: "ActionExecutorRegistry"
     ) -> ExecutionReceipt:
         """Evaluate all actions in an AgentResult and execute or queue them."""
         ...
