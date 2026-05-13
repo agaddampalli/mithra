@@ -1,0 +1,76 @@
+services:
+  agent:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    depends_on:
+      - llm-router
+      - vector-store
+    volumes:
+      - agent-data:/data
+
+  llm-router:
+    image: ghcr.io/berriai/litellm:main-latest
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./services/litellm/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml"]
+
+  local-llm:
+    build: ./services/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+
+  vector-store:
+    image: chromadb/chroma:latest
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+
+  whatsapp-bridge:
+    build: ./services/baileys
+    env_file: .env
+    volumes:
+      - whatsapp-sessions:/app/sessions
+
+  wyoming-whisper:
+    image: rhasspy/wyoming-whisper:latest
+    ports:
+      - "10300:10300"
+    volumes:
+      - whisper-data:/data
+
+  wyoming-piper:
+    image: rhasspy/wyoming-piper:latest
+    ports:
+      - "10200:10200"
+    volumes:
+      - piper-data:/data
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --config /etc/cloudflared/config.yaml run
+    volumes:
+      - ./services/cloudflared/config.yaml:/etc/cloudflared/config.yaml:ro
+    env_file: .env
+    depends_on:
+      - agent
+
+  watchtower:
+    image: containrrr/watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 86400
+
+volumes:
+  agent-data:
+  ollama-models:
+  chroma-data:
+  whatsapp-sessions:
+  whisper-data:
+  piper-data:

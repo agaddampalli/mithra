@@ -1,0 +1,30 @@
+model_list:
+  - model_name: cloud
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: local
+    litellm_params:
+      model: ollama/phi3-mini
+      api_base: http://local-llm:11434
+
+  - model_name: local_only
+    litellm_params:
+      model: ollama/phi3-mini
+      api_base: http://local-llm:11434
+
+router_settings:
+  routing_strategy: simple-shuffle
+  # Budget exhaustion: fall back to local, never silent failure.
+  # Tracked per model_name in StorageAdapter domain="observability".
+
+token_budgets:
+  cloud:
+    monthly_limit: 1000000
+    alert_at_pct: 80
+  local:
+    monthly_limit: null   # no limit for local model
+
+# Health domain guard: enforced in routing/llm_router.py independently
+# of this file so accidental config edits cannot override the restriction.

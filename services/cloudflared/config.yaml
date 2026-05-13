@@ -1,0 +1,7 @@
+tunnel: mithra
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  - hostname: api.mithra-app.com
+    service: http://agent:8000
+  - service: http_status:404

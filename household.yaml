@@ -1,0 +1,32 @@
+# Household configuration — loaded at startup by HouseholdConfig.
+# No hardcoded user IDs anywhere in code. Add real values before first run.
+#
+# device_ids lists all device identifiers that resolve to this member.
+# Unknown device IDs fall back to user_id: household.
+
+members:
+  - user_id: person_a
+    display_name: ""
+    device_ids:
+      - ""           # HA Companion App device ID for person_a
+    notification_channels:
+      telegram_chat_id: ""
+      whatsapp_number: ""
+
+  - user_id: person_b
+    display_name: ""
+    device_ids:
+      - ""           # HA Companion App device ID for person_b
+    notification_channels:
+      telegram_chat_id: ""
+      whatsapp_number: ""
+
+household:
+  user_id: household
+  display_name: Household
+  device_ids:
+    - ""             # tablet device ID
+    - ""             # ESP32 device ID
+    - ""             # fridge device ID
+  notification_channels:
+    telegram_chat_id: ""
