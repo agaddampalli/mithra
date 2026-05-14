@@ -851,9 +851,15 @@ pytest tests/unit/ -k "interface"
 ---
 
 ## References
-- Requirements: docs/requirements.pdf
-- Architectural decisions (7): docs/decisions.pdf
-- System architecture pass 1: docs/architecture_pass1.html
-- Domain: mithra-app.com (Cloudflare)
-- Deployment: Windows laptop, Docker + Watchtower
-- Development: Mac
+- Living spec:     docs/SPEC.md    ← requirements + decisions summary
+- Work tracker:    docs/TRACKER.md ← all units, current status, next action
+- Requirements:    docs/requirements.pdf (full detail, archive)
+- Decisions:       docs/decisions.pdf (full detail, archive)
+- Architecture:    docs/architecture_pass1.html
+
+## Tracker instructions
+When you complete a unit of work, update docs/TRACKER.md:
+  change [ ] or [~] to [x] for the completed item.
+When a new architectural decision is made, add it to docs/SPEC.md
+  under section 8 (ADRs) with the decision, rationale, and implications.
+Update "Current Focus" at the top of TRACKER.md to the next item.

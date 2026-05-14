@@ -1,17 +1,14 @@
 """
 OneDriveAdapter — Microsoft Graph API storage with local SQLite read-through cache
-and an async write queue for resilience under intermittent connectivity.
-
-User data lives in the user's own OneDrive tenancy; Mithra holds indexes only.
+and a persistent write queue for resilience under intermittent connectivity.
 
 Read path:   check SQLite cache (30s TTL) → Graph API on miss
 Write path:  write to SQLite cache immediately → enqueue Graph API write
-Write queue: survived across restarts; replayed on startup if pending
+Write queue: persisted in SQLite, replayed on startup if items remain
 
 Must never be used for the health domain — StorageRouter enforces this.
 
-Auth: OAuth 2.0 client-credentials flow.
-Env vars required: ONEDRIVE_CLIENT_ID, ONEDRIVE_CLIENT_SECRET, ONEDRIVE_TENANT_ID
+Inject graph_client for unit tests to avoid real network calls.
 """
 
 from __future__ import annotations
@@ -22,16 +19,17 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from queue import Empty, Queue
-
-import requests
+from typing import Any
 
 from mithra.storage.adapter import StorageAdapter, StorageRecord
 
 _CACHE_TTL_SECONDS = 30
+_MAX_ATTEMPTS = 3
+_GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+_PLOS_ROOT = "PLOS"
 
-_CACHE_DDL = """
-CREATE TABLE IF NOT EXISTS cache (
+_DDL = """
+CREATE TABLE IF NOT EXISTS records (
     domain       TEXT NOT NULL,
     key          TEXT NOT NULL,
     layer        TEXT NOT NULL,
@@ -43,18 +41,36 @@ CREATE TABLE IF NOT EXISTS cache (
     cached_at    REAL NOT NULL,
     PRIMARY KEY (domain, key, layer, user_id)
 );
-CREATE INDEX IF NOT EXISTS idx_cache_scope ON cache (domain, layer, user_id);
+CREATE INDEX IF NOT EXISTS idx_records_scope ON records (domain, layer, user_id);
 
 CREATE TABLE IF NOT EXISTS write_queue (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     op           TEXT NOT NULL,
-    payload      TEXT NOT NULL,
-    created_at   REAL NOT NULL
+    domain       TEXT NOT NULL,
+    key          TEXT NOT NULL,
+    layer        TEXT NOT NULL,
+    user_id      TEXT NOT NULL,
+    data         TEXT NOT NULL DEFAULT '{}',
+    version      INTEGER NOT NULL DEFAULT 1,
+    updated_at   TEXT NOT NULL DEFAULT '',
+    content_type TEXT NOT NULL DEFAULT 'record',
+    queued_at    TEXT NOT NULL,
+    attempts     INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS dead_letter (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    op         TEXT NOT NULL,
+    domain     TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    layer      TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    data       TEXT NOT NULL,
+    queued_at  TEXT NOT NULL,
+    failed_at  TEXT NOT NULL,
+    error      TEXT
 );
 """
-
-_GRAPH_BASE = "https://graph.microsoft.com/v1.0"
-_TOKEN_URL = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 
 
 def _now() -> str:
@@ -74,253 +90,465 @@ def _row_to_record(row: sqlite3.Row) -> StorageRecord:
     )
 
 
-class OneDriveAdapter(StorageAdapter):
-    """Microsoft Graph API adapter with local SQLite cache and async write queue."""
+# ---------------------------------------------------------------------------
+# Real Graph API client (used in production, not in unit tests)
+# ---------------------------------------------------------------------------
 
-    def __init__(
-        self,
-        client_id: str,
-        client_secret: str,
-        tenant_id: str,
-        cache_db_path: str,
-    ) -> None:
-        self.client_id = client_id
-        self.client_secret = client_secret
-        self.tenant_id = tenant_id
-        self.cache_db_path = cache_db_path
+class RealGraphClient:
+    """Microsoft Graph API client using MSAL client-credentials flow."""
 
-        Path(cache_db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(cache_db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(_CACHE_DDL)
-        self._conn.commit()
-
+    def __init__(self, client_id: str, client_secret: str, tenant_id: str) -> None:
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._tenant_id = tenant_id
         self._token: str | None = None
         self._token_expires: float = 0.0
-        self._lock = threading.Lock()
-
-        self._queue: Queue = Queue()
-        self._worker = threading.Thread(target=self._drain_queue, daemon=True)
-        self._worker.start()
-        self._replay_pending()
-
-    # --- Auth ---
 
     def _get_token(self) -> str:
+        import requests as _req
         now = time.time()
         if self._token and now < self._token_expires - 60:
             return self._token
-        resp = requests.post(
-            _TOKEN_URL.format(tenant_id=self.tenant_id),
+        resp = _req.post(
+            f"https://login.microsoftonline.com/{self._tenant_id}/oauth2/v2.0/token",
             data={
                 "grant_type": "client_credentials",
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
                 "scope": "https://graph.microsoft.com/.default",
             },
             timeout=10,
         )
         resp.raise_for_status()
-        payload = resp.json()
-        self._token = payload["access_token"]
-        self._token_expires = now + payload.get("expires_in", 3600)
+        body = resp.json()
+        self._token = body["access_token"]
+        self._token_expires = now + body.get("expires_in", 3600)
         return self._token
 
-    def _headers(self) -> dict:
-        return {"Authorization": f"Bearer {self._get_token()}", "Content-Type": "application/json"}
+    def _auth_headers(self, content_type: str = "application/json") -> dict:
+        return {
+            "Authorization": f"Bearer {self._get_token()}",
+            "Content-Type": content_type,
+        }
 
-    # --- Cache helpers ---
+    def get_record(self, path: str) -> dict | None:
+        import requests as _req
+        resp = _req.get(f"{_GRAPH_BASE}{path}:/content", headers=self._auth_headers(), timeout=10)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
 
-    def _cache_get(self, domain: str, key: str, layer: str, user_id: str) -> StorageRecord | None:
-        row = self._conn.execute(
-            "SELECT * FROM cache WHERE domain=? AND key=? AND layer=? AND user_id=?",
-            (domain, key, layer, user_id),
-        ).fetchone()
-        if not row:
+    def put_record(self, path: str, data: dict) -> None:
+        import requests as _req
+        _req.put(
+            f"{_GRAPH_BASE}{path}:/content",
+            headers=self._auth_headers(),
+            data=json.dumps(data).encode(),
+            timeout=15,
+        ).raise_for_status()
+
+    def delete_record(self, path: str) -> None:
+        import requests as _req
+        resp = _req.delete(f"{_GRAPH_BASE}{path}", headers=self._auth_headers(), timeout=15)
+        if resp.status_code not in (200, 204, 404):
+            resp.raise_for_status()
+
+    def get_file(self, path: str) -> bytes:
+        import requests as _req
+        resp = _req.get(f"{_GRAPH_BASE}{path}:/content", headers=self._auth_headers(), timeout=30)
+        resp.raise_for_status()
+        return resp.content
+
+    def put_file(self, path: str, content: bytes, mime_type: str) -> None:
+        import requests as _req
+        _req.put(
+            f"{_GRAPH_BASE}{path}:/content",
+            headers=self._auth_headers(content_type=mime_type),
+            data=content,
+            timeout=30,
+        ).raise_for_status()
+
+    def delete_file(self, path: str) -> bool:
+        import requests as _req
+        resp = _req.delete(f"{_GRAPH_BASE}{path}", headers=self._auth_headers(), timeout=15)
+        if resp.status_code == 404:
+            return False
+        resp.raise_for_status()
+        return True
+
+    def list_records(self, domain: str, layer: str, user_id: str) -> list[dict]:
+        """List all JSON record files in the folder for (domain, layer, user_id)."""
+        import requests as _req
+        folder = f"/me/drive/root:/{_PLOS_ROOT}/{domain}/{layer}/{user_id}"
+        resp = _req.get(
+            f"{_GRAPH_BASE}{folder}:/children",
+            headers=self._auth_headers(),
+            timeout=10,
+        )
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        results = []
+        for item in resp.json().get("value", []):
+            if not item.get("name", "").endswith(".json"):
+                continue
+            item_resp = _req.get(
+                f"{_GRAPH_BASE}/me/drive/items/{item['id']}/content",
+                headers=self._auth_headers(),
+                timeout=10,
+            )
+            if item_resp.status_code == 200:
+                try:
+                    results.append(item_resp.json())
+                except Exception:
+                    pass
+        return results
+
+    def check_connectivity(self) -> bool:
+        import requests as _req
+        try:
+            resp = _req.get(
+                f"{_GRAPH_BASE}/me/drive",
+                headers=self._auth_headers(),
+                timeout=5,
+            )
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+
+# ---------------------------------------------------------------------------
+# OneDriveAdapter
+# ---------------------------------------------------------------------------
+
+class OneDriveAdapter(StorageAdapter):
+    """Graph API adapter with local SQLite cache and persistent write queue."""
+
+    def __init__(
+        self,
+        client_id: str = "",
+        client_secret: str = "",
+        tenant_id: str = "",
+        cache_db_path: str = ":memory:",
+        graph_client: Any = None,
+        cache: Any = None,
+    ) -> None:
+        """
+        Args:
+            client_id: Azure app client ID.
+            client_secret: Azure app client secret.
+            tenant_id: Azure tenant ID.
+            cache_db_path: SQLite file path (':memory:' for tests).
+            graph_client: Injectable graph client for unit tests. When provided,
+                          the background worker thread is not started.
+            cache: Optional ContextCache. If set, write() calls invalidate_domain().
+        """
+        self.cache_db_path = cache_db_path
+        self._cache = cache
+
+        if cache_db_path != ":memory:":
+            Path(cache_db_path).parent.mkdir(parents=True, exist_ok=True)
+
+        self._conn = sqlite3.connect(cache_db_path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.executescript(_DDL)
+        self._conn.commit()
+        self._lock = threading.Lock()
+
+        self._auth_valid: bool = False
+        self._last_sync_at: str | None = None
+        self._last_connectivity_check: float = 0.0
+        self._cached_connectivity: bool = False
+
+        if graph_client is not None:
+            self._graph = graph_client
+            self._auth_valid = True
+            self._worker: threading.Thread | None = None
+            self._stop: threading.Event | None = None
+        else:
+            self._graph = RealGraphClient(client_id, client_secret, tenant_id)
+            self._stop = threading.Event()
+            self._worker = threading.Thread(target=self._drain_loop, daemon=True)
+            self._worker.start()
+
+    # ------------------------------------------------------------------
+    # Path helpers
+    # ------------------------------------------------------------------
+
+    def _record_path(self, domain: str, key: str, layer: str, user_id: str) -> str:
+        return f"/me/drive/root:/{_PLOS_ROOT}/{domain}/{layer}/{user_id}/{key}.json"
+
+    def _file_graph_path(self, domain: str, file_name: str) -> str:
+        return f"/me/drive/root:/{_PLOS_ROOT}/files/{domain}/{file_name}"
+
+    # ------------------------------------------------------------------
+    # Cache helpers
+    # ------------------------------------------------------------------
+
+    def _cache_get(
+        self, domain: str, key: str, layer: str, user_id: str
+    ) -> StorageRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM records WHERE domain=? AND key=? AND layer=? AND user_id=?",
+                (domain, key, layer, user_id),
+            ).fetchone()
+        if row is None:
             return None
         if time.time() - row["cached_at"] > _CACHE_TTL_SECONDS:
             return None
         return _row_to_record(row)
 
     def _cache_put(self, record: StorageRecord) -> None:
-        self._conn.execute(
-            """
-            INSERT INTO cache (domain, key, layer, user_id, data, version, updated_at, content_type, cached_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(domain, key, layer, user_id) DO UPDATE SET
-                data=excluded.data, version=excluded.version,
-                updated_at=excluded.updated_at, content_type=excluded.content_type,
-                cached_at=excluded.cached_at
-            """,
-            (
-                record.domain, record.key, record.layer, record.user_id,
-                json.dumps(record.data), record.version, record.updated_at,
-                record.content_type, time.time(),
-            ),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO records
+                   (domain, key, layer, user_id, data, version, updated_at, content_type, cached_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(domain, key, layer, user_id) DO UPDATE SET
+                       data=excluded.data, version=excluded.version,
+                       updated_at=excluded.updated_at, content_type=excluded.content_type,
+                       cached_at=excluded.cached_at""",
+                (
+                    record.domain, record.key, record.layer, record.user_id,
+                    json.dumps(record.data), record.version, record.updated_at,
+                    record.content_type, time.time(),
+                ),
+            )
+            self._conn.commit()
 
-    def _cache_list(self, domain: str, layer: str, user_id: str) -> list[StorageRecord]:
-        rows = self._conn.execute(
-            "SELECT * FROM cache WHERE domain=? AND layer=? AND user_id=? AND ? - cached_at <= ?",
-            (domain, layer, user_id, time.time(), _CACHE_TTL_SECONDS),
-        ).fetchall()
+    def _cache_list(
+        self, domain: str, layer: str, user_id: str
+    ) -> list[StorageRecord]:
+        now = time.time()
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT * FROM records
+                   WHERE domain=? AND layer=? AND user_id=?
+                     AND ? - cached_at <= ?
+                   ORDER BY updated_at DESC""",
+                (domain, layer, user_id, now, _CACHE_TTL_SECONDS),
+            ).fetchall()
         return [_row_to_record(r) for r in rows]
 
-    # --- Graph API path helpers ---
+    def _cache_delete(self, domain: str, key: str, user_id: str) -> list[str]:
+        """Delete all layers for (domain, key, user_id) from cache.
+        Returns list of layer names that existed."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT layer FROM records WHERE domain=? AND key=? AND user_id=?",
+                (domain, key, user_id),
+            ).fetchall()
+            layers = [r["layer"] for r in rows]
+            self._conn.execute(
+                "DELETE FROM records WHERE domain=? AND key=? AND user_id=?",
+                (domain, key, user_id),
+            )
+            self._conn.commit()
+        return layers
 
-    def _item_path(self, domain: str, key: str, layer: str, user_id: str) -> str:
-        return f"/me/drive/root:/mithra/{user_id}/{domain}/{layer}/{key}.json"
+    # ------------------------------------------------------------------
+    # Write queue helpers
+    # ------------------------------------------------------------------
 
-    # --- Write queue ---
+    def _enqueue_write(self, record: StorageRecord) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO write_queue
+                   (op, domain, key, layer, user_id, data, version, updated_at, content_type, queued_at)
+                   VALUES ('write', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    record.domain, record.key, record.layer, record.user_id,
+                    json.dumps(record.data), record.version, record.updated_at,
+                    record.content_type, _now(),
+                ),
+            )
+            self._conn.commit()
 
-    def _enqueue(self, op: str, payload: dict) -> None:
-        self._conn.execute(
-            "INSERT INTO write_queue (op, payload, created_at) VALUES (?, ?, ?)",
-            (op, json.dumps(payload), time.time()),
-        )
-        self._conn.commit()
-        self._queue.put((op, payload))
+    def _enqueue_delete(
+        self, domain: str, key: str, layer: str, user_id: str
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO write_queue
+                   (op, domain, key, layer, user_id, queued_at)
+                   VALUES ('delete', ?, ?, ?, ?, ?)""",
+                (domain, key, layer, user_id, _now()),
+            )
+            self._conn.commit()
 
-    def _replay_pending(self) -> None:
-        rows = self._conn.execute("SELECT op, payload FROM write_queue ORDER BY id").fetchall()
-        for row in rows:
-            self._queue.put((row["op"], json.loads(row["payload"])))
+    def _execute_queue_item(self, row: sqlite3.Row) -> None:
+        """Process one write_queue row. Increments attempts on failure; moves to dead_letter at max."""
+        item_id = row["id"]
+        op = row["op"]
+        try:
+            path = self._record_path(row["domain"], row["key"], row["layer"], row["user_id"])
+            if op == "write":
+                self._graph.put_record(
+                    path,
+                    {
+                        "domain": row["domain"], "key": row["key"],
+                        "layer": row["layer"], "user_id": row["user_id"],
+                        "data": json.loads(row["data"]),
+                        "version": row["version"], "updated_at": row["updated_at"],
+                        "content_type": row["content_type"],
+                    },
+                )
+            elif op == "delete":
+                self._graph.delete_record(path)
 
-    def _drain_queue(self) -> None:
-        while True:
-            try:
-                op, payload = self._queue.get(timeout=5)
-                try:
-                    if op == "write":
-                        self._graph_write(payload)
-                    elif op == "delete":
-                        self._graph_delete(payload)
+            with self._lock:
+                self._conn.execute("DELETE FROM write_queue WHERE id=?", (item_id,))
+                self._conn.commit()
+            self._last_sync_at = _now()
+
+        except Exception as exc:
+            attempts = row["attempts"] + 1
+            with self._lock:
+                if attempts >= _MAX_ATTEMPTS:
                     self._conn.execute(
-                        "DELETE FROM write_queue WHERE op=? AND payload=?",
-                        (op, json.dumps(payload)),
+                        """INSERT INTO dead_letter
+                           (op, domain, key, layer, user_id, data, queued_at, failed_at, error)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            op, row["domain"], row["key"], row["layer"], row["user_id"],
+                            row["data"], row["queued_at"], _now(), str(exc),
+                        ),
                     )
-                    self._conn.commit()
-                except Exception:
-                    pass
-            except Empty:
-                continue
+                    self._conn.execute("DELETE FROM write_queue WHERE id=?", (item_id,))
+                else:
+                    self._conn.execute(
+                        "UPDATE write_queue SET attempts=? WHERE id=?",
+                        (attempts, item_id),
+                    )
+                self._conn.commit()
 
-    def _graph_write(self, payload: dict) -> None:
-        path = self._item_path(payload["domain"], payload["key"], payload["layer"], payload["user_id"])
-        requests.put(
-            f"{_GRAPH_BASE}{path}:/content",
-            headers=self._headers(),
-            data=json.dumps(payload).encode(),
-            timeout=15,
-        ).raise_for_status()
+    def _process_pending(self) -> int:
+        """Synchronously process all pending write_queue items. Returns count attempted.
 
-    def _graph_delete(self, payload: dict) -> None:
-        path = self._item_path(payload["domain"], payload["key"], payload["layer"], payload["user_id"])
-        resp = requests.delete(f"{_GRAPH_BASE}{path}", headers=self._headers(), timeout=15)
-        if resp.status_code not in (200, 204, 404):
-            resp.raise_for_status()
+        Called by the background worker and directly in unit tests.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM write_queue ORDER BY id"
+            ).fetchall()
+        for row in rows:
+            self._execute_queue_item(row)
+        return len(rows)
 
-    # --- StorageAdapter interface ---
+    def _drain_loop(self) -> None:
+        """Background thread: drain write queue every 5 seconds."""
+        while not self._stop.is_set():  # type: ignore[union-attr]
+            try:
+                self._process_pending()
+            except Exception:
+                pass
+            self._stop.wait(timeout=5)  # type: ignore[union-attr]
+
+    # ------------------------------------------------------------------
+    # StorageAdapter interface
+    # ------------------------------------------------------------------
 
     def read(self, domain: str, key: str, layer: str, user_id: str) -> StorageRecord | None:
-        """Return from cache if fresh; fall through to Graph API on miss."""
+        """Cache hit: return immediately. Miss: fetch from Graph API, populate cache."""
         cached = self._cache_get(domain, key, layer, user_id)
         if cached:
             return cached
         try:
-            path = self._item_path(domain, key, layer, user_id)
-            resp = requests.get(f"{_GRAPH_BASE}{path}:/content", headers=self._headers(), timeout=10)
-            if resp.status_code == 404:
-                return None
-            resp.raise_for_status()
-            payload = resp.json()
+            path = self._record_path(domain, key, layer, user_id)
+            payload = self._graph.get_record(path)
+        except Exception:
+            return None
+        if payload is None:
+            return None
+        record = StorageRecord(
+            domain=payload["domain"], key=payload["key"], layer=payload["layer"],
+            data=payload["data"], user_id=payload["user_id"],
+            version=payload.get("version", 1),
+            updated_at=payload.get("updated_at", _now()),
+            content_type=payload.get("content_type", "record"),
+        )
+        self._cache_put(record)
+        return record
+
+    def write(self, record: StorageRecord) -> StorageRecord:
+        """Write to cache immediately; enqueue Graph API write asynchronously."""
+        existing = self._cache_get(record.domain, record.key, record.layer, record.user_id)
+        record.version = (existing.version + 1) if existing else 1
+        record.updated_at = _now()
+        self._cache_put(record)
+        if self._cache is not None:
+            self._cache.invalidate_domain(record.domain)
+        self._enqueue_write(record)
+        return record
+
+    def list(self, domain: str, layer: str, user_id: str) -> list[StorageRecord]:
+        """Return cached records; fall back to Graph API when cache is cold."""
+        cached = self._cache_list(domain, layer, user_id)
+        if cached:
+            return cached
+        try:
+            payloads = self._graph.list_records(domain, layer, user_id)
+        except Exception:
+            return []
+        records = []
+        for payload in payloads:
             record = StorageRecord(
-                domain=payload["domain"],
-                key=payload["key"],
-                layer=payload["layer"],
-                data=payload["data"],
-                user_id=payload["user_id"],
+                domain=payload["domain"], key=payload["key"], layer=payload["layer"],
+                data=payload["data"], user_id=payload["user_id"],
                 version=payload.get("version", 1),
                 updated_at=payload.get("updated_at", _now()),
                 content_type=payload.get("content_type", "record"),
             )
             self._cache_put(record)
-            return record
-        except Exception:
-            return None
-
-    def write(self, record: StorageRecord) -> StorageRecord:
-        """Write to cache immediately; enqueue Graph API write for resilience."""
-        existing = self._cache_get(record.domain, record.key, record.layer, record.user_id)
-        record.version = (existing.version + 1) if existing else 1
-        record.updated_at = _now()
-        self._cache_put(record)
-        self._enqueue("write", {
-            "domain": record.domain, "key": record.key, "layer": record.layer,
-            "user_id": record.user_id, "data": record.data, "version": record.version,
-            "updated_at": record.updated_at, "content_type": record.content_type,
-        })
-        return record
-
-    def list(self, domain: str, layer: str, user_id: str) -> list[StorageRecord]:
-        """Return cached records for this scope; Graph enumeration not yet implemented."""
-        return self._cache_list(domain, layer, user_id)
+            records.append(record)
+        return records
 
     def delete(self, domain: str, key: str, user_id: str) -> bool:
-        """Remove from cache and enqueue Graph delete."""
-        cur = self._conn.execute(
-            "DELETE FROM cache WHERE domain=? AND key=? AND user_id=?",
-            (domain, key, user_id),
-        )
-        self._conn.commit()
-        if cur.rowcount > 0:
-            for layer in ("facts", "state", "history", "preferences"):
-                self._enqueue("delete", {"domain": domain, "key": key, "layer": layer, "user_id": user_id})
-            return True
-        return False
+        """Remove from cache and enqueue Graph API deletes for all affected layers."""
+        layers = self._cache_delete(domain, key, user_id)
+        if not layers:
+            return False
+        for layer in layers:
+            self._enqueue_delete(domain, key, layer, user_id)
+        return True
 
     def write_file(
         self, domain: str, file_name: str, content: bytes, mime_type: str, user_id: str
     ) -> str:
-        """Upload a file to OneDrive and return its drive path."""
-        path = f"/me/drive/root:/mithra/{user_id}/{domain}/files/{file_name}:/content"
-        resp = requests.put(
-            f"{_GRAPH_BASE}{path}",
-            headers={**self._headers(), "Content-Type": mime_type},
-            data=content,
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return f"mithra/{user_id}/{domain}/files/{file_name}"
+        """Upload file to OneDrive; return the Graph path string."""
+        path = self._file_graph_path(domain, file_name)
+        self._graph.put_file(path, content, mime_type)
+        return path
 
     def read_file(self, file_path: str) -> bytes:
-        """Download a file from OneDrive by its drive path."""
-        path = f"/me/drive/root:/{file_path}:/content"
-        resp = requests.get(f"{_GRAPH_BASE}{path}", headers=self._headers(), timeout=30)
-        resp.raise_for_status()
-        return resp.content
+        """Download file from OneDrive by its Graph path."""
+        return self._graph.get_file(file_path)
 
     def delete_file(self, file_path: str) -> bool:
-        """Delete a file from OneDrive. Return True if it existed."""
-        path = f"/me/drive/root:/{file_path}"
-        resp = requests.delete(f"{_GRAPH_BASE}{path}", headers=self._headers(), timeout=15)
-        if resp.status_code == 404:
-            return False
-        resp.raise_for_status()
-        return True
+        """Delete file from OneDrive. Return True if it existed."""
+        return self._graph.delete_file(file_path)
 
     def health(self) -> dict:
-        """Return health status including Graph API reachability."""
-        try:
-            resp = requests.get(f"{_GRAPH_BASE}/me/drive", headers=self._headers(), timeout=5)
-            graph_ok = resp.status_code == 200
-        except Exception as exc:
-            return {"status": "degraded", "graph_api": False, "error": str(exc)}
-        queue_depth = self._conn.execute("SELECT COUNT(*) FROM write_queue").fetchone()[0]
+        """Return health status including auth validity, cache size, and queue depth."""
+        now = time.time()
+        if now - self._last_connectivity_check >= _CACHE_TTL_SECONDS:
+            try:
+                self._cached_connectivity = self._graph.check_connectivity()
+            except Exception:
+                self._cached_connectivity = False
+            self._last_connectivity_check = now
+        self._auth_valid = self._cached_connectivity
+
+        with self._lock:
+            cache_count = self._conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+            queue_depth = self._conn.execute("SELECT COUNT(*) FROM write_queue").fetchone()[0]
+
         return {
-            "status": "ok" if graph_ok else "degraded",
-            "graph_api": graph_ok,
-            "write_queue_depth": queue_depth,
-            "cache_db": self.cache_db_path,
+            "status": "ok" if self._auth_valid else "degraded",
+            "cache_record_count": cache_count,
+            "queue_depth": queue_depth,
+            "last_sync_at": self._last_sync_at,
+            "auth_valid": self._auth_valid,
         }

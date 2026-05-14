@@ -58,14 +58,16 @@ def _row_to_record(row: sqlite3.Row) -> StorageRecord:
 class LocalStorageAdapter(StorageAdapter):
     """SQLite + filesystem storage adapter that never makes network calls."""
 
-    def __init__(self, base_path: str, db_path: str) -> None:
+    def __init__(self, base_path: str, db_path: str, cache=None) -> None:
         """
         Args:
             base_path: Root directory for binary file storage.
             db_path: Path to the SQLite database file.
+            cache: Optional ContextCache. If set, write() calls invalidate_domain().
         """
         self.base_path = base_path
         self.db_path = db_path
+        self._cache = cache
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -107,6 +109,8 @@ class LocalStorageAdapter(StorageAdapter):
             ),
         )
         self._conn.commit()
+        if self._cache is not None:
+            self._cache.invalidate_domain(record.domain)
         record.version = new_version
         record.updated_at = now
         return record
@@ -153,7 +157,14 @@ class LocalStorageAdapter(StorageAdapter):
     def health(self) -> dict:
         """Return basic health info for the health dashboard."""
         try:
-            count = self._conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
-            return {"status": "ok", "backend": "sqlite", "record_count": count, "db_path": self.db_path}
+            record_count = self._conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+            file_count = sum(1 for _ in Path(self.base_path).rglob("*") if _.is_file()) if Path(self.base_path).exists() else 0
+            return {
+                "status": "ok",
+                "backend": "sqlite",
+                "db_path": self.db_path,
+                "record_count": record_count,
+                "file_count": file_count,
+            }
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
