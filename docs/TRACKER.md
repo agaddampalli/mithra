@@ -11,7 +11,7 @@
 - `[!]` Blocked (note reason)
 
 ## Current Focus
-**P0-16 — LangGraphAdapter** (Group D, Phase 0)
+**P0-24 — TelegramInputAdapter** (Group F, Phase 0)
 
 
 ---
@@ -77,7 +77,7 @@
 ### Group D — Agent Layer
 
 - [x] P0-15 AgentInterface — abstract class + enums + dataclasses, 18 tests
-- [~] P0-16 LangGraphAdapter — scaffold with graph + streaming, needs impl
+- [x] P0-16 LangGraphAdapter — 4-node StateGraph (classify_intent→select_tool→execute_tool→generate_response), streaming, 22 tests
 - [x] P0-17 LLMRouter + LiteLLMAdapter — LiteLLMRouterAdapter impl, 38 tests (routing, health guard, sanitisation, fallback, observability, classify_intent, get_usage)
 
 ### Group E — Autonomy Layer
