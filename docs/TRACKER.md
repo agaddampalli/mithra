@@ -11,7 +11,7 @@
 - `[!]` Blocked (note reason)
 
 ## Current Focus
-**P0-12 — DomainMemoryRouter** (Group C, Phase 0)
+**P0-14 — DataSanitiser** (Group C, Phase 0)
 
 
 ---
@@ -70,8 +70,8 @@
 
 ### Group C — Routing Layer
 
-- [~] P0-12 DomainMemoryRouter — interface + access map, 23 tests passing
-- [~] P0-13 ConversationSessionManager — interface scaffolded, 5 tests
+- [x] P0-12 DomainMemoryRouter — DefaultDomainMemoryRouter impl, 57 tests (access control, context assembly, cache invalidation, PII extraction)
+- [x] P0-13 ConversationSessionManager — TTL expiry, MAX_TURNS cap, known_user_ids, 28 tests (23 new)
 - [~] P0-14 DataSanitiser — interface scaffolded, 6 tests passing
 
 ### Group D — Agent Layer
@@ -341,4 +341,6 @@
 | memory/test_vector_store.py | 19 | ✅ passing |
 | memory/test_structured_store.py | 48 | ✅ passing |
 | memory/test_context_cache.py | 33 | ✅ passing |
-| **Total** | **364** | **✅ all passing** |
+| routing/test_domain_memory_router.py | 57 | ✅ passing |
+| routing/test_session.py | 23 | ✅ passing |
+| **Total** | **444** | **✅ all passing** |
