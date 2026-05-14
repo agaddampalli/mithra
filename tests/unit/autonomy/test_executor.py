@@ -116,3 +116,100 @@ class TestActionExecutorRegistry:
         result = await registry.execute(action)
         assert result.success is False
         assert result.error is not None
+
+    @pytest.mark.asyncio
+    async def test_execute_routes_to_correct_adapter(self):
+        registry = ActionExecutorRegistry()
+        adapter_a = MagicMock()
+        adapter_a.execute = AsyncMock(return_value=ExecutionResult(
+            action_id="x", action_type="action_a", success=True,
+        ))
+        adapter_b = MagicMock()
+        adapter_b.execute = AsyncMock(return_value=ExecutionResult(
+            action_id="y", action_type="action_b", success=True,
+        ))
+        registry.register("action_a", adapter_a)
+        registry.register("action_b", adapter_b)
+
+        action = AgentAction(action_type="action_a", domain="food", payload={})
+        await registry.execute(action)
+
+        adapter_a.execute.assert_called_once()
+        adapter_b.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_execute_captures_exception_as_error_result(self):
+        registry = ActionExecutorRegistry()
+        adapter = MagicMock()
+        adapter.execute = AsyncMock(side_effect=RuntimeError("adapter blew up"))
+        registry.register("boom_action", adapter)
+
+        action = AgentAction(action_type="boom_action", domain="home", payload={})
+        result = await registry.execute(action)
+
+        assert result.success is False
+        assert "adapter blew up" in result.error
+
+    @pytest.mark.asyncio
+    async def test_undo_calls_adapter_undo_with_log_entry(self):
+        from mithra.autonomy.engine import ActionLogEntry, Reversibility
+
+        registry = ActionExecutorRegistry()
+        adapter = MagicMock()
+        adapter.undo = AsyncMock(return_value=ExecutionResult(
+            action_id="u1", action_type="send_message", success=True,
+        ))
+        registry.register("send_message", adapter)
+
+        entry = ActionLogEntry(
+            action_id="a1", request_id="r1", user_id="person_a",
+            domain="people", action_type="send_message", payload={},
+            status="executed", reversibility=Reversibility.PARTIAL,
+            timestamp="2026-01-01T00:00:00+00:00",
+            intent="people.send_message", autonomy_level=2,
+            output_channel="telegram",
+            executed_at="2026-01-01T00:00:00+00:00", success=True,
+            undo_payload={"message_id": "m1"},
+        )
+        result = await registry.undo(entry)
+
+        adapter.undo.assert_called_once_with(entry)
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_undo_returns_error_for_unregistered_type(self):
+        from mithra.autonomy.engine import ActionLogEntry, Reversibility
+
+        registry = ActionExecutorRegistry()
+        entry = ActionLogEntry(
+            action_id="a2", request_id="r2", user_id="person_a",
+            domain="people", action_type="ghost_action", payload={},
+            status="executed", reversibility=Reversibility.FULL,
+            timestamp="2026-01-01T00:00:00+00:00",
+            intent="people.ghost_action", autonomy_level=2,
+            output_channel="none",
+            executed_at="2026-01-01T00:00:00+00:00", success=True,
+        )
+        result = await registry.undo(entry)
+
+        assert result.success is False
+        assert result.error is not None
+
+    @pytest.mark.asyncio
+    async def test_notify_calls_notification_adapter_send(self):
+        registry = ActionExecutorRegistry()
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        registry.register_notify("telegram", adapter)
+
+        await registry.notify("person_a", "telegram", "Hello!")
+
+        adapter.send.assert_called_once()
+        call_args = adapter.send.call_args[0]
+        assert call_args[0] == "person_a"
+
+    @pytest.mark.asyncio
+    async def test_notify_silent_when_channel_not_registered(self):
+        registry = ActionExecutorRegistry()
+        # No adapter registered for "telegram" — should not raise
+        await registry.notify("person_a", "telegram", "Hello!")

@@ -11,7 +11,7 @@
 - `[!]` Blocked (note reason)
 
 ## Current Focus
-**P0-20 — ActionExecutorRegistry** (Group E, Phase 0)
+**P0-16 — LangGraphAdapter** (Group D, Phase 0)
 
 
 ---
@@ -84,9 +84,9 @@
 
 - [x] P0-18 AutononomyEngine (abstract) — base class + dataclasses, 9 tests
 - [x] P0-19 DefaultAutonomyEngine — all levels, confirm/reject/undo/expire_pending, 29 tests (17 existing + 12 new)
-- [~] P0-20 ActionExecutorRegistry — interface scaffolded, 18 tests
-- [~] P0-21 ActionLog — interface scaffolded, append-only
-- [~] P0-22 DeadLetterQueue — interface scaffolded, terminal failure store
+- [x] P0-20 ActionExecutorRegistry — execute/undo/notify/register_notify, 25 tests (18 existing + 7 new)
+- [x] P0-21 ActionLog — append/get/list_recent, 8 tests
+- [x] P0-22 DeadLetterQueue — enqueue/resolve/list_unresolved/health, 13 tests
 
 ### Group F — Messaging & Output Adapters
 
