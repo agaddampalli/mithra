@@ -21,6 +21,8 @@ NEVER violation tracking: in-memory time-windowed counter per (user_id, intent).
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import time
 import uuid
 from collections import defaultdict
@@ -53,6 +55,16 @@ _UNDO_WINDOW_SECONDS = 3600
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _call_async(coro) -> None:
+    """Run a coroutine from sync context, handling both sync and async callers."""
+    try:
+        asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(asyncio.run, coro).result()
+    except RuntimeError:
+        asyncio.run(coro)
 
 
 def _pending_to_dict(p: PendingAction) -> dict:
@@ -95,9 +107,11 @@ class DefaultAutonomyEngine(AutononomyEngine):
         storage_adapter: StorageAdapter,
         action_log: ActionLog,
         config_path: str,
+        executor: "ActionExecutorRegistry | None" = None,
     ) -> None:
         self._storage = storage_adapter
         self._action_log = action_log
+        self._executor = executor
         self._violation_timestamps: dict[str, list[float]] = defaultdict(list)
         self._load_config(config_path)
 
@@ -485,7 +499,7 @@ class DefaultAutonomyEngine(AutononomyEngine):
         return self._action_log.list_recent(user_id, domain=domain, limit=limit)
 
     def expire_pending(self) -> None:
-        """Delete expired pending actions from storage."""
+        """Delete expired pending actions from storage and notify users."""
         now = datetime.now(timezone.utc)
         for user_id in ("person_a", "person_b", "household"):
             records = self._storage.list("autonomy", "state", user_id)
@@ -495,6 +509,9 @@ class DefaultAutonomyEngine(AutononomyEngine):
                 p = _dict_to_pending(record.data)
                 if datetime.fromisoformat(p.expires_at) <= now:
                     self._storage.delete("autonomy", record.key, user_id)
+                    if self._executor is not None:
+                        msg = f"Your pending action '{p.action_type}' has expired without confirmation."
+                        _call_async(self._executor.notify(user_id, "telegram", msg))
 
     def health(self) -> dict:
         """Return autonomy engine health for the health dashboard."""

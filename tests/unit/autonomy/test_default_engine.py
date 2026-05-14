@@ -372,3 +372,250 @@ async def test_response_text_summarises_all_outcomes(engine):
     assert "Blocked" in receipt.response_text
     assert "confirmation" in receipt.response_text.lower()
     assert "Done" in receipt.response_text
+
+
+# ---------------------------------------------------------------------------
+# NEVER — written to storage history
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_never_action_written_to_storage_history(engine, action_log):
+    executor = _mock_executor()
+    action = _action(action_type="blocked_action", domain="act_tell_domain")
+    await engine.process(_result([action]), USER, executor)
+
+    entries = action_log.list_recent(USER)
+    never_entries = [e for e in entries if e.status == "rejected_never"]
+    assert len(never_entries) == 1
+    assert never_entries[0].autonomy_level == -1
+
+
+# ---------------------------------------------------------------------------
+# OBSERVE — written to storage history
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_observe_action_written_to_storage_history(engine, action_log):
+    executor = _mock_executor()
+    action = _action(domain="observe_domain")
+    await engine.process(_result([action]), USER, executor)
+
+    entries = action_log.list_recent(USER)
+    observed = [e for e in entries if e.status == "observed"]
+    assert len(observed) == 1
+    assert observed[0].domain == "observe_domain"
+
+
+# ---------------------------------------------------------------------------
+# confirm()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_confirm_executes_pending_action(engine, storage):
+    executor = _mock_executor()
+    action = _action(domain="surface_domain")
+    receipt = await engine.process(_result([action], request_id="req-confirm"), USER, executor)
+
+    pending = receipt.pending[0]
+    conf_receipt = await engine.confirm(pending.request_id, pending.action_index, USER, executor)
+
+    assert len(conf_receipt.executed) == 1
+    assert conf_receipt.executed[0].success is True
+    # execute was called (once for confirm, zero for process since SURFACE)
+    executor.execute.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_confirm_deletes_pending_record_from_storage(engine, storage):
+    executor = _mock_executor()
+    action = _action(domain="surface_domain")
+    receipt = await engine.process(_result([action], request_id="req-del"), USER, executor)
+
+    pending = receipt.pending[0]
+    await engine.confirm(pending.request_id, pending.action_index, USER, executor)
+
+    # The pending record must be gone from storage
+    stored = storage.list("autonomy", "state", USER)
+    pending_records = [r for r in stored if r.key.startswith("pending:")]
+    assert len(pending_records) == 0
+
+
+@pytest.mark.asyncio
+async def test_confirm_not_found_returns_empty_receipt(engine):
+    executor = _mock_executor()
+    receipt = await engine.confirm("no-such-request", 0, USER, executor)
+    assert len(receipt.executed) == 0
+    assert "not found" in receipt.response_text.lower()
+
+
+# ---------------------------------------------------------------------------
+# reject()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reject_deletes_pending_record_from_storage(engine, storage):
+    executor = _mock_executor()
+    action = _action(domain="surface_domain")
+    receipt = await engine.process(_result([action], request_id="req-rej"), USER, executor)
+
+    pending = receipt.pending[0]
+    await engine.reject(pending.request_id, pending.action_index, USER)
+
+    stored = storage.list("autonomy", "state", USER)
+    pending_records = [r for r in stored if r.key.startswith("pending:")]
+    assert len(pending_records) == 0
+
+
+@pytest.mark.asyncio
+async def test_reject_logs_rejection_to_history(engine, action_log):
+    executor = _mock_executor()
+    action = _action(domain="surface_domain")
+    receipt = await engine.process(_result([action], request_id="req-log"), USER, executor)
+
+    pending = receipt.pending[0]
+    await engine.reject(pending.request_id, pending.action_index, USER)
+
+    entries = action_log.list_recent(USER)
+    rejected_entries = [e for e in entries if e.status == "rejected_user"]
+    assert len(rejected_entries) == 1
+
+
+@pytest.mark.asyncio
+async def test_reject_not_found_returns_empty_receipt(engine):
+    receipt = await engine.reject("no-such-request", 0, USER)
+    assert len(receipt.executed) == 0
+    assert "not found" in receipt.response_text.lower()
+
+
+# ---------------------------------------------------------------------------
+# get_pending()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_pending_returns_non_expired_actions(engine):
+    executor = _mock_executor()
+    action = _action(domain="surface_domain")
+    await engine.process(_result([action]), USER, executor)
+
+    pending = engine.get_pending(USER)
+    assert len(pending) == 1
+    assert pending[0].domain == "surface_domain"
+
+
+@pytest.mark.asyncio
+async def test_get_pending_excludes_expired_actions(engine, storage):
+    from datetime import datetime, timezone, timedelta
+    from mithra.storage.adapter import StorageRecord
+
+    # Write a pending record with a past expires_at directly to storage
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    action_id = "test-expired-id"
+    storage.write(StorageRecord(
+        domain="autonomy",
+        key=f"pending:{action_id}",
+        layer="state",
+        data={
+            "action_id": action_id,
+            "request_id": "req-exp",
+            "action_index": 0,
+            "user_id": USER,
+            "domain": "surface_domain",
+            "action_type": "do_thing",
+            "payload": {},
+            "created_at": past,
+            "expires_at": past,
+            "intent": "surface_domain.do_thing",
+            "description": "test",
+        },
+        user_id=USER,
+        version=1,
+        updated_at=past,
+    ))
+
+    pending = engine.get_pending(USER)
+    assert all(p.action_id != action_id for p in pending)
+
+
+# ---------------------------------------------------------------------------
+# expire_pending()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_expire_pending_deletes_expired_from_storage(engine, storage):
+    from datetime import datetime, timezone, timedelta
+    from mithra.storage.adapter import StorageRecord
+
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    action_id = "exp-action-id"
+    storage.write(StorageRecord(
+        domain="autonomy",
+        key=f"pending:{action_id}",
+        layer="state",
+        data={
+            "action_id": action_id,
+            "request_id": "req-exp2",
+            "action_index": 0,
+            "user_id": USER,
+            "domain": "surface_domain",
+            "action_type": "do_thing",
+            "payload": {},
+            "created_at": past,
+            "expires_at": past,
+            "intent": "surface_domain.do_thing",
+            "description": "test",
+        },
+        user_id=USER,
+        version=1,
+        updated_at=past,
+    ))
+
+    engine.expire_pending()
+
+    stored = storage.list("autonomy", "state", USER)
+    pending_records = [r for r in stored if r.key.startswith("pending:")]
+    assert all(r.data["action_id"] != action_id for r in pending_records)
+
+
+@pytest.mark.asyncio
+async def test_expire_pending_notifies_user_if_executor_provided(storage, action_log, config_path):
+    from datetime import datetime, timezone, timedelta
+    from mithra.storage.adapter import StorageRecord
+
+    executor = _mock_executor()
+    eng = DefaultAutonomyEngine(storage, action_log, config_path, executor=executor)
+
+    past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    action_id = "exp-notify-id"
+    storage.write(StorageRecord(
+        domain="autonomy",
+        key=f"pending:{action_id}",
+        layer="state",
+        data={
+            "action_id": action_id,
+            "request_id": "req-exp3",
+            "action_index": 0,
+            "user_id": USER,
+            "domain": "surface_domain",
+            "action_type": "do_thing",
+            "payload": {},
+            "created_at": past,
+            "expires_at": past,
+            "intent": "surface_domain.do_thing",
+            "description": "test",
+        },
+        user_id=USER,
+        version=1,
+        updated_at=past,
+    ))
+
+    eng.expire_pending()
+    executor.notify.assert_called_once()
+    call_args = executor.notify.call_args[0]
+    assert call_args[0] == USER
+    assert "expired" in call_args[2].lower()

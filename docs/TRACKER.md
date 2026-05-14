@@ -11,7 +11,7 @@
 - `[!]` Blocked (note reason)
 
 ## Current Focus
-**P0-14 — DataSanitiser** (Group C, Phase 0)
+**P0-20 — ActionExecutorRegistry** (Group E, Phase 0)
 
 
 ---
@@ -72,18 +72,18 @@
 
 - [x] P0-12 DomainMemoryRouter — DefaultDomainMemoryRouter impl, 57 tests (access control, context assembly, cache invalidation, PII extraction)
 - [x] P0-13 ConversationSessionManager — TTL expiry, MAX_TURNS cap, known_user_ids, 28 tests (23 new)
-- [~] P0-14 DataSanitiser — interface scaffolded, 6 tests passing
+- [x] P0-14 DataSanitiser — two-pass PII stripping, 36 tests (6 scaffold + 30 new)
 
 ### Group D — Agent Layer
 
 - [x] P0-15 AgentInterface — abstract class + enums + dataclasses, 18 tests
 - [~] P0-16 LangGraphAdapter — scaffold with graph + streaming, needs impl
-- [~] P0-17 LLMRouter + LiteLLMAdapter — interface + types, 25 tests
+- [x] P0-17 LLMRouter + LiteLLMAdapter — LiteLLMRouterAdapter impl, 38 tests (routing, health guard, sanitisation, fallback, observability, classify_intent, get_usage)
 
 ### Group E — Autonomy Layer
 
 - [x] P0-18 AutononomyEngine (abstract) — base class + dataclasses, 9 tests
-- [~] P0-19 DefaultAutonomyEngine — concrete impl requested, 17 tests
+- [x] P0-19 DefaultAutonomyEngine — all levels, confirm/reject/undo/expire_pending, 29 tests (17 existing + 12 new)
 - [~] P0-20 ActionExecutorRegistry — interface scaffolded, 18 tests
 - [~] P0-21 ActionLog — interface scaffolded, append-only
 - [~] P0-22 DeadLetterQueue — interface scaffolded, terminal failure store
