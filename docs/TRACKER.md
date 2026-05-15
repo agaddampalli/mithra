@@ -184,7 +184,7 @@
 
 ### Group M — Deployment to Windows Laptop
 
-- [x] DP-00 GitHub Actions build pipeline — push to main → build + push to ghcr.io/agaddampalli/mithra, Watchtower polls every hour (label-enable)
+- [x] DP-00 GitHub Actions build pipeline — tests run on PR, image pushed to ghcr.io on merge to main; GHA cache, metadata-action tags, Watchtower polls every hour (label-enable)
 - [ ] DP-01 Docker Desktop — install on Windows, enable WSL2
 - [ ] DP-02 Git — install on Windows, configure SSH for GitHub
 - [ ] DP-03 Clone repo on Windows laptop
