@@ -858,8 +858,9 @@ pytest tests/unit/ -k "interface"
 - Architecture:    docs/architecture_pass1.html
 
 ## Tracker instructions
-When you complete a unit of work, update docs/TRACKER.md:
-  change [ ] or [~] to [x] for the completed item.
-When a new architectural decision is made, add it to docs/SPEC.md
-  under section 8 (ADRs) with the decision, rationale, and implications.
+When you complete a unit of work, update docs/TRACKER.md —
+change [ ] or [~] to [x] for the completed item.
+When you skip a unit because it is already done, verify its
+status in TRACKER.md and correct it to [x] if it is not already.
+When a new architectural decision is made, add it to docs/SPEC.md.
 Update "Current Focus" at the top of TRACKER.md to the next item.
