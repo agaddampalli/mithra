@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+pydantic
+langgraph
+langchain-core
+python-telegram-bot
+httpx
+requests
+msal
+google-api-python-client
+google-auth
+google-auth-httplib2
+chromadb
+pyyaml
+pywebpush
+cryptography
+aiofiles

@@ -1,8 +1,7 @@
 # Autonomy configuration — loaded at startup by AutononomyEngine.
-# deadline_days: how many days ahead to consider a deadline "upcoming"
-# default_level: 0=OBSERVE 1=SURFACE 2=ACT_TELL 3=ACT_SILENT
+# default_level: 0=OBSERVE 1=SURFACE 2=ACT_TELL 3=ACT_SILENT -1=NEVER
 
-default_level: 1   # SURFACE — ask before every action
+default_level: 1
 
 deadline_windows:
   health: 7
@@ -17,13 +16,49 @@ deadline_windows:
   goals: 7
   default: 14
 
-# Per-domain autonomy level overrides (optional).
-# Uncomment and set to override the default for a specific domain.
-# domain_overrides:
-#   food: 2        # ACT_TELL — just do it and tell me
-#   health: 1      # SURFACE — always ask for health actions
+actions:
+  people.add_contact:
+    level: 3
+    notify_channel: telegram
+    undo_window_minutes: 60
+
+  people.send_birthday_message:
+    level: 2
+    notify_channel: telegram
+    undo_window_minutes: 30
+
+  money.log_expense:
+    level: 2
+    notify_channel: telegram
+    undo_window_minutes: 60
+
+  money.execute_payment:
+    level: -1
+    notify_channel: none
+    undo_window_minutes: 0
+
+  food.update_pantry:
+    level: 3
+    notify_channel: none
+    undo_window_minutes: 30
+
+  home.log_maintenance:
+    level: 3
+    notify_channel: telegram
+    undo_window_minutes: 60
+
+  health.read_record:
+    level: 3
+    notify_channel: none
+    undo_window_minutes: 0
+
+  calendar.write_event:
+    level: 2
+    notify_channel: telegram
+    undo_window_minutes: 60
 
 # NEVER list — hardcoded in autonomy/engine.py.
 # Listed here for documentation only; editing this file does NOT change enforcement.
 never_actions:
   - send_health_data_to_cloud
+  - money.execute_payment

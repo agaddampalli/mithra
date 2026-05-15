@@ -1,76 +1,207 @@
 services:
-  agent:
+
+  # ── Mithra API gateway ──────────────────────────────────
+  api-gateway:
     build: .
     ports:
       - "8000:8000"
-    env_file: .env
+    environment:
+      - MITHRA_STORAGE_DIR=/data/mithra/files
+      - MITHRA_DB_DIR=/data/mithra
+      - LITELLM_BASE_URL=http://llm-router:4000
+      - AUTONOMY_CONFIG_PATH=/app/services/autonomy/autonomy.yaml
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET}
+      - ONEDRIVE_CLIENT_ID=${ONEDRIVE_CLIENT_ID}
+      - ONEDRIVE_CLIENT_SECRET=${ONEDRIVE_CLIENT_SECRET}
+      - ONEDRIVE_TENANT_ID=${ONEDRIVE_TENANT_ID}
+      - GOOGLE_CALENDAR_CREDENTIALS=${GOOGLE_CALENDAR_CREDENTIALS}
+      - MITHRA_ENCRYPTION_KEY=${MITHRA_ENCRYPTION_KEY}
+      - SECRET_KEY=${SECRET_KEY}
+      - HA_URL=http://homeassistant:8123
+      - HA_TOKEN=${HA_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - mithra-data:/data/mithra
+      - ./household.yaml:/app/household.yaml:ro
+      - ./services:/app/services:ro
     depends_on:
       - llm-router
       - vector-store
-    volumes:
-      - agent-data:/data
+      - homeassistant
+    networks:
+      - mithra-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
+  # ── LiteLLM proxy ───────────────────────────────────────
   llm-router:
     image: ghcr.io/berriai/litellm:main-latest
     ports:
       - "4000:4000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LITELLM_MASTER_KEY=${SECRET_KEY}
     volumes:
-      - ./services/litellm/config.yaml:/app/config.yaml:ro
-    command: ["--config", "/app/config.yaml"]
+      - ./services/litellm/routing.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    networks:
+      - mithra-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  local-llm:
-    build: ./services/ollama
+  # ── Ollama (local LLM) ──────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
     ports:
       - "11434:11434"
     volumes:
       - ollama-models:/root/.ollama
+    networks:
+      - mithra-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
 
+  # ── ChromaDB (vector store) ─────────────────────────────
   vector-store:
     image: chromadb/chroma:latest
     ports:
       - "8001:8000"
     volumes:
       - chroma-data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    networks:
+      - mithra-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  whatsapp-bridge:
-    build: ./services/baileys
-    env_file: .env
+  # ── Home Assistant Core ─────────────────────────────────
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    ports:
+      - "8123:8123"
     volumes:
-      - whatsapp-sessions:/app/sessions
+      - ha-config:/config
+    environment:
+      - TZ=${TZ:-America/Chicago}
+    networks:
+      - mithra-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8123/api/"]
+      interval: 60s
+      timeout: 15s
+      retries: 5
 
+  # ── Wyoming Whisper (STT) ───────────────────────────────
   wyoming-whisper:
-    image: rhasspy/wyoming-whisper:latest
+    image: rhasspy/wyoming-faster-whisper
     ports:
       - "10300:10300"
     volumes:
-      - whisper-data:/data
+      - whisper-models:/data
+    command: >
+      --uri tcp://0.0.0.0:10300
+      --model tiny.en
+      --language en
+      --data-dir /data
+      --download-dir /data
+    networks:
+      - mithra-net
+    restart: unless-stopped
 
+  # ── Wyoming Piper (TTS) ─────────────────────────────────
   wyoming-piper:
-    image: rhasspy/wyoming-piper:latest
+    image: rhasspy/wyoming-piper
     ports:
       - "10200:10200"
     volumes:
-      - piper-data:/data
+      - piper-voices:/data
+    command: >
+      --uri tcp://0.0.0.0:10200
+      --voice en_US-lessac-medium
+      --data-dir /data
+      --download-dir /data
+    networks:
+      - mithra-net
+    restart: unless-stopped
 
-  tunnel:
-    image: cloudflare/cloudflared:latest
-    command: tunnel --config /etc/cloudflared/config.yaml run
+  # ── Wyoming openWakeWord ────────────────────────────────
+  wyoming-openwakeword:
+    image: rhasspy/wyoming-openwakeword
+    ports:
+      - "10400:10400"
+    command: >
+      --uri tcp://0.0.0.0:10400
+      --preload-model ok_nabu
+    networks:
+      - mithra-net
+    restart: unless-stopped
+
+  # ── WhatsApp bridge (Baileys) ───────────────────────────
+  whatsapp-bridge:
+    image: node:20-alpine
+    ports:
+      - "3000:3000"
     volumes:
-      - ./services/cloudflared/config.yaml:/etc/cloudflared/config.yaml:ro
-    env_file: .env
-    depends_on:
-      - agent
+      - whatsapp-sessions:${WHATSAPP_SESSION_PATH:-/sessions/whatsapp}
+      - ./services/whatsapp-bridge:/app
+    working_dir: /app
+    command: ["node", "index.js"]
+    environment:
+      - SESSION_PATH=${WHATSAPP_SESSION_PATH:-/sessions/whatsapp}
+      - PORT=3000
+    networks:
+      - mithra-net
+    restart: unless-stopped
 
+  # ── Cloudflare tunnel ───────────────────────────────────
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - mithra-net
+    restart: unless-stopped
+    depends_on:
+      - api-gateway
+
+  # ── Watchtower (auto-updates) ───────────────────────────
   watchtower:
     image: containrrr/watchtower
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     command: --interval 86400
+    restart: unless-stopped
 
 volumes:
-  agent-data:
+  mithra-data:
   ollama-models:
   chroma-data:
+  ha-config:
+  whisper-models:
+  piper-voices:
   whatsapp-sessions:
-  whisper-data:
-  piper-data:
+
+networks:
+  mithra-net:
+    driver: bridge

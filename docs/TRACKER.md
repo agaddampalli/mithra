@@ -11,7 +11,7 @@
 - `[!]` Blocked (note reason)
 
 ## Current Focus
-**P0-01 — compose.yaml full wiring** (Group A, Phase 0)
+**OA-01 — OAuth credentials setup** (Group J)
 
 
 ---
@@ -53,8 +53,8 @@
 
 ### Group A — Storage Layer
 
-- [~] P0-01 compose.yaml — all services defined, needs full wiring
-- [~] P0-02 .env.example — all variables documented
+- [x] P0-01 compose.yaml — all 12 services, volumes, networks, healthchecks, env refs; Dockerfile + requirements.txt
+- [x] P0-02 .env.example — all variables documented
 - [x] P0-03 household.yaml — confirmed May 2026 — google calendar covers both users
 - [x] P0-04 StorageAdapter interface — abstract class + StorageRecord
 - [x] P0-05 LocalStorageAdapter — SQLite + filesystem, cache injection, file_count health
