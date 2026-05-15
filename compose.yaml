@@ -165,12 +165,12 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - whatsapp-sessions:${WHATSAPP_SESSION_PATH:-/sessions/whatsapp}
+      - whatsapp-sessions:/sessions/whatsapp
       - ./services/whatsapp-bridge:/app
     working_dir: /app
     command: ["node", "index.js"]
     environment:
-      - SESSION_PATH=${WHATSAPP_SESSION_PATH:-/sessions/whatsapp}
+      - SESSION_PATH=/sessions/whatsapp
       - PORT=3000
     networks:
       - mithra-net
