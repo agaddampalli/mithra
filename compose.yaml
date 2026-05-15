@@ -116,14 +116,14 @@ services:
 
   # ── Wyoming Whisper (STT) ───────────────────────────────
   wyoming-whisper:
-    image: rhasspy/wyoming-faster-whisper
+    image: rhasspy/wyoming-whisper
     ports:
       - "10300:10300"
     volumes:
       - whisper-models:/data
     command: >
       --uri tcp://0.0.0.0:10300
-      --model tiny.en
+      --model tiny-int8
       --language en
       --data-dir /data
       --download-dir /data

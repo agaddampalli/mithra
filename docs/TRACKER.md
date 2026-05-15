@@ -122,7 +122,7 @@
 
 ### Group I — Wyoming Voice Pipeline
 
-- [ ] WY-01 wyoming-whisper — add to compose.yaml, tiny.en model, port 10300
+- [ ] WY-01 wyoming-whisper — add to compose.yaml, tiny-int8 model, port 10300 (correct image: rhasspy/wyoming-whisper, not wyoming-faster-whisper)
 - [ ] WY-02 wyoming-piper — add to compose.yaml, en_US-lessac-medium, port 10200
 - [ ] WY-03 wyoming-openwakeword — add to compose.yaml, ok_nabu, port 10400
 - [ ] WY-04 Wire all three to compose.yaml with volumes
