@@ -836,7 +836,7 @@ pytest tests/integration/
 curl http://localhost:4000/health
 
 # Check Mithra health dashboard
-curl http://localhost:8000/api/v1/health
+curl http://localhost:9000/api/v1/health
 
 # Generate encryption key
 python -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())"
