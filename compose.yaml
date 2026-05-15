@@ -2,7 +2,10 @@ services:
 
   # ── Mithra API gateway ──────────────────────────────────
   api-gateway:
-    build: .
+    image: ghcr.io/agaddampalli/mithra:latest
+    pull_policy: always
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     ports:
       - "8000:8000"
     environment:
@@ -190,7 +193,7 @@ services:
     image: containrrr/watchtower
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    command: --interval 86400
+    command: --interval 3600 --label-enable
     restart: unless-stopped
 
 volumes:

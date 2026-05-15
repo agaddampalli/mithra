@@ -11,7 +11,7 @@
 - `[!]` Blocked (note reason)
 
 ## Current Focus
-**OA-01 — OAuth credentials setup** (Group J)
+**DP-01 — Docker Desktop on Windows** (Group M)
 
 
 ---
@@ -184,6 +184,7 @@
 
 ### Group M — Deployment to Windows Laptop
 
+- [x] DP-00 GitHub Actions build pipeline — push to main → build + push to ghcr.io/agaddampalli/mithra, Watchtower polls every hour (label-enable)
 - [ ] DP-01 Docker Desktop — install on Windows, enable WSL2
 - [ ] DP-02 Git — install on Windows, configure SSH for GitHub
 - [ ] DP-03 Clone repo on Windows laptop
