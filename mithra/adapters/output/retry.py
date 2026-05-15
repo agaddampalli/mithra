@@ -1,16 +1,13 @@
 """
-RetryableOutputAdapter — decorator that wraps any OutputAdapter with automatic
+RetryableOutputAdapter -- decorator that wraps any OutputAdapter with automatic
 retry and dead-letter routing on exhaustion.
 
-Pattern: decorator — RetryableOutputAdapter(adapter, dead_letter_queue) wraps any
-OutputAdapter without changing the caller's interface.
+Pattern: decorator -- RetryableOutputAdapter(adapter, dead_letter_queue) wraps
+any OutputAdapter without changing the caller's interface.
 
-Retry policy:
-  3 attempts with exponential backoff: 1s → 2s → 4s (max 30s total delay).
+Retry policy: configurable attempts with exponential backoff (default 3x: 1s, 2s, 4s).
 
-Exhausted: write a DeadLetter to DeadLetterQueue in
-  StorageAdapter domain="observability" layer="history".
-
+Exhausted: enqueue a DeadLetter and return a failure DeliveryReceipt.
 Dead letters are surfaced on the health dashboard for operator review.
 """
 
@@ -35,53 +32,75 @@ def _now() -> str:
 
 
 class RetryableOutputAdapter(OutputAdapter):
-    """Wraps an OutputAdapter with 3-attempt exponential backoff and dead-letter routing."""
+    """Wraps an OutputAdapter with configurable retry and dead-letter routing."""
 
-    MAX_ATTEMPTS = 3
-    BACKOFF_SECONDS = [1, 2, 4]
-
-    def __init__(self, inner: OutputAdapter, dead_letter_queue: DeadLetterQueue) -> None:
-        """
-        Args:
-            inner: The OutputAdapter to wrap.
-            dead_letter_queue: DeadLetterQueue instance for failed deliveries.
-        """
+    def __init__(
+        self,
+        inner: OutputAdapter,
+        dead_letter_queue: DeadLetterQueue,
+        max_attempts: int = 3,
+        backoff_seconds: list[float] | None = None,
+    ) -> None:
         self._inner = inner
         self._dlq = dead_letter_queue
+        self._max_attempts = max_attempts
+        self._backoff = backoff_seconds if backoff_seconds is not None else [1, 2, 4]
 
-    async def _retry(self, coro_factory, action_id: str, action_type: str, user_id: str, payload: dict):
-        """Attempt coro_factory up to MAX_ATTEMPTS times with exponential backoff."""
+    async def _retry(
+        self,
+        coro_factory,
+        action_type: str,
+        user_id: str,
+        payload: dict,
+    ) -> DeliveryReceipt:
+        """Attempt coro_factory up to max_attempts with backoff. On exhaustion,
+        enqueue to dead letter and return a failure DeliveryReceipt."""
         first_attempted_at = _now()
         last_error = ""
-        for attempt in range(self.MAX_ATTEMPTS):
+
+        for attempt in range(self._max_attempts):
             try:
-                return await coro_factory()
+                result = await coro_factory()
+                # If the inner adapter returns a failure receipt, treat as error
+                if isinstance(result, DeliveryReceipt) and not result.success:
+                    last_error = result.error or "inner adapter returned failure"
+                    raise RuntimeError(last_error)
+                return result
             except Exception as exc:
                 last_error = str(exc)
-                if attempt < self.MAX_ATTEMPTS - 1:
-                    await asyncio.sleep(self.BACKOFF_SECONDS[attempt])
-        # All attempts exhausted — write to dead-letter queue
-        letter = DeadLetter(
-            letter_id=str(uuid.uuid4()),
-            action_id=action_id,
-            user_id=user_id,
-            action_type=action_type,
-            payload=payload,
-            error=last_error,
-            attempt_count=self.MAX_ATTEMPTS,
-            first_attempted_at=first_attempted_at,
-            last_attempted_at=_now(),
+                if attempt < self._max_attempts - 1:
+                    backoff_idx = min(attempt, len(self._backoff) - 1)
+                    await asyncio.sleep(self._backoff[backoff_idx])
+
+        # All attempts exhausted -- write to dead letter queue
+        self._dlq.enqueue(
+            DeadLetter(
+                letter_id=str(uuid.uuid4()),
+                action_id=str(uuid.uuid4()),
+                user_id=user_id,
+                action_type=action_type,
+                payload=payload,
+                error=last_error,
+                attempt_count=self._max_attempts,
+                first_attempted_at=first_attempted_at,
+                last_attempted_at=_now(),
+            )
         )
-        self._dlq.enqueue(letter)
-        raise RuntimeError(f"Delivery failed after {self.MAX_ATTEMPTS} attempts: {last_error}")
+        return DeliveryReceipt(
+            channel="retry",
+            message_id=None,
+            delivered_at=_now(),
+            success=False,
+            undoable=False,
+            error=last_error,
+        )
 
     async def send(self, user_id: str, message: OutboundMessage) -> DeliveryReceipt:
         return await self._retry(
             lambda: self._inner.send(user_id, message),
-            action_id=str(uuid.uuid4()),
-            action_type="send",
+            action_type=f"{self._inner.__class__.__name__}.send",
             user_id=user_id,
-            payload={"text": message.text, "domain": message.domain},
+            payload={"text": message.text},
         )
 
     async def send_with_actions(
@@ -92,8 +111,7 @@ class RetryableOutputAdapter(OutputAdapter):
     ) -> DeliveryReceipt:
         return await self._retry(
             lambda: self._inner.send_with_actions(user_id, message, actions),
-            action_id=str(uuid.uuid4()),
-            action_type="send_with_actions",
+            action_type=f"{self._inner.__class__.__name__}.send_with_actions",
             user_id=user_id,
             payload={"text": message.text, "action_count": len(actions)},
         )
@@ -103,20 +121,19 @@ class RetryableOutputAdapter(OutputAdapter):
     ) -> DeliveryReceipt:
         return await self._retry(
             lambda: self._inner.send_stream(user_id, stream),
-            action_id=str(uuid.uuid4()),
-            action_type="send_stream",
+            action_type=f"{self._inner.__class__.__name__}.send_stream",
             user_id=user_id,
             payload={},
         )
 
     async def undo(self, receipt: DeliveryReceipt) -> bool:
+        """Single attempt -- no retry on undo."""
         return await self._inner.undo(receipt)
 
     def health(self) -> dict:
         inner_health = self._inner.health()
-        dlq_health = self._dlq.health()
         return {
             "status": inner_health.get("status", "unknown"),
-            "inner": inner_health,
-            "dead_letter_queue": dlq_health,
+            "adapter": self._inner.__class__.__name__,
+            **inner_health,
         }

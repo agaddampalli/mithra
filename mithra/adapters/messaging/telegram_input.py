@@ -45,13 +45,26 @@ class UserIdentityResolver:
 
     def __init__(self, household_config: dict) -> None:
         self._telegram_map: dict[int, str] = {}
+        self._device_map: dict[str, str] = {}
         for member in household_config.get("members", []):
+            uid = member["user_id"]
             for tid in member.get("telegram_ids", []):
-                self._telegram_map[int(tid)] = member["user_id"]
+                self._telegram_map[int(tid)] = uid
+            for did in member.get("device_ids", []):
+                self._device_map[str(did)] = uid
+        # Shared devices always map to "household"
+        for shared in household_config.get("shared_devices", []):
+            did = shared.get("device_id", "")
+            if did:
+                self._device_map[str(did)] = "household"
 
     def resolve_telegram(self, telegram_id: int) -> str:
         """Return the Mithra user_id for a Telegram chat ID, or 'household'."""
         return self._telegram_map.get(telegram_id, "household")
+
+    def resolve_device(self, device_id: str) -> str:
+        """Return the Mithra user_id for a device ID, or 'household'."""
+        return self._device_map.get(str(device_id), "household")
 
 
 class TelegramInputAdapter(InputAdapter):

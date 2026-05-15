@@ -11,7 +11,7 @@
 - `[!]` Blocked (note reason)
 
 ## Current Focus
-**P0-26 — WhatsAppAdapter** (Group F, Phase 0)
+**P0-01 — compose.yaml full wiring** (Group A, Phase 0)
 
 
 ---
@@ -93,12 +93,12 @@
 - [x] P0-23 adapters/messaging/__init__ — base types, 24 tests passing
 - [x] P0-24 TelegramInputAdapter — UserIdentityResolver, 4 message types, session history, 8 tests
 - [x] P0-25 TelegramOutputAdapter — rate limiting, inline keyboard, register_chat, undo, 7 tests
-- [~] P0-26 WhatsAppAdapter — Baileys bridge via HTTP
+- [x] P0-26 WhatsAppAdapter — Baileys bridge via HTTP, register_phone, numbered actions, 12 tests
 - [x] P0-27 CalendarAdapter — http_client injection, send() JSON parsing, undo, 7 tests
-- [~] P0-28 TTSAdapter — Piper via HA + VoiceConfirmationSession, 18 tests
-- [~] P0-29 PushAdapter — Web Push VAPID
-- [~] P0-30 RetryableOutputAdapter — 3 attempts + dead letter
-- [~] P0-31 WyomingAdapter — extends InputAdapter, 13 tests
+- [x] P0-28 TTSAdapter — Piper via HA + VoiceConfirmationSession, speak/stream/send_with_actions, 28 tests
+- [x] P0-29 PushAdapter — Web Push VAPID, lazy pywebpush import, graceful degradation, 10 tests
+- [x] P0-30 RetryableOutputAdapter — 3 attempts + exponential backoff + dead letter on exhaustion, 9 tests
+- [x] P0-31 WyomingAdapter — Wyoming protocol, identity_resolver, confirmation resolution, 18 tests
 
 ### Group G — API Gateway
 

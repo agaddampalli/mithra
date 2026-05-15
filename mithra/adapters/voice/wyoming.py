@@ -2,12 +2,12 @@
 Wyoming protocol voice input adapter.
 
 Receives audio events from the Home Assistant Assist pipeline via the Wyoming
-protocol (port 10300). Converts recognised speech into a normalised AgentRequest
-and dispatches it through the gateway lifecycle.
+protocol (JSON-lines over TCP, port 10300). Converts recognised speech into a
+normalised AgentRequest and dispatches it through the gateway lifecycle.
 
 STT: Whisper via wyoming-whisper container.
 Wake word: openWakeWord (handled by Home Assistant, not this adapter).
-TTS: Piper via wyoming-piper container — handled by TTSAdapter.
+TTS: Piper via wyoming-piper container -- handled by TTSAdapter.
 
 Level-1 voice confirmations: resolved here against an active
 VoiceConfirmationSession (stored by TTSAdapter) keyed by session_id.
@@ -17,6 +17,7 @@ VoiceConfirmationSession (stored by TTSAdapter) keyed by session_id.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from typing import Any, Callable, Coroutine
 
@@ -33,12 +34,13 @@ class WyomingAdapter(InputAdapter):
         port: int = 10300,
         on_request: Callable[[AgentRequest], Coroutine] | None = None,
         tts_adapter: Any | None = None,
-        # TTSAdapter instance — used to resolve VoiceConfirmationSessions
+        identity_resolver: Any | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self._on_request = on_request
         self._tts = tts_adapter
+        self._identity_resolver = identity_resolver
         self._server: asyncio.AbstractServer | None = None
         self._running = False
 
@@ -62,22 +64,25 @@ class WyomingAdapter(InputAdapter):
     ) -> None:
         """Handle a single Wyoming protocol connection from Home Assistant."""
         try:
-            # Wyoming uses newline-delimited JSON frames
             while not reader.at_eof():
                 line = await reader.readline()
                 if not line:
                     break
-                import json
                 try:
-                    frame = json.loads(line.decode())
+                    event = json.loads(line.decode())
                 except Exception:
                     continue
-                event_type = frame.get("type")
-                if event_type == "transcript":
-                    transcript = frame.get("data", {}).get("text", "")
-                    device_id = frame.get("device_id", "wyoming-default")
-                    user_id = frame.get("user_id", "household")
-                    session_id = frame.get("session_id", "")
+
+                if event.get("type") == "transcript":
+                    device_id = event.get("device_id", "wyoming-default")
+                    transcript = event.get("text", "")
+                    session_id = event.get("session_id", "")
+
+                    # Resolve user_id via identity_resolver if available
+                    if self._identity_resolver is not None:
+                        user_id = self._identity_resolver.resolve_device(device_id)
+                    else:
+                        user_id = event.get("user_id", "household")
 
                     # Check if this resolves a VoiceConfirmationSession
                     if session_id and self._tts:
@@ -101,6 +106,7 @@ class WyomingAdapter(InputAdapter):
                             continue
 
                     request = self.normalise(user_id, device_id, transcript)
+                    await self.acknowledge(event)
                     if self._on_request:
                         asyncio.create_task(self._on_request(request))
         except Exception:
@@ -109,7 +115,7 @@ class WyomingAdapter(InputAdapter):
             writer.close()
 
     def normalise(self, user_id: str, device_id: str, transcript: str) -> AgentRequest:
-        """Convert a Wyoming transcript event into a normalised AgentRequest."""
+        """Convert a Wyoming transcript into a normalised AgentRequest."""
         return AgentRequest(
             user_id=user_id,
             device_id=device_id,
@@ -120,11 +126,13 @@ class WyomingAdapter(InputAdapter):
         )
 
     async def acknowledge(self, raw: Any) -> None:
-        """Play a soft chime to signal Mithra is processing the voice command.
-
-        In practice, HA Assist handles the acknowledgement sound. This is a no-op
-        unless a chime URL is explicitly wired up.
-        """
+        """Play a short chime via tts_adapter to signal Mithra is processing."""
+        if self._tts and hasattr(self._tts, "speak"):
+            device_id = raw.get("device_id") if isinstance(raw, dict) else None
+            try:
+                await self._tts.speak("", target_entity=device_id)
+            except Exception:
+                pass
 
     def health(self) -> dict:
         """Return health status for the health dashboard."""

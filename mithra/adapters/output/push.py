@@ -1,9 +1,12 @@
 """
-Push notification output adapter — PWA Web Push.
+Push notification output adapter -- PWA Web Push (VAPID).
 
 Implements OutputAdapter. Sends browser push notifications to enrolled devices
-using the Web Push protocol (VAPID). Used for time-sensitive alerts that don't
-warrant a Telegram message or voice announcement.
+using the Web Push protocol. Used for time-sensitive alerts that do not warrant
+a Telegram message or voice announcement.
+
+pywebpush is an optional dependency. If not installed, send() returns an error
+receipt and health() returns degraded.
 
 Undo strategy: cannot undo a delivered push (Reversibility.NONE).
 """
@@ -14,8 +17,6 @@ import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
-
-from pywebpush import webpush, WebPushException
 
 from mithra.adapters.messaging import (
     ActionButton,
@@ -29,56 +30,81 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _webpush_available() -> bool:
+    try:
+        import pywebpush  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
 class PushAdapter(OutputAdapter):
     """Sends Web Push notifications to enrolled PWA devices."""
 
-    def __init__(self, vapid_private_key: str, vapid_email: str) -> None:
-        self.vapid_private_key = vapid_private_key
-        self.vapid_email = vapid_email
-        # user_id → list of push subscription dicts (endpoint, keys)
-        self._subscriptions: dict[str, list[dict]] = {}
+    def __init__(
+        self,
+        vapid_private_key: str = "",
+        vapid_email: str = "",
+        subscriptions: dict[str, dict] | None = None,
+    ) -> None:
+        self._vapid_private_key = vapid_private_key
+        self._vapid_email = vapid_email
+        # user_id -> single Web Push subscription dict
+        self._subscriptions: dict[str, dict] = subscriptions or {}
 
     def register_subscription(self, user_id: str, subscription: dict) -> None:
-        """Register a browser push subscription for a user."""
-        self._subscriptions.setdefault(user_id, [])
-        if subscription not in self._subscriptions[user_id]:
-            self._subscriptions[user_id].append(subscription)
+        """Register (or replace) the browser push subscription for a user."""
+        self._subscriptions[user_id] = subscription
 
     def _send_push(self, subscription: dict, data: dict) -> bool:
         try:
+            from pywebpush import webpush, WebPushException
             webpush(
                 subscription_info=subscription,
                 data=json.dumps(data),
-                vapid_private_key=self.vapid_private_key,
-                vapid_claims={"sub": f"mailto:{self.vapid_email}"},
+                vapid_private_key=self._vapid_private_key,
+                vapid_claims={"sub": f"mailto:{self._vapid_email}"},
             )
             return True
-        except WebPushException:
+        except Exception:
             return False
 
     async def send(self, user_id: str, message: OutboundMessage) -> DeliveryReceipt:
-        """Send a push notification to all subscriptions for the user."""
-        subs = self._subscriptions.get(user_id, [])
-        if not subs:
+        """Send a push notification to the registered subscription for the user."""
+        if not _webpush_available():
             return DeliveryReceipt(
                 channel="push",
                 message_id=None,
                 delivered_at=_now(),
                 success=False,
                 undoable=False,
-                undo_strategy=None,
-                error=f"No push subscription registered for {user_id}",
+                error="pywebpush not installed",
             )
-        payload = {"title": "Mithra", "body": message.text, "domain": message.domain}
-        sent = any(self._send_push(sub, payload) for sub in subs)
+
+        subscription = self._subscriptions.get(user_id)
+        if not subscription:
+            return DeliveryReceipt(
+                channel="push",
+                message_id=None,
+                delivered_at=_now(),
+                success=False,
+                undoable=False,
+                error=f"No subscription registered for {user_id}",
+            )
+
+        payload = {
+            "title": "Mithra",
+            "body": message.text,
+            "priority": message.priority,
+        }
+        sent = self._send_push(subscription, payload)
         return DeliveryReceipt(
             channel="push",
-            message_id=str(uuid.uuid4()),
+            message_id=str(uuid.uuid4()) if sent else None,
             delivered_at=_now(),
             success=sent,
             undoable=False,
-            undo_strategy=None,
-            error=None if sent else "Push delivery failed for all subscriptions",
+            error=None if sent else "Push delivery failed",
         )
 
     async def send_with_actions(
@@ -87,39 +113,47 @@ class PushAdapter(OutputAdapter):
         message: OutboundMessage,
         actions: list[ActionButton],
     ) -> DeliveryReceipt:
-        """Include action labels in the push payload."""
-        action_labels = [{"action": a.action, "title": a.label} for a in actions]
-        subs = self._subscriptions.get(user_id, [])
-        if not subs:
+        """Include action buttons in the push payload for PWA notification actions."""
+        if not _webpush_available():
             return DeliveryReceipt(
                 channel="push",
                 message_id=None,
                 delivered_at=_now(),
                 success=False,
                 undoable=False,
-                undo_strategy=None,
-                error=f"No push subscription registered for {user_id}",
+                error="pywebpush not installed",
             )
+
+        subscription = self._subscriptions.get(user_id)
+        if not subscription:
+            return DeliveryReceipt(
+                channel="push",
+                message_id=None,
+                delivered_at=_now(),
+                success=False,
+                undoable=False,
+                error=f"No subscription registered for {user_id}",
+            )
+
         payload = {
             "title": "Mithra",
             "body": message.text,
-            "domain": message.domain,
-            "actions": action_labels,
+            "priority": message.priority,
+            "actions": [{"action": a.action, "title": a.label} for a in actions],
         }
-        sent = any(self._send_push(sub, payload) for sub in subs)
+        sent = self._send_push(subscription, payload)
         return DeliveryReceipt(
             channel="push",
-            message_id=str(uuid.uuid4()),
+            message_id=str(uuid.uuid4()) if sent else None,
             delivered_at=_now(),
             success=sent,
             undoable=False,
-            undo_strategy=None,
         )
 
     async def send_stream(
         self, user_id: str, stream: AsyncGenerator[str, None]
     ) -> DeliveryReceipt:
-        """Collect stream and send as a single push."""
+        """Buffer stream then send as a single push when complete."""
         text = ""
         async for chunk in stream:
             text += chunk
@@ -131,8 +165,9 @@ class PushAdapter(OutputAdapter):
 
     def health(self) -> dict:
         """Return push adapter health."""
+        available = _webpush_available()
         return {
-            "status": "ok",
-            "registered_users": len(self._subscriptions),
-            "total_subscriptions": sum(len(v) for v in self._subscriptions.values()),
+            "status": "ok" if available else "degraded",
+            "registered_subscriptions": len(self._subscriptions),
+            "pywebpush_available": available,
         }
