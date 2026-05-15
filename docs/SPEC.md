@@ -211,12 +211,25 @@ members:
     device_ids: [phone_nikitha]
     is_admin: true
     notification_channel: telegram
+    calendar_provider: google
   - user_id: person_b
-    display_name: Partner
-    device_ids: [phone_partner]
+    display_name: Wife
+    device_ids: [phone_wife]
     is_admin: false
     notification_channel: telegram
+    calendar_provider: google
 ```
+
+## Household device profile (confirmed May 2026)
+- person_a (Nikitha): Android, Google Calendar, Telegram
+- person_b (Wife): iPhone, Apple Calendar + Google sync confirmed
+  calendar_provider: google — writes appear in Apple Calendar automatically
+  notification_channel: telegram
+- Shared hardware: Google Home Mini, Samsung Family Hub fridge
+- Incoming: Fire HD 8/10 tablet, ESP32-S3-BOX-3
+- Single CalendarAdapter (Google API) covers both users ✅
+- Single notification channel (Telegram) covers both users ✅
+- No APNs required, no iCloud CalDAV adapter needed ✅
 
 ---
 
