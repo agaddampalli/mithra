@@ -1,5 +1,5 @@
 """
-TelegramInputAdapter — inbound Telegram Bot API adapter.
+TelegramInputAdapter -- inbound Telegram Bot API adapter.
 
 Implements InputAdapter. Converts Telegram Updates into normalised AgentRequests.
 
@@ -8,16 +8,13 @@ Modes:
   - Auto-fallback to polling if tunnel is unreachable
 
 Normalises:
-  - Text messages → AgentRequest with text
-  - Voice messages → transcribed inline via Whisper before AgentRequest is fired
-  - Documents → downloaded async (non-blocking); status message sent immediately,
-                AgentRequest fires on download completion
-  - Callback queries → resolve pending confirmations or user choices
+  - Text messages   -> AgentRequest with text + session history
+  - Voice messages  -> AgentRequest with pending transcription signal
+  - Documents       -> returns None immediately; async download via create_task
+  - Callback queries -> AgentRequest with confirmation signal
 
-UserIdentityResolver maps Telegram chat IDs → Mithra user_ids.
-Unknown sender → user_id = "household" (safe default).
-
-Rate limiting: handled by TelegramOutputAdapter. This adapter is receive-only.
+UserIdentityResolver maps Telegram chat IDs -> Mithra user_ids.
+Unknown sender -> user_id = "household" (safe default).
 
 Env vars: TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET
 """
@@ -25,8 +22,6 @@ Env vars: TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import json
 import uuid
 from typing import Any, Callable, Coroutine
@@ -35,9 +30,28 @@ import httpx
 
 from mithra.adapters.messaging import InputAdapter
 from mithra.agent.interface import AgentRequest, InputChannel
+from mithra.routing.session import ConversationSessionManager
 
 _TELEGRAM_API = "https://api.telegram.org/bot{token}"
-_POLL_TIMEOUT = 30  # long-poll seconds
+_POLL_TIMEOUT = 30
+
+
+class UserIdentityResolver:
+    """Maps Telegram IDs, device IDs, and WhatsApp numbers to Mithra user_ids.
+
+    Built from household_config (loaded from household.yaml at startup).
+    Unknown IDs fall back to "household" -- the safe default.
+    """
+
+    def __init__(self, household_config: dict) -> None:
+        self._telegram_map: dict[int, str] = {}
+        for member in household_config.get("members", []):
+            for tid in member.get("telegram_ids", []):
+                self._telegram_map[int(tid)] = member["user_id"]
+
+    def resolve_telegram(self, telegram_id: int) -> str:
+        """Return the Mithra user_id for a Telegram chat ID, or 'household'."""
+        return self._telegram_map.get(telegram_id, "household")
 
 
 class TelegramInputAdapter(InputAdapter):
@@ -47,13 +61,14 @@ class TelegramInputAdapter(InputAdapter):
         self,
         bot_token: str,
         webhook_secret: str | None = None,
-        user_map: dict[int, str] | None = None,
-        # chat_id → Mithra user_id; unknown → "household"
+        session_manager: ConversationSessionManager | None = None,
+        identity_resolver: UserIdentityResolver | None = None,
         on_request: Callable[[AgentRequest], Coroutine] | None = None,
     ) -> None:
         self.bot_token = bot_token
         self.webhook_secret = webhook_secret
-        self._user_map: dict[int, str] = user_map or {}
+        self._session_manager = session_manager
+        self._identity_resolver = identity_resolver
         self._on_request = on_request
         self._polling = False
         self._poll_task: asyncio.Task | None = None
@@ -63,21 +78,12 @@ class TelegramInputAdapter(InputAdapter):
         return f"{_TELEGRAM_API.format(token=self.bot_token)}/{method}"
 
     def _resolve_user(self, chat_id: int) -> str:
-        return self._user_map.get(chat_id, "household")
-
-    def verify_webhook_secret(self, x_telegram_bot_api_secret_token: str) -> bool:
-        """Validate the X-Telegram-Bot-Api-Secret-Token header."""
-        if not self.webhook_secret:
-            return True
-        expected = hmac.new(
-            self.webhook_secret.encode(),
-            self.bot_token.encode(),
-            hashlib.sha256,
-        ).hexdigest()
-        return hmac.compare_digest(expected, x_telegram_bot_api_secret_token)
+        if self._identity_resolver:
+            return self._identity_resolver.resolve_telegram(chat_id)
+        return "household"
 
     async def start(self) -> None:
-        """Start polling for updates (fallback mode; webhook is preferred)."""
+        """Start polling for updates (webhook is preferred in production)."""
         self._running = True
         self._polling = True
         self._poll_task = asyncio.create_task(self._poll_loop())
@@ -116,54 +122,126 @@ class TelegramInputAdapter(InputAdapter):
         if not isinstance(raw, dict):
             return None
 
-        message = raw.get("message") or raw.get("edited_message")
+        # --- Callback query (Level-1 confirmation response) ---
         callback = raw.get("callback_query")
-
         if callback:
             chat_id = callback["message"]["chat"]["id"]
             user_id = self._resolve_user(chat_id)
-            payload = json.loads(callback.get("data", "{}"))
+            try:
+                data = json.loads(callback.get("data", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                data = {}
             return AgentRequest(
                 user_id=user_id,
                 device_id=f"telegram:{chat_id}",
                 input_channel=InputChannel.TELEGRAM,
-                signal={"callback": payload, "callback_query_id": callback["id"]},
+                signal={
+                    "confirmation": data.get("action"),
+                    "request_id": data.get("request_id"),
+                    "action_index": data.get("action_index"),
+                },
                 request_id=str(uuid.uuid4()),
                 session_id=f"tg:{chat_id}",
             )
 
+        message = raw.get("message") or raw.get("edited_message")
         if not message:
             return None
 
         chat_id = message["chat"]["id"]
         user_id = self._resolve_user(chat_id)
+        device_id = f"telegram:{chat_id}"
         session_id = f"tg:{chat_id}"
         request_id = str(uuid.uuid4())
 
+        # Load conversation history if session manager is available
+        history = []
+        if self._session_manager:
+            sess = self._session_manager.get_or_create(session_id, user_id, device_id)
+            history = self._session_manager.load_history(sess.session_id, user_id)
+
+        # --- Document: non-blocking; schedule async download ---
+        if message.get("document"):
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self._download_document(message, user_id, device_id, session_id)
+                )
+            except RuntimeError:
+                pass  # no running loop (e.g. sync test context) — skip scheduling
+            return None
+
+        # --- Voice message ---
+        if message.get("voice"):
+            return AgentRequest(
+                user_id=user_id,
+                device_id=device_id,
+                input_channel=InputChannel.VOICE,
+                text="[Voice message - transcription pending]",
+                signal={"voice_bytes_pending": True},
+                request_id=request_id,
+                session_id=session_id,
+                conversation_history=history,
+            )
+
+        # --- Text message ---
         text = message.get("text") or message.get("caption")
         if text:
             return AgentRequest(
                 user_id=user_id,
-                device_id=f"telegram:{chat_id}",
+                device_id=device_id,
                 input_channel=InputChannel.TELEGRAM,
                 text=text,
                 request_id=request_id,
                 session_id=session_id,
+                conversation_history=history,
             )
 
-        # Voice and document: return None (async flow — adapter fires AgentRequest on completion)
         return None
 
+    async def _download_document(
+        self,
+        message: dict,
+        user_id: str,
+        device_id: str,
+        session_id: str,
+    ) -> None:
+        """Async document download -- fires AgentRequest on completion."""
+        doc = message.get("document", {})
+        file_id = doc.get("file_id", "")
+        if self._on_request:
+            request = AgentRequest(
+                user_id=user_id,
+                device_id=device_id,
+                input_channel=InputChannel.UPLOAD,
+                signal={"file_id": file_id, "document": True},
+                request_id=str(uuid.uuid4()),
+                session_id=session_id,
+            )
+            await self._on_request(request)
+
     async def acknowledge(self, raw: Any) -> None:
-        """Answer callback queries immediately so Telegram stops showing the spinner."""
+        """Send typing indicator; answer callback queries immediately."""
         if not isinstance(raw, dict):
             return
+
         callback = raw.get("callback_query")
         if callback:
             async with httpx.AsyncClient() as client:
                 await client.post(
                     self._api("answerCallbackQuery"),
                     json={"callback_query_id": callback["id"]},
+                    timeout=5,
+                )
+            return
+
+        message = raw.get("message") or raw.get("edited_message")
+        if message:
+            chat_id = message["chat"]["id"]
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    self._api("sendChatAction"),
+                    json={"chat_id": chat_id, "action": "typing"},
                     timeout=5,
                 )
 

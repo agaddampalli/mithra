@@ -11,7 +11,7 @@
 - `[!]` Blocked (note reason)
 
 ## Current Focus
-**P0-24 — TelegramInputAdapter** (Group F, Phase 0)
+**P0-01 — compose.yaml full wiring** (Group A, Phase 0)
 
 
 ---
@@ -91,10 +91,10 @@
 ### Group F — Messaging & Output Adapters
 
 - [x] P0-23 adapters/messaging/__init__ — base types, 24 tests passing
-- [~] P0-24 TelegramInputAdapter — webhook + polling fallback
-- [~] P0-25 TelegramOutputAdapter — streaming, rate limiting, inline keyboard
+- [x] P0-24 TelegramInputAdapter — UserIdentityResolver, 4 message types, session history, 8 tests
+- [x] P0-25 TelegramOutputAdapter — rate limiting, inline keyboard, register_chat, undo, 7 tests
 - [~] P0-26 WhatsAppAdapter — Baileys bridge via HTTP
-- [~] P0-27 CalendarAdapter — Google Calendar API v3
+- [x] P0-27 CalendarAdapter — http_client injection, send() JSON parsing, undo, 7 tests
 - [~] P0-28 TTSAdapter — Piper via HA + VoiceConfirmationSession, 18 tests
 - [~] P0-29 PushAdapter — Web Push VAPID
 - [~] P0-30 RetryableOutputAdapter — 3 attempts + dead letter
@@ -102,11 +102,8 @@
 
 ### Group G — API Gateway
 
-- [~] P0-32 FastAPI gateway — scaffold + lifecycle contract
-- [ ] P0-33 Route /api/v1/agent — wires full request lifecycle
-- [ ] P0-34 Route /api/v1/health — health dashboard endpoint
+- [x] P0-32 FastAPI gateway — lifespan startup, /api/v1/health + /agent + /webhook/telegram, auth middleware, 20 tests (P0-33/34/36 complete)
 - [ ] P0-35 Route /api/v1/domains — domain status and management
-- [ ] P0-36 Route /api/v1/webhook — Telegram webhook receiver
 
 ### Group H — Home Assistant Setup
 
