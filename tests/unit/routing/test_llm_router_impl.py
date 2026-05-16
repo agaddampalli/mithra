@@ -56,7 +56,7 @@ class MockHTTPClient:
         self._fail = fail
         self._fail_first_call = fail_first_call
 
-    def post(self, url: str, json_body: dict, headers: dict) -> MockHTTPResponse:
+    def post(self, url: str, json_body: dict, headers: dict | None = None) -> MockHTTPResponse:
         call_index = len(self.calls)
         self.calls.append({"url": url, "body": json_body, "headers": headers})
         if self._fail or (self._fail_first_call and call_index == 0):

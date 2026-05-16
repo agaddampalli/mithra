@@ -245,13 +245,19 @@ def _fit_context(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 class _DefaultHTTPClient:
-    def post(self, url: str, json_body: dict, headers: dict) -> Any:
-        resp = _requests.post(url, json=json_body, headers=headers, timeout=30)
+    def __init__(self, base_headers: dict | None = None) -> None:
+        self._base_headers = {"Content-Type": "application/json", **(base_headers or {})}
+
+    def _headers(self, extra: dict | None = None) -> dict:
+        return {**self._base_headers, **(extra or {})}
+
+    def post(self, url: str, json_body: dict, headers: dict | None = None) -> Any:
+        resp = _requests.post(url, json=json_body, headers=self._headers(headers), timeout=30)
         resp.raise_for_status()
         return resp
 
-    def get(self, url: str, headers: dict) -> Any:
-        resp = _requests.get(url, headers=headers, timeout=10)
+    def get(self, url: str, headers: dict | None = None) -> Any:
+        resp = _requests.get(url, headers=self._headers(headers), timeout=10)
         resp.raise_for_status()
         return resp
 
@@ -277,8 +283,14 @@ class LiteLLMRouterAdapter(LLMRouter):
         self._base_url = base_url.rstrip("/")
         self._sanitiser = sanitiser or DataSanitiser()
         self._storage = storage_adapter
-        self._http = http_client or _DefaultHTTPClient()
-        self._litellm_key = os.environ.get("LITELLM_MASTER_KEY", "")
+        if http_client is not None:
+            self._http = http_client
+        else:
+            litellm_key = os.environ.get("LITELLM_MASTER_KEY", "")
+            base_headers: dict[str, str] = {}
+            if litellm_key:
+                base_headers["Authorization"] = f"Bearer {litellm_key}"
+            self._http = _DefaultHTTPClient(base_headers=base_headers)
 
     # ------------------------------------------------------------------
     # complete
@@ -469,11 +481,7 @@ class LiteLLMRouterAdapter(LLMRouter):
         ok = False
         error: str | None = None
         try:
-            url = f"{self._base_url}/health"
-            headers = {"Content-Type": "application/json"}
-            if self._litellm_key:
-                headers["Authorization"] = f"Bearer {self._litellm_key}"
-            self._http.get(url, headers=headers)
+            self._http.get(f"{self._base_url}/health")
             ok = True
         except Exception as exc:
             error = str(exc)
@@ -494,10 +502,7 @@ class LiteLLMRouterAdapter(LLMRouter):
         body: dict[str, Any] = {"model": model, "messages": messages}
         if tools:
             body["tools"] = tools
-        headers = {"Content-Type": "application/json"}
-        if self._litellm_key:
-            headers["Authorization"] = f"Bearer {self._litellm_key}"
-        return self._http.post(url, json_body=body, headers=headers)
+        return self._http.post(url, json_body=body)
 
     def _parse_response(self, raw: Any) -> tuple[str, int, int]:
         data = raw.json() if hasattr(raw, "json") else raw
