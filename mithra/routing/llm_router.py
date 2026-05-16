@@ -283,14 +283,8 @@ class LiteLLMRouterAdapter(LLMRouter):
         self._base_url = base_url.rstrip("/")
         self._sanitiser = sanitiser or DataSanitiser()
         self._storage = storage_adapter
-        if http_client is not None:
-            self._http = http_client
-        else:
-            litellm_key = os.environ.get("LITELLM_MASTER_KEY", "")
-            base_headers: dict[str, str] = {}
-            if litellm_key:
-                base_headers["Authorization"] = f"Bearer {litellm_key}"
-            self._http = _DefaultHTTPClient(base_headers=base_headers)
+        self._litellm_key = os.environ.get("LITELLM_MASTER_KEY", "")
+        self._http = http_client or _DefaultHTTPClient()
 
     # ------------------------------------------------------------------
     # complete
@@ -481,7 +475,10 @@ class LiteLLMRouterAdapter(LLMRouter):
         ok = False
         error: str | None = None
         try:
-            self._http.get(f"{self._base_url}/health")
+            headers = {"Content-Type": "application/json"}
+            if self._litellm_key:
+                headers["Authorization"] = f"Bearer {self._litellm_key}"
+            self._http.get(f"{self._base_url}/health", headers=headers)
             ok = True
         except Exception as exc:
             error = str(exc)
@@ -502,7 +499,10 @@ class LiteLLMRouterAdapter(LLMRouter):
         body: dict[str, Any] = {"model": model, "messages": messages}
         if tools:
             body["tools"] = tools
-        return self._http.post(url, json_body=body)
+        headers = {"Content-Type": "application/json"}
+        if self._litellm_key:
+            headers["Authorization"] = f"Bearer {self._litellm_key}"
+        return self._http.post(url, json_body=body, headers=headers)
 
     def _parse_response(self, raw: Any) -> tuple[str, int, int]:
         data = raw.json() if hasattr(raw, "json") else raw
