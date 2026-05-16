@@ -168,7 +168,7 @@ services:
       - whatsapp-sessions:/sessions/whatsapp
       - ./services/whatsapp-bridge:/app
     working_dir: /app
-    command: ["node", "index.js"]
+    command: sh -c "npm install && node index.js"
     environment:
       - SESSION_PATH=/sessions/whatsapp
       - PORT=3000

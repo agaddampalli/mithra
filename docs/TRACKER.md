@@ -94,6 +94,7 @@
 - [x] P0-24 TelegramInputAdapter — UserIdentityResolver, 4 message types, session history, 8 tests
 - [x] P0-25 TelegramOutputAdapter — rate limiting, inline keyboard, register_chat, undo, 7 tests
 - [x] P0-26 WhatsAppAdapter — Baileys bridge via HTTP, register_phone, numbered actions, 12 tests
+  - whatsapp-bridge/index.js created — scan QR on first start
 - [x] P0-27 CalendarAdapter — http_client injection, send() JSON parsing, undo, 7 tests
 - [x] P0-28 TTSAdapter — Piper via HA + VoiceConfirmationSession, speak/stream/send_with_actions, 28 tests
 - [x] P0-29 PushAdapter — Web Push VAPID, lazy pywebpush import, graceful degradation, 10 tests
