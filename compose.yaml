@@ -12,6 +12,7 @@ services:
       - MITHRA_STORAGE_DIR=/data/mithra/files
       - MITHRA_DB_DIR=/data/mithra
       - LITELLM_BASE_URL=http://llm-router:4000
+      - LITELLM_MASTER_KEY=${SECRET_KEY}
       - AUTONOMY_CONFIG_PATH=/app/services/autonomy/autonomy.yaml
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET}
