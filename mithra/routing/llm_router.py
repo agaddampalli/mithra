@@ -250,6 +250,11 @@ class _DefaultHTTPClient:
         resp.raise_for_status()
         return resp
 
+    def get(self, url: str, headers: dict) -> Any:
+        resp = _requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        return resp
+
 
 # ---------------------------------------------------------------------------
 # LiteLLMRouterAdapter
@@ -464,7 +469,11 @@ class LiteLLMRouterAdapter(LLMRouter):
         ok = False
         error: str | None = None
         try:
-            self._call("ollama/phi3-mini", [{"role": "user", "content": "ping"}], None)
+            url = f"{self._base_url}/health"
+            headers = {"Content-Type": "application/json"}
+            if self._litellm_key:
+                headers["Authorization"] = f"Bearer {self._litellm_key}"
+            self._http.get(url, headers=headers)
             ok = True
         except Exception as exc:
             error = str(exc)
