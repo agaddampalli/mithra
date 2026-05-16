@@ -33,6 +33,7 @@ Below threshold → classify_intent() returns None. Caller creates Clarification
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -272,6 +273,7 @@ class LiteLLMRouterAdapter(LLMRouter):
         self._sanitiser = sanitiser or DataSanitiser()
         self._storage = storage_adapter
         self._http = http_client or _DefaultHTTPClient()
+        self._litellm_key = os.environ.get("LITELLM_MASTER_KEY", "")
 
     # ------------------------------------------------------------------
     # complete
@@ -483,7 +485,10 @@ class LiteLLMRouterAdapter(LLMRouter):
         body: dict[str, Any] = {"model": model, "messages": messages}
         if tools:
             body["tools"] = tools
-        return self._http.post(url, json_body=body, headers={"Content-Type": "application/json"})
+        headers = {"Content-Type": "application/json"}
+        if self._litellm_key:
+            headers["Authorization"] = f"Bearer {self._litellm_key}"
+        return self._http.post(url, json_body=body, headers=headers)
 
     def _parse_response(self, raw: Any) -> tuple[str, int, int]:
         data = raw.json() if hasattr(raw, "json") else raw
