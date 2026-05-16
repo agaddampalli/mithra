@@ -73,9 +73,7 @@ def _build_storage_router(household_config: dict, tmp_dir: str | None = None):
 
     enc_key = os.environ.get("MITHRA_ENCRYPTION_KEY", "")
     if enc_key:
-        import base64
-        raw_key = base64.b64decode(enc_key)
-        cipher = AESGCMCipher(raw_key)
+        cipher = AESGCMCipher(enc_key)
         encrypted_local = EncryptedStorageAdapter(local, cipher)
     else:
         encrypted_local = local  # dev fallback
