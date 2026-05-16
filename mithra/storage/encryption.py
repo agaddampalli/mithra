@@ -34,7 +34,8 @@ class AESGCMCipher:
         Args:
             key_b64: Base64-encoded 32-byte encryption key from MITHRA_ENCRYPTION_KEY.
         """
-        self._key = base64.b64decode(key_b64)
+        padded = key_b64 + "=" * (-len(key_b64) % 4)
+        self._key = base64.b64decode(padded)
         if len(self._key) != 32:
             raise ValueError("Encryption key must be 32 bytes (base64-encoded).")
         self._aesgcm = AESGCM(self._key)
