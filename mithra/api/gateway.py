@@ -104,9 +104,9 @@ def _build_domain_router(storage_router, household_config: dict):
     from mithra.routing.domain_router import DefaultDomainMemoryRouter
     from mithra.memory.context_cache import ContextCache
 
-    # Use local adapter for session/observability storage
-    default_adapter = storage_router._local
-    cache = ContextCache(default_adapter)
+    db_dir = os.environ.get("MITHRA_DB_DIR", "/data/mithra")
+    cache_db_path = os.path.join(db_dir, "context_cache.db")
+    cache = ContextCache(cache_db_path)
     domain_router = DefaultDomainMemoryRouter(
         storage_router=storage_router,
         context_cache=cache,
