@@ -27,8 +27,6 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     volumes:
       - mithra-data:/data/mithra
-      - ./household.yaml:/app/household.yaml:ro
-      - ./services:/app/services:ro
     depends_on:
       - llm-router
       - vector-store

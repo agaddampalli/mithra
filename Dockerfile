@@ -6,6 +6,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+COPY household.yaml /app/household.yaml
+COPY services/ /app/services/
 
 EXPOSE 8000
 
