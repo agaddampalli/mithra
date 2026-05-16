@@ -103,13 +103,17 @@ def _build_storage_router(household_config: dict, tmp_dir: str | None = None):
 def _build_domain_router(storage_router, household_config: dict):
     from mithra.routing.domain_router import DefaultDomainMemoryRouter
     from mithra.memory.context_cache import ContextCache
+    from mithra.memory.structured_store import StructuredStore
 
     db_dir = os.environ.get("MITHRA_DB_DIR", "/data/mithra")
     cache_db_path = os.path.join(db_dir, "context_cache.db")
+    structured_db_path = os.path.join(db_dir, "structured_store.db")
     cache = ContextCache(cache_db_path)
+    structured_store = StructuredStore(structured_db_path)
     domain_router = DefaultDomainMemoryRouter(
         storage_router=storage_router,
         context_cache=cache,
+        structured_store=structured_store,
         household_config=household_config,
     )
     return domain_router, cache

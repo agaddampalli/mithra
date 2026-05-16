@@ -6,3 +6,5 @@ sessions/
 *.db
 node_modules/
 .pytest_cache/
+.env.local
+tmp/
