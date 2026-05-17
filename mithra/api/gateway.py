@@ -29,6 +29,7 @@ Exposed at api.mithra-app.com via the Cloudflare tunnel.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Any
@@ -204,6 +205,7 @@ async def lifespan(app: FastAPI):
             webhook_secret=webhook_secret,
             session_manager=session_mgr,
             identity_resolver=identity_resolver,
+            on_request=_process_request,
         )
         telegram_output = TelegramOutputAdapter(bot_token=bot_token)
 
@@ -213,6 +215,8 @@ async def lifespan(app: FastAPI):
         _state["telegram_input"] = telegram_input
         _state["telegram_output"] = telegram_output
         _state["session_mgr"] = session_mgr
+
+        asyncio.create_task(telegram_input.start())
 
     yield
 
