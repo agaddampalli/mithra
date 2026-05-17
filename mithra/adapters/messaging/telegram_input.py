@@ -68,6 +68,7 @@ class UserIdentityResolver:
         self._storage = storage_adapter
         self._telegram_map: dict[int, str] = {}
         self._device_map: dict[str, str] = {}
+        self._blocked: set[int] = set()
         for member in household_config.get("members", []):
             uid = member["user_id"]
             tids = member.get("telegram_ids", [])
@@ -101,7 +102,7 @@ class UserIdentityResolver:
             self._load_from_storage()
 
     def _load_from_storage(self) -> None:
-        """Load saved Telegram ID → user_id mappings from storage."""
+        """Load saved Telegram ID → user_id mappings and blocked IDs from storage."""
         try:
             records = self._storage.list("identity", "state", "household")
             for record in records:
@@ -109,6 +110,8 @@ class UserIdentityResolver:
                     self._telegram_map[int(record.data["telegram_id"])] = (
                         record.data["user_id"]
                     )
+                elif record.data.get("type") == "blocked":
+                    self._blocked.add(int(record.data["telegram_id"]))
         except Exception:
             pass
 
@@ -132,8 +135,26 @@ class UserIdentityResolver:
                 updated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             ))
 
+    def block(self, telegram_id: int) -> None:
+        """Permanently block a telegram_id. Blocked users are rejected even if in telegram_map."""
+        self._blocked.add(telegram_id)
+        if self._storage:
+            import datetime
+            from mithra.storage.adapter import StorageRecord
+            self._storage.write(StorageRecord(
+                domain="identity",
+                key=f"blocked:{telegram_id}",
+                layer="state",
+                data={"type": "blocked", "telegram_id": telegram_id},
+                user_id="household",
+                version=1,
+                updated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            ))
+
     def is_authorized(self, telegram_id: int) -> bool:
-        """Return True only if this telegram_id is registered to a known household member."""
+        """Return True only if this telegram_id is a known member and not blocked."""
+        if telegram_id in self._blocked:
+            return False
         return telegram_id in self._telegram_map
 
     def get_members(self) -> list[dict]:
@@ -265,9 +286,20 @@ class TelegramInputAdapter(InputAdapter):
         if not is_start and not is_register_callback:
             if self._identity_resolver and not self._identity_resolver.is_authorized(chat_id):
                 logger.warning("Rejected unauthorized Telegram user: chat_id=%d", chat_id)
+                first_name = ""
+                username = ""
+                msg_text = ""
+                if message:
+                    sender = message.get("from", {})
+                    first_name = sender.get("first_name", "")
+                    username = sender.get("username", "")
+                    msg_text = message.get("text", "")
                 try:
                     loop = asyncio.get_running_loop()
                     loop.create_task(self._reject_unauthorized(chat_id))
+                    loop.create_task(self._notify_admin_of_unknown_user(
+                        chat_id, first_name, username, msg_text,
+                    ))
                 except RuntimeError:
                     pass
                 return None
@@ -323,13 +355,47 @@ class TelegramInputAdapter(InputAdapter):
 
         # --- Generic callback (Level-1 confirmation response) ---
         if callback:
+            action = cb_data.get("action")
+
+            # Admin approve — register the pending user as household member
+            if action == "admin_allow":
+                allowed_id = int(cb_data["telegram_id"])
+                first_name = cb_data.get("first_name", "Unknown")
+                if self._identity_resolver:
+                    self._identity_resolver.register(allowed_id, "household")
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self._confirm_admin_action(
+                        chat_id,
+                        f"✅ {first_name} ({allowed_id}) has been allowed.",
+                    ))
+                    loop.create_task(self._notify_allowed_user(allowed_id))
+                except RuntimeError:
+                    pass
+                return None
+
+            # Admin deny — block the user permanently
+            if action == "admin_block":
+                blocked_id = int(cb_data["telegram_id"])
+                if self._identity_resolver:
+                    self._identity_resolver.block(blocked_id)
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self._confirm_admin_action(
+                        chat_id,
+                        f"❌ User {blocked_id} has been blocked.",
+                    ))
+                except RuntimeError:
+                    pass
+                return None
+
             user_id = self._resolve_user(chat_id)
             return AgentRequest(
                 user_id=user_id,
                 device_id=f"telegram:{chat_id}",
                 input_channel=InputChannel.TELEGRAM,
                 signal={
-                    "confirmation": cb_data.get("action"),
+                    "confirmation": action,
                     "request_id": cb_data.get("request_id"),
                     "action_index": cb_data.get("action_index"),
                 },
@@ -404,6 +470,85 @@ class TelegramInputAdapter(InputAdapter):
                             "If you're a household member, "
                             "please ask the admin to add you."
                         ),
+                    },
+                    timeout=5,
+                )
+        except Exception:
+            pass
+
+    async def _notify_admin_of_unknown_user(
+        self,
+        chat_id: int,
+        first_name: str,
+        username: str,
+        message_text: str,
+    ) -> None:
+        """Notify the admin when an unknown user attempts access, with Allow/Block buttons."""
+        admin_id_str = os.environ.get("MITHRA_ADMIN_TELEGRAM_ID")
+        if not admin_id_str:
+            return
+        try:
+            keyboard = {
+                "inline_keyboard": [[
+                    {
+                        "text": "✅ Allow",
+                        "callback_data": json.dumps({
+                            "action": "admin_allow",
+                            "telegram_id": chat_id,
+                            "first_name": first_name,
+                        }),
+                    },
+                    {
+                        "text": "❌ Block",
+                        "callback_data": json.dumps({
+                            "action": "admin_block",
+                            "telegram_id": chat_id,
+                        }),
+                    },
+                ]]
+            }
+            text = (
+                f"⚠️ Unknown user tried to access Mithra\n\n"
+                f"Name: {first_name}\n"
+                f"Username: @{username or 'none'}\n"
+                f"Telegram ID: {chat_id}\n"
+                f"Message: '{message_text[:50]}'\n\n"
+                f"Do you want to allow this person?"
+            )
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    self._api("sendMessage"),
+                    json={
+                        "chat_id": int(admin_id_str),
+                        "text": text,
+                        "reply_markup": keyboard,
+                    },
+                    timeout=5,
+                )
+        except Exception:
+            pass
+
+    async def _confirm_admin_action(self, admin_chat_id: int, text: str) -> None:
+        """Send a confirmation message back to the admin after they approve or block."""
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    self._api("sendMessage"),
+                    json={"chat_id": admin_chat_id, "text": text},
+                    timeout=5,
+                )
+        except Exception:
+            pass
+
+    async def _notify_allowed_user(self, chat_id: int) -> None:
+        """Tell a newly-allowed user that they now have access."""
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    self._api("sendMessage"),
+                    json={
+                        "chat_id": chat_id,
+                        "text": "✅ You have been granted access to Mithra. Say hello!",
                     },
                     timeout=5,
                 )

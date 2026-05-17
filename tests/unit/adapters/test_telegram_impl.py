@@ -593,3 +593,203 @@ class TestStartRateLimit:
         # Should be allowed again
         result = adapter.normalise(_start_update(chat_id=111), "telegram")
         assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# UserIdentityResolver — block()
+# ---------------------------------------------------------------------------
+
+class TestBlockedUsers:
+    def test_block_prevents_authorization(self):
+        config = {"members": [{"user_id": "person_a", "telegram_ids": [111]}]}
+        resolver = UserIdentityResolver(config)
+        assert resolver.is_authorized(111) is True
+        resolver.block(111)
+        assert resolver.is_authorized(111) is False
+
+    def test_block_unknown_id_also_rejected(self):
+        resolver = UserIdentityResolver({})
+        resolver.block(999)
+        assert resolver.is_authorized(999) is False
+
+    def test_block_persists_to_storage(self, tmp_path):
+        from mithra.storage.local import LocalStorageAdapter
+        storage = LocalStorageAdapter(str(tmp_path / "files"), str(tmp_path / "db.sqlite"))
+        resolver = UserIdentityResolver({}, storage_adapter=storage)
+        resolver.block(777)
+        records = storage.list("identity", "state", "household")
+        blocked = next((r for r in records if r.data.get("telegram_id") == 777), None)
+        assert blocked is not None
+        assert blocked.data["type"] == "blocked"
+
+    def test_blocked_ids_loaded_from_storage_on_init(self, tmp_path):
+        from mithra.storage.local import LocalStorageAdapter
+        storage = LocalStorageAdapter(str(tmp_path / "files"), str(tmp_path / "db.sqlite"))
+        r1 = UserIdentityResolver({}, storage_adapter=storage)
+        r1.block(888)
+        r2 = UserIdentityResolver({}, storage_adapter=storage)
+        assert r2.is_authorized(888) is False
+
+    def test_blocked_user_rejected_in_normalise(self):
+        config = {"members": [{"user_id": "person_a", "telegram_ids": [111]}]}
+        resolver = UserIdentityResolver(config)
+        resolver.block(111)
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        result = adapter.normalise(_text_update(chat_id=111), "telegram")
+        assert result is None
+
+    def test_non_blocked_member_still_passes(self):
+        config = {"members": [
+            {"user_id": "person_a", "telegram_ids": [111]},
+            {"user_id": "person_b", "telegram_ids": [222]},
+        ]}
+        resolver = UserIdentityResolver(config)
+        resolver.block(111)
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        result = adapter.normalise(_text_update(chat_id=222), "telegram")
+        assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# Admin approve / block callbacks
+# ---------------------------------------------------------------------------
+
+def _admin_allow_callback(admin_chat_id: int = 999, target_id: int = 555) -> dict:
+    return {
+        "update_id": 20,
+        "callback_query": {
+            "id": "cq-admin",
+            "message": {"chat": {"id": admin_chat_id}, "message_id": 100},
+            "data": json.dumps({
+                "action": "admin_allow",
+                "telegram_id": target_id,
+                "first_name": "Alice",
+            }),
+        },
+    }
+
+
+def _admin_block_callback(admin_chat_id: int = 999, target_id: int = 555) -> dict:
+    return {
+        "update_id": 21,
+        "callback_query": {
+            "id": "cq-admin-block",
+            "message": {"chat": {"id": admin_chat_id}, "message_id": 101},
+            "data": json.dumps({
+                "action": "admin_block",
+                "telegram_id": target_id,
+            }),
+        },
+    }
+
+
+class TestAdminApprove:
+    def _resolver_with_admin(self) -> UserIdentityResolver:
+        # Admin (999) is pre-authorized — mirrors MITHRA_ADMIN_TELEGRAM_ID in prod
+        config = {"members": [{"user_id": "person_a", "telegram_ids": [999]}]}
+        return UserIdentityResolver(config)
+
+    def test_admin_allow_registers_user_as_household(self):
+        resolver = self._resolver_with_admin()
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        adapter.normalise(_admin_allow_callback(admin_chat_id=999, target_id=555), "telegram")
+        assert resolver.is_authorized(555) is True
+        assert resolver.resolve_telegram(555) == "household"
+
+    def test_admin_allow_returns_none(self):
+        resolver = self._resolver_with_admin()
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        result = adapter.normalise(_admin_allow_callback(admin_chat_id=999), "telegram")
+        assert result is None
+
+    def test_admin_allow_no_resolver_does_not_crash(self):
+        adapter = _make_input_adapter()
+        result = adapter.normalise(_admin_allow_callback(), "telegram")
+        assert result is None
+
+    def test_admin_block_blocks_user(self):
+        resolver = self._resolver_with_admin()
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        adapter.normalise(_admin_block_callback(admin_chat_id=999, target_id=666), "telegram")
+        assert resolver.is_authorized(666) is False
+        # Confirm it's actually blocked, not just unknown
+        resolver.register(666, "person_a")
+        assert resolver.is_authorized(666) is False
+
+    def test_admin_block_returns_none(self):
+        resolver = self._resolver_with_admin()
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        result = adapter.normalise(_admin_block_callback(admin_chat_id=999), "telegram")
+        assert result is None
+
+    def test_admin_block_no_resolver_does_not_crash(self):
+        adapter = _make_input_adapter()
+        result = adapter.normalise(_admin_block_callback(), "telegram")
+        assert result is None
+
+    def test_allowed_user_can_send_messages_after_approval(self):
+        resolver = self._resolver_with_admin()
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        # Admin approves user 555
+        adapter.normalise(_admin_allow_callback(admin_chat_id=999, target_id=555), "telegram")
+        # 555 should now pass the auth gate
+        result = adapter.normalise(_text_update(chat_id=555), "telegram")
+        assert result is not None
+
+    def test_blocked_user_rejected_even_after_explicit_register(self):
+        resolver = self._resolver_with_admin()
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        # Admin blocks 666
+        adapter.normalise(_admin_block_callback(admin_chat_id=999, target_id=666), "telegram")
+        # Even if somehow registered, blocked takes precedence
+        resolver.register(666, "person_a")
+        result = adapter.normalise(_text_update(chat_id=666), "telegram")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _notify_admin_of_unknown_user — async (respx)
+# ---------------------------------------------------------------------------
+
+class TestAdminNotification:
+    @pytest.mark.asyncio
+    async def test_notify_admin_sends_message_with_buttons(self, monkeypatch):
+        monkeypatch.setenv("MITHRA_ADMIN_TELEGRAM_ID", "999")
+        captured: list[dict] = []
+
+        def capture(request, route):
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+        with respx.mock:
+            respx.post("https://api.telegram.org/bottest-token/sendMessage").mock(
+                side_effect=capture
+            )
+            adapter = _make_input_adapter()
+            await adapter._notify_admin_of_unknown_user(
+                chat_id=555, first_name="Alice", username="alice99", message_text="hello"
+            )
+
+        assert len(captured) == 1
+        body = captured[0]
+        assert body["chat_id"] == 999
+        assert "555" in body["text"]
+        assert "Alice" in body["text"]
+        keyboard = body["reply_markup"]["inline_keyboard"][0]
+        actions = [json.loads(btn["callback_data"])["action"] for btn in keyboard]
+        assert "admin_allow" in actions
+        assert "admin_block" in actions
+
+    @pytest.mark.asyncio
+    async def test_notify_admin_skipped_when_no_admin_id(self, monkeypatch):
+        monkeypatch.delenv("MITHRA_ADMIN_TELEGRAM_ID", raising=False)
+        captured: list[dict] = []
+
+        with respx.mock:
+            respx.post("https://api.telegram.org/bottest-token/sendMessage").mock(
+                side_effect=lambda req, route: captured.append(req) or httpx.Response(200, json={"ok": True})
+            )
+            adapter = _make_input_adapter()
+            await adapter._notify_admin_of_unknown_user(555, "", "", "")
+
+        assert len(captured) == 0
