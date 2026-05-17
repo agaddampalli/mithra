@@ -9,6 +9,25 @@ model_list:
       model: anthropic/claude-sonnet-4-6
       api_key: os.environ/ANTHROPIC_API_KEY
 
+  - model_name: gemini-flash
+    litellm_params:
+      model: gemini/gemini-1.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+# Automatic fallback chain: Anthropic → Gemini → OpenAI.
+# Triggered when a provider returns a rate-limit, quota, or service error.
+# Health domain (ollama/phi3:mini) has no fallbacks — architecture requirement.
+router_settings:
+  fallbacks:
+    - {"claude-sonnet-4-6": ["gemini-flash", "gpt-4o-mini"]}
+    - {"gemini-flash": ["gpt-4o-mini"]}
+  num_retries: 0
+
 litellm_settings:
   drop_params: true
   request_timeout: 120

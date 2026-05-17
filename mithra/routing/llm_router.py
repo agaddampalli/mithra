@@ -227,7 +227,7 @@ def _route_label(model: str, fallback_triggered: bool, task_type: TaskType) -> s
         return "fallback"
     if task_type == TaskType.HEALTH_DOMAIN:
         return "local_only"
-    if model.startswith("claude"):
+    if not model.startswith("ollama"):
         return "cloud"
     return "local"
 
@@ -327,8 +327,8 @@ class LiteLLMRouterAdapter(LLMRouter):
 
         messages = _fit_context(messages)
 
-        # Step 2 — sanitise before cloud calls
-        if model.startswith("claude"):
+        # Step 2 — sanitise before any cloud call (Anthropic, Gemini, OpenAI)
+        if not model.startswith("ollama"):
             serialised, sanitisation_report = self._sanitiser.sanitise(
                 json.dumps(messages), known_pii={}
             )
