@@ -67,6 +67,8 @@ services:
       - "11434:11434"
     volumes:
       - ollama-models:/root/.ollama
+    environment:
+      - OLLAMA_NUM_CTX=2048
     networks:
       - mithra-net
     restart: unless-stopped
