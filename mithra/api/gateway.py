@@ -446,7 +446,7 @@ async def _process_request(agent_request) -> None:
                 ActionButton(
                     label=m["display_name"],
                     action="register",
-                    payload={"user_id": m["user_id"], "action": "register"},
+                    payload={"user_id": m["user_id"]},
                 )
                 for m in members
             ]

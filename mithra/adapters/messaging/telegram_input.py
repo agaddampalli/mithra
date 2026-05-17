@@ -359,15 +359,14 @@ class TelegramInputAdapter(InputAdapter):
 
             # Admin approve — register the pending user as household member
             if action == "admin_allow":
-                allowed_id = int(cb_data["telegram_id"])
-                first_name = cb_data.get("first_name", "Unknown")
+                allowed_id = int(cb_data["id"])
                 if self._identity_resolver:
                     self._identity_resolver.register(allowed_id, "household")
                 try:
                     loop = asyncio.get_running_loop()
                     loop.create_task(self._confirm_admin_action(
                         chat_id,
-                        f"✅ {first_name} ({allowed_id}) has been allowed.",
+                        f"✅ User {allowed_id} has been allowed.",
                     ))
                     loop.create_task(self._notify_allowed_user(allowed_id))
                 except RuntimeError:
@@ -376,7 +375,7 @@ class TelegramInputAdapter(InputAdapter):
 
             # Admin deny — block the user permanently
             if action == "admin_block":
-                blocked_id = int(cb_data["telegram_id"])
+                blocked_id = int(cb_data["id"])
                 if self._identity_resolver:
                     self._identity_resolver.block(blocked_id)
                 try:
@@ -488,21 +487,22 @@ class TelegramInputAdapter(InputAdapter):
         if not admin_id_str:
             return
         try:
+            # Keep callback_data under Telegram's 64-byte limit.
+            # first_name is visible in the message text — no need to repeat it.
             keyboard = {
                 "inline_keyboard": [[
                     {
                         "text": "✅ Allow",
                         "callback_data": json.dumps({
                             "action": "admin_allow",
-                            "telegram_id": chat_id,
-                            "first_name": first_name,
+                            "id": chat_id,
                         }),
                     },
                     {
                         "text": "❌ Block",
                         "callback_data": json.dumps({
                             "action": "admin_block",
-                            "telegram_id": chat_id,
+                            "id": chat_id,
                         }),
                     },
                 ]]

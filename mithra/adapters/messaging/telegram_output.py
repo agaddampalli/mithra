@@ -173,8 +173,10 @@ class TelegramOutputAdapter(OutputAdapter):
                 [
                     {
                         "text": a.label,
+                        # Flat structure so normalise() can read top-level keys directly.
+                        # Telegram enforces a 64-byte limit on callback_data.
                         "callback_data": json.dumps(
-                            {"action": a.action, "payload": a.payload}
+                            {"action": a.action, **(a.payload or {})}
                         ),
                     }
                     for a in actions

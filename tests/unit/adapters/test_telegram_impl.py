@@ -660,11 +660,7 @@ def _admin_allow_callback(admin_chat_id: int = 999, target_id: int = 555) -> dic
         "callback_query": {
             "id": "cq-admin",
             "message": {"chat": {"id": admin_chat_id}, "message_id": 100},
-            "data": json.dumps({
-                "action": "admin_allow",
-                "telegram_id": target_id,
-                "first_name": "Alice",
-            }),
+            "data": json.dumps({"action": "admin_allow", "id": target_id}),
         },
     }
 
@@ -675,10 +671,7 @@ def _admin_block_callback(admin_chat_id: int = 999, target_id: int = 555) -> dic
         "callback_query": {
             "id": "cq-admin-block",
             "message": {"chat": {"id": admin_chat_id}, "message_id": 101},
-            "data": json.dumps({
-                "action": "admin_block",
-                "telegram_id": target_id,
-            }),
+            "data": json.dumps({"action": "admin_block", "id": target_id}),
         },
     }
 
@@ -776,9 +769,15 @@ class TestAdminNotification:
         assert "555" in body["text"]
         assert "Alice" in body["text"]
         keyboard = body["reply_markup"]["inline_keyboard"][0]
+        for btn in keyboard:
+            # Telegram enforces 64-byte hard limit on callback_data
+            assert len(btn["callback_data"].encode()) <= 64
         actions = [json.loads(btn["callback_data"])["action"] for btn in keyboard]
         assert "admin_allow" in actions
         assert "admin_block" in actions
+        # Verify "id" key carries the target chat_id
+        allow_btn = next(b for b in keyboard if json.loads(b["callback_data"])["action"] == "admin_allow")
+        assert json.loads(allow_btn["callback_data"])["id"] == 555
 
     @pytest.mark.asyncio
     async def test_notify_admin_skipped_when_no_admin_id(self, monkeypatch):
