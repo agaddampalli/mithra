@@ -391,7 +391,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
         receipt = None
         if engine and executor:
             try:
-                receipt = engine.process(result, executor)
+                receipt = await engine.process(result, agent_req.user_id, executor)
             except Exception:
                 pass
 
@@ -455,7 +455,7 @@ async def _process_request(agent_request) -> None:
     executor = _state.get("executor")
     if engine and executor:
         try:
-            receipt = engine.process(result, executor)
+            receipt = await engine.process(result, agent_request.user_id, executor)
             logger.info(f"Engine processed: executed={len(receipt.executed)} pending={len(receipt.pending)}")
         except Exception as e:
             logger.error(f"Engine.process failed: {e}", exc_info=True)
