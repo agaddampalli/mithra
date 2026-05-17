@@ -50,7 +50,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
+      - name: Extract metadata (api-gateway)
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -59,12 +59,50 @@ jobs:
             type=sha,format=long
             type=raw,value=latest
 
-      - name: Build and push
+      - name: Build and push api-gateway
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract metadata (llm-router)
+        id: meta-llm
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-llm-router
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+
+      - name: Build and push llm-router
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/litellm
+          push: true
+          tags: ${{ steps.meta-llm.outputs.tags }}
+          labels: ${{ steps.meta-llm.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract metadata (ollama)
+        id: meta-ollama
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-ollama
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+
+      - name: Build and push ollama
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/ollama
+          push: true
+          tags: ${{ steps.meta-ollama.outputs.tags }}
+          labels: ${{ steps.meta-ollama.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
