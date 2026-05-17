@@ -43,11 +43,14 @@ class UserIdentityResolver:
     """Maps Telegram IDs, device IDs, and WhatsApp numbers to Mithra user_ids.
 
     Built from household_config (loaded from household.yaml at startup).
-    Unknown IDs fall back to "household" -- the safe default.
+    Dynamic registrations are persisted via storage_adapter so they survive
+    restarts. Unknown IDs fall back to "household" -- the safe default.
     """
 
-    def __init__(self, household_config: dict) -> None:
+    def __init__(self, household_config: dict, storage_adapter=None) -> None:
         logger.debug("UserIdentityResolver household_config: %s", household_config)
+        self._household_config = household_config
+        self._storage = storage_adapter
         self._telegram_map: dict[int, str] = {}
         self._device_map: dict[str, str] = {}
         for member in household_config.get("members", []):
@@ -69,6 +72,45 @@ class UserIdentityResolver:
             did = shared.get("device_id", "")
             if did:
                 self._device_map[str(did)] = "household"
+        # Overlay with any previously persisted dynamic registrations
+        if storage_adapter:
+            self._load_from_storage()
+
+    def _load_from_storage(self) -> None:
+        """Load saved Telegram ID → user_id mappings from storage."""
+        try:
+            records = self._storage.list("identity", "state", "household")
+            for record in records:
+                if record.data.get("type") == "telegram_mapping":
+                    self._telegram_map[int(record.data["telegram_id"])] = (
+                        record.data["user_id"]
+                    )
+        except Exception:
+            pass
+
+    def register(self, telegram_id: int, user_id: str) -> None:
+        """Persist a new Telegram ID → user_id mapping."""
+        self._telegram_map[telegram_id] = user_id
+        if self._storage:
+            import datetime
+            from mithra.storage.adapter import StorageRecord
+            self._storage.write(StorageRecord(
+                domain="identity",
+                key=f"telegram:{telegram_id}",
+                layer="state",
+                data={
+                    "type": "telegram_mapping",
+                    "telegram_id": telegram_id,
+                    "user_id": user_id,
+                },
+                user_id="household",
+                version=1,
+                updated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            ))
+
+    def get_members(self) -> list[dict]:
+        """Return household members for the registration prompt."""
+        return self._household_config.get("members", [])
 
     def resolve_telegram(self, telegram_id: int) -> str:
         """Return the Mithra user_id for a Telegram chat ID, or 'household'."""
@@ -165,8 +207,51 @@ class TelegramInputAdapter(InputAdapter):
         if not isinstance(raw, dict):
             return None
 
-        # --- Callback query (Level-1 confirmation response) ---
+        message = raw.get("message") or raw.get("edited_message")
         callback = raw.get("callback_query")
+
+        # --- /start command — trigger self-registration flow ---
+        if message and message.get("text") == "/start":
+            chat_id = message["chat"]["id"]
+            first_name = message.get("from", {}).get("first_name", "")
+            return AgentRequest(
+                user_id="household",
+                device_id=f"telegram:{chat_id}",
+                input_channel=InputChannel.TELEGRAM,
+                text="/start",
+                signal={
+                    "registration": True,
+                    "chat_id": chat_id,
+                    "first_name": first_name,
+                },
+                request_id=str(uuid.uuid4()),
+                session_id=f"tg:{chat_id}",
+            )
+
+        # --- Registration callback (member selection button tapped) ---
+        if callback and callback.get("data"):
+            try:
+                data = json.loads(callback["data"])
+                if data.get("action") == "register":
+                    chat_id = callback["message"]["chat"]["id"]
+                    user_id = data["user_id"]
+                    if self._identity_resolver:
+                        self._identity_resolver.register(chat_id, user_id)
+                    return AgentRequest(
+                        user_id=user_id,
+                        device_id=f"telegram:{chat_id}",
+                        input_channel=InputChannel.TELEGRAM,
+                        signal={
+                            "registered": True,
+                            "user_id": user_id,
+                        },
+                        request_id=str(uuid.uuid4()),
+                        session_id=f"tg:{chat_id}",
+                    )
+            except Exception:
+                pass
+
+        # --- Callback query (Level-1 confirmation response) ---
         if callback:
             chat_id = callback["message"]["chat"]["id"]
             user_id = self._resolve_user(chat_id)
@@ -187,7 +272,6 @@ class TelegramInputAdapter(InputAdapter):
                 session_id=f"tg:{chat_id}",
             )
 
-        message = raw.get("message") or raw.get("edited_message")
         if not message:
             return None
 

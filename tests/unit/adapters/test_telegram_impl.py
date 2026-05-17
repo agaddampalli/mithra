@@ -299,3 +299,140 @@ class TestSend:
         adapter = TelegramOutputAdapter(bot_token="test-token")
         h = adapter.health()
         assert h["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# UserIdentityResolver — registration
+# ---------------------------------------------------------------------------
+
+class TestUserIdentityResolverRegistration:
+    def test_register_updates_in_memory_map(self):
+        resolver = UserIdentityResolver({})
+        resolver.register(555, "person_a")
+        assert resolver.resolve_telegram(555) == "person_a"
+
+    def test_register_overwrites_existing_mapping(self):
+        config = {"members": [{"user_id": "person_a", "telegram_ids": [111]}]}
+        resolver = UserIdentityResolver(config)
+        resolver.register(111, "person_b")
+        assert resolver.resolve_telegram(111) == "person_b"
+
+    def test_register_persists_to_storage(self, tmp_path):
+        from mithra.storage.local import LocalStorageAdapter
+        storage = LocalStorageAdapter(str(tmp_path / "files"), str(tmp_path / "db.sqlite"))
+        resolver = UserIdentityResolver({}, storage_adapter=storage)
+        resolver.register(789, "person_a")
+        records = storage.list("identity", "state", "household")
+        mapping = next((r for r in records if r.data.get("telegram_id") == 789), None)
+        assert mapping is not None
+        assert mapping.data["user_id"] == "person_a"
+
+    def test_load_from_storage_on_init(self, tmp_path):
+        from mithra.storage.local import LocalStorageAdapter
+        storage = LocalStorageAdapter(str(tmp_path / "files"), str(tmp_path / "db.sqlite"))
+        # Persist a mapping via one resolver instance
+        r1 = UserIdentityResolver({}, storage_adapter=storage)
+        r1.register(321, "person_b")
+        # New instance should load it automatically
+        r2 = UserIdentityResolver({}, storage_adapter=storage)
+        assert r2.resolve_telegram(321) == "person_b"
+
+    def test_get_members_returns_member_list(self):
+        config = {"members": [
+            {"user_id": "person_a", "display_name": "Alice"},
+            {"user_id": "person_b", "display_name": "Bob"},
+        ]}
+        resolver = UserIdentityResolver(config)
+        assert resolver.get_members() == config["members"]
+
+    def test_get_members_empty_when_no_config(self):
+        resolver = UserIdentityResolver({})
+        assert resolver.get_members() == []
+
+    def test_storage_failure_does_not_crash_init(self):
+        class BrokenStorage:
+            def list(self, *a, **kw):
+                raise RuntimeError("db exploded")
+        resolver = UserIdentityResolver({}, storage_adapter=BrokenStorage())
+        assert resolver.resolve_telegram(1) == "household"
+
+
+# ---------------------------------------------------------------------------
+# normalise() — /start and registration callback
+# ---------------------------------------------------------------------------
+
+def _start_update(chat_id: int = 111, first_name: str = "Alice") -> dict:
+    return {
+        "update_id": 10,
+        "message": {
+            "message_id": 50,
+            "chat": {"id": chat_id, "type": "private"},
+            "from": {"id": chat_id, "first_name": first_name},
+            "text": "/start",
+        },
+    }
+
+
+def _register_callback(chat_id: int = 111, user_id: str = "person_a") -> dict:
+    return {
+        "update_id": 11,
+        "callback_query": {
+            "id": "cq-reg",
+            "message": {"chat": {"id": chat_id}, "message_id": 51},
+            "data": json.dumps({"action": "register", "user_id": user_id}),
+        },
+    }
+
+
+class TestNormaliseRegistration:
+    def test_start_command_returns_registration_signal(self):
+        adapter = _make_input_adapter()
+        result = adapter.normalise(_start_update(chat_id=111, first_name="Alice"), "telegram")
+        assert isinstance(result, AgentRequest)
+        assert result.signal["registration"] is True
+        assert result.signal["chat_id"] == 111
+        assert result.signal["first_name"] == "Alice"
+
+    def test_start_command_uses_household_user_id(self):
+        adapter = _make_input_adapter()
+        result = adapter.normalise(_start_update(), "telegram")
+        assert result.user_id == "household"
+
+    def test_start_command_sets_device_id(self):
+        adapter = _make_input_adapter()
+        result = adapter.normalise(_start_update(chat_id=222), "telegram")
+        assert result.device_id == "telegram:222"
+
+    def test_register_callback_returns_registered_signal(self):
+        resolver = UserIdentityResolver(
+            {"members": [{"user_id": "person_a", "telegram_ids": []}]}
+        )
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        result = adapter.normalise(_register_callback(chat_id=111, user_id="person_a"), "telegram")
+        assert isinstance(result, AgentRequest)
+        assert result.signal["registered"] is True
+        assert result.signal["user_id"] == "person_a"
+
+    def test_register_callback_calls_resolver_register(self):
+        resolver = UserIdentityResolver({})
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        adapter.normalise(_register_callback(chat_id=555, user_id="person_b"), "telegram")
+        assert resolver.resolve_telegram(555) == "person_b"
+
+    def test_register_callback_sets_user_id_on_request(self):
+        resolver = UserIdentityResolver({})
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        result = adapter.normalise(_register_callback(chat_id=111, user_id="person_a"), "telegram")
+        assert result.user_id == "person_a"
+
+    def test_non_register_callback_still_works(self):
+        adapter = _make_input_adapter()
+        result = adapter.normalise(_callback_update(action="confirm"), "telegram")
+        assert result.signal["confirmation"] == "confirm"
+
+    def test_start_not_intercepted_as_plain_text(self):
+        adapter = _make_input_adapter()
+        result = adapter.normalise(_start_update(), "telegram")
+        # Must be the registration path, not a plain text AgentRequest
+        assert result.signal.get("registration") is True
+        assert result.signal.get("chat_id") is not None

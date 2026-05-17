@@ -200,7 +200,11 @@ async def lifespan(app: FastAPI):
         )
         from mithra.adapters.messaging.telegram_output import TelegramOutputAdapter
 
-        identity_resolver = UserIdentityResolver(household_config)
+        identity_resolver = UserIdentityResolver(
+            household_config,
+            storage_adapter=local_adapter,
+        )
+        _state["identity_resolver"] = identity_resolver
         from mithra.routing.session import ConversationSessionManager
         session_mgr = ConversationSessionManager(
             local_adapter,
@@ -426,6 +430,49 @@ async def _process_request(agent_request) -> None:
     logger = logging.getLogger(__name__)
 
     logger.info(f"Processing request: user={agent_request.user_id} text={agent_request.text}")
+
+    signal = agent_request.signal or {}
+
+    # /start — present member selection buttons so the user can self-register
+    if signal.get("registration"):
+        telegram_output = _state.get("telegram_output")
+        household_config = _state.get("household_config", {})
+        if telegram_output:
+            from mithra.adapters.messaging import ActionButton, OutboundMessage
+            chat_id = signal.get("chat_id")
+            first_name = signal.get("first_name", "")
+            members = household_config.get("members", [])
+            actions = [
+                ActionButton(
+                    label=m["display_name"],
+                    action="register",
+                    payload={"user_id": m["user_id"], "action": "register"},
+                )
+                for m in members
+            ]
+            telegram_output.register_chat("household", chat_id)
+            await telegram_output.send_with_actions(
+                "household",
+                OutboundMessage(text=f"Hi {first_name}! Who are you?"),
+                actions,
+            )
+        return
+
+    # Registration confirmed — acknowledge and update the chat mapping
+    if signal.get("registered"):
+        telegram_output = _state.get("telegram_output")
+        if telegram_output:
+            from mithra.adapters.messaging import OutboundMessage
+            user_id = signal.get("user_id")
+            device_id = agent_request.device_id or ""
+            chat_id = int(device_id.split(":")[1]) if ":" in device_id else None
+            if chat_id:
+                telegram_output.register_chat(user_id, chat_id)
+                await telegram_output.send(
+                    user_id,
+                    OutboundMessage(text="You're all set! Say hello to Mithra."),
+                )
+        return
 
     agent = _state.get("agent")
     if not agent:
