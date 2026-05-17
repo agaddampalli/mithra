@@ -33,9 +33,12 @@ Below threshold → classify_intent() returns None. Caller creates Clarification
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import uuid
+
+logger = logging.getLogger(__name__)
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -325,15 +328,18 @@ class LiteLLMRouterAdapter(LLMRouter):
         # Step 3 — call LiteLLM
         raw: Any = None
         error_str: str | None = None
+        logger.debug("LLM call: task=%s domain=%s model=%s", task_type.value, domain, model)
         try:
             raw = self._call(model, messages, tools)
         except Exception as exc:
             error_str = str(exc)
+            logger.warning("LLM call failed: model=%s error=%s", model, error_str)
 
         # Step 4 — fallback (not allowed for health domain)
         if raw is None and route.fallback == "cloud" and domain != "health":
             fallback_triggered = True
             fallback_reason = error_str
+            logger.warning("Falling back to cloud: task=%s reason=%s", task_type.value, error_str)
             self._log_fallback(task_type, domain, error_str or "")
             model = "claude-sonnet-4-6"
             # Sanitise for the cloud fallback call
@@ -346,6 +352,7 @@ class LiteLLMRouterAdapter(LLMRouter):
                 raw = self._call(model, messages, tools)
             except Exception as exc:
                 error_str = str(exc)
+                logger.warning("Cloud fallback also failed: error=%s", error_str)
 
         latency_ms = int((time.time() - start) * 1000)
 
@@ -408,19 +415,23 @@ class LiteLLMRouterAdapter(LLMRouter):
             messages,
         )
         if not response.success:  # type: ignore[union-attr]
+            logger.warning("classify_intent LLM call failed: %s", response.error)
             return None
         try:
             data = json.loads(response.content)  # type: ignore[union-attr]
             confidence = float(data.get("confidence", 0.0))
             if confidence < 0.75:
+                logger.info("classify_intent low confidence %.2f for: %s", confidence, text[:60])
                 return None
+            logger.info("classify_intent: intent=%s confidence=%.2f", data.get("intent"), confidence)
             return IntentClassification(
                 intent=data["intent"],
                 domain=data["domain"],
                 confidence=confidence,
                 alternatives=data.get("alternatives", []),
             )
-        except (json.JSONDecodeError, KeyError, ValueError):
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            logger.warning("classify_intent parse failed: %s — raw: %.200s", exc, response.content)
             return None
 
     # ------------------------------------------------------------------

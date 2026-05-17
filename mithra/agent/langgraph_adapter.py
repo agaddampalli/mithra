@@ -159,19 +159,18 @@ class LangGraphAdapter(AgentInterface):
 
     def _node_generate_response(self, state: _GraphState) -> dict[str, Any]:
         request: AgentRequest = state["request"]
-        intent = state.get("intent", AgentIntent.SYSTEM_UNKNOWN)
-        confidence = state.get("confidence", 0.0)
         tool_result = state.get("tool_result")
         error = state.get("error")
 
-        if intent == AgentIntent.SYSTEM_CLARIFICATION_NEEDED or confidence < 0.75:
-            return {"response_text": "Could you clarify what you'd like me to do?"}
-        if error:
-            return {"response_text": f"I encountered an error: {error}"}
+        # Tool executed successfully — return its response
         if tool_result:
             return {"response_text": tool_result.get("response", "Done.")}
 
-        # No tool matched — ask LLM to draft a response
+        # Real tool execution error (not "no tool found")
+        if error:
+            return {"response_text": f"I encountered an error: {error}"}
+
+        # No tool matched or intent unclear — always try LLM first
         messages = [
             {
                 "role": "system",
@@ -190,9 +189,13 @@ class LangGraphAdapter(AgentInterface):
                 request.domain_hint or "general",
                 messages,
             )
-            return {"response_text": llm_resp.content}
-        except Exception as exc:  # noqa: BLE001
-            return {"response_text": f"I'm unable to respond right now: {exc}"}
+            if llm_resp.success and llm_resp.content:
+                return {"response_text": llm_resp.content}
+        except Exception:  # noqa: BLE001
+            pass
+
+        # LLM unavailable — fall back to clarification prompt
+        return {"response_text": "Could you clarify what you'd like me to do?"}
 
     # ------------------------------------------------------------------
     # AgentInterface public methods
