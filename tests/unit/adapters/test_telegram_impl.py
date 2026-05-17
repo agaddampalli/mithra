@@ -436,3 +436,160 @@ class TestNormaliseRegistration:
         # Must be the registration path, not a plain text AgentRequest
         assert result.signal.get("registration") is True
         assert result.signal.get("chat_id") is not None
+
+
+# ---------------------------------------------------------------------------
+# UserIdentityResolver — is_authorized
+# ---------------------------------------------------------------------------
+
+class TestIsAuthorized:
+    def test_known_id_is_authorized(self):
+        config = {"members": [{"user_id": "person_a", "telegram_ids": [111]}]}
+        resolver = UserIdentityResolver(config)
+        assert resolver.is_authorized(111) is True
+
+    def test_unknown_id_is_not_authorized(self):
+        config = {"members": [{"user_id": "person_a", "telegram_ids": [111]}]}
+        resolver = UserIdentityResolver(config)
+        assert resolver.is_authorized(999) is False
+
+    def test_empty_map_is_not_authorized(self):
+        resolver = UserIdentityResolver({})
+        assert resolver.is_authorized(111) is False
+
+    def test_registered_id_becomes_authorized(self):
+        resolver = UserIdentityResolver({})
+        assert resolver.is_authorized(555) is False
+        resolver.register(555, "person_b")
+        assert resolver.is_authorized(555) is True
+
+    def test_admin_id_from_env_is_authorized(self, monkeypatch):
+        monkeypatch.setenv("MITHRA_ADMIN_TELEGRAM_ID", "12345")
+        resolver = UserIdentityResolver({})
+        assert resolver.is_authorized(12345) is True
+
+    def test_admin_id_from_env_maps_to_person_a(self, monkeypatch):
+        monkeypatch.setenv("MITHRA_ADMIN_TELEGRAM_ID", "99999")
+        resolver = UserIdentityResolver({})
+        assert resolver.resolve_telegram(99999) == "person_a"
+
+    def test_invalid_admin_id_does_not_crash(self, monkeypatch):
+        monkeypatch.setenv("MITHRA_ADMIN_TELEGRAM_ID", "not-a-number")
+        resolver = UserIdentityResolver({})  # must not raise
+        assert resolver.is_authorized(0) is False
+
+    def test_missing_admin_env_var_has_no_effect(self, monkeypatch):
+        monkeypatch.delenv("MITHRA_ADMIN_TELEGRAM_ID", raising=False)
+        resolver = UserIdentityResolver({})
+        assert resolver.is_authorized(12345) is False
+
+
+# ---------------------------------------------------------------------------
+# Authorization gate in normalise()
+# ---------------------------------------------------------------------------
+
+class TestAuthorization:
+    def _resolver_with_member(self, chat_id: int = 111) -> UserIdentityResolver:
+        config = {"members": [{"user_id": "person_a", "telegram_ids": [chat_id]}]}
+        return UserIdentityResolver(config)
+
+    def test_unknown_user_text_message_rejected(self):
+        resolver = self._resolver_with_member(chat_id=111)
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        # chat_id=999 is not in the resolver
+        result = adapter.normalise(_text_update(chat_id=999), "telegram")
+        assert result is None
+
+    def test_unknown_user_callback_rejected(self):
+        resolver = self._resolver_with_member(chat_id=111)
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        result = adapter.normalise(_callback_update(chat_id=999), "telegram")
+        assert result is None
+
+    def test_unknown_user_voice_rejected(self):
+        resolver = self._resolver_with_member(chat_id=111)
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        result = adapter.normalise(_voice_update(chat_id=999), "telegram")
+        assert result is None
+
+    def test_known_user_text_message_passes(self):
+        resolver = self._resolver_with_member(chat_id=111)
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        result = adapter.normalise(_text_update(chat_id=111), "telegram")
+        assert result is not None
+        assert result.text == "Hello Mithra"
+
+    def test_start_allowed_for_unknown_user(self):
+        resolver = self._resolver_with_member(chat_id=111)
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        # chat_id=999 is unknown but /start must be allowed
+        result = adapter.normalise(_start_update(chat_id=999), "telegram")
+        assert result is not None
+        assert result.signal.get("registration") is True
+
+    def test_register_callback_allowed_for_unknown_user(self):
+        resolver = self._resolver_with_member(chat_id=111)
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        # chat_id=999 is unknown but completing registration must be allowed
+        result = adapter.normalise(_register_callback(chat_id=999, user_id="person_b"), "telegram")
+        assert result is not None
+        assert result.signal.get("registered") is True
+
+    def test_after_registration_user_is_authorized(self):
+        resolver = UserIdentityResolver({})
+        adapter = _make_input_adapter(identity_resolver=resolver)
+        # Register via callback
+        adapter.normalise(_register_callback(chat_id=555, user_id="person_b"), "telegram")
+        # Subsequent text message must pass
+        result = adapter.normalise(_text_update(chat_id=555), "telegram")
+        assert result is not None
+
+    def test_no_resolver_allows_all_users(self):
+        # No resolver attached — auth check is skipped entirely
+        adapter = _make_input_adapter()
+        result = adapter.normalise(_text_update(chat_id=9999), "telegram")
+        assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# /start rate limiting
+# ---------------------------------------------------------------------------
+
+class TestStartRateLimit:
+    def _resolver_unknown(self) -> UserIdentityResolver:
+        return UserIdentityResolver({})
+
+    def test_first_three_starts_allowed(self):
+        adapter = _make_input_adapter(identity_resolver=self._resolver_unknown())
+        for _ in range(3):
+            result = adapter.normalise(_start_update(chat_id=111), "telegram")
+            assert result is not None
+            assert result.signal.get("registration") is True
+
+    def test_fourth_start_blocked(self):
+        adapter = _make_input_adapter(identity_resolver=self._resolver_unknown())
+        for _ in range(3):
+            adapter.normalise(_start_update(chat_id=111), "telegram")
+        result = adapter.normalise(_start_update(chat_id=111), "telegram")
+        assert result is None
+
+    def test_rate_limit_is_per_chat_id(self):
+        adapter = _make_input_adapter(identity_resolver=self._resolver_unknown())
+        # Exhaust limit for chat 111
+        for _ in range(3):
+            adapter.normalise(_start_update(chat_id=111), "telegram")
+        # chat 222 must still be allowed
+        result = adapter.normalise(_start_update(chat_id=222), "telegram")
+        assert result is not None
+
+    def test_rate_limit_resets_after_window(self):
+        import time as _time
+        adapter = _make_input_adapter(identity_resolver=self._resolver_unknown())
+        # Exhaust limit
+        for _ in range(3):
+            adapter.normalise(_start_update(chat_id=111), "telegram")
+        # Manually age the timestamps past the window
+        adapter._start_attempts[111] = [_time.time() - 3601] * 3
+        # Should be allowed again
+        result = adapter.normalise(_start_update(chat_id=111), "telegram")
+        assert result is not None

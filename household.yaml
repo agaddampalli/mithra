@@ -43,3 +43,7 @@ voice:
 calendar:
   provider: google
   default_calendar_id: primary
+
+registration:
+  require_admin_approval: false  # true = admin must approve before member can use bot
+  max_members: 5                 # reject registration if household already full
