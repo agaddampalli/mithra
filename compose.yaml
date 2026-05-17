@@ -42,17 +42,12 @@ services:
 
   # ── LiteLLM proxy ───────────────────────────────────────
   llm-router:
-    image: ghcr.io/berriai/litellm:main-latest
+    build: ./services/litellm
     ports:
       - "4000:4000"
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - LITELLM_MASTER_KEY=${SECRET_KEY}
-    command: >
-      --model anthropic/claude-sonnet-4-6
-      --model ollama/phi3:mini
-      --api_base http://ollama:11434
-      --port 4000
     networks:
       - mithra-net
     restart: unless-stopped
