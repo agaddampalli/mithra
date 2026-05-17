@@ -215,6 +215,12 @@ _TASK_ROUTES: dict[TaskType, _RouteConfig] = {
     TaskType.HEALTH_DOMAIN:             _RouteConfig("ollama/phi3:mini", None),
 }
 
+# Priority-ordered cloud provider chain.
+# When the primary cloud provider fails for ANY reason (credit exhaustion,
+# rate limit, service error), the Python layer tries each in sequence.
+# Health domain never enters this chain — local only, hardcoded.
+_CLOUD_CHAIN = ["claude-sonnet-4-6", "gemini-flash", "gpt-4o-mini"]
+
 _CLOUD_COST_PER_TOKEN = 0.000003
 
 
@@ -305,7 +311,8 @@ class LiteLLMRouterAdapter(LLMRouter):
         task_type_mismatch = False
         sanitisation_report: SanitisationReport | None = None
 
-        # Step 1 — domain guard: health domain always forces HEALTH_DOMAIN
+        # Guard 1 — health domain ALWAYS forces HEALTH_DOMAIN task type.
+        # This is a hard wall: health data never reaches any cloud model.
         if domain == "health" and task_type != TaskType.HEALTH_DOMAIN:
             task_type_mismatch = True
             self._log_security_mismatch(task_type, domain)
@@ -313,10 +320,8 @@ class LiteLLMRouterAdapter(LLMRouter):
 
         route = _TASK_ROUTES[task_type]
 
-        # When local LLM is unavailable (e.g. hardware constraints), skip
-        # straight to cloud for all non-health tasks.
-        # Set MITHRA_LOCAL_LLM_ENABLED=false in .env to activate.
-        # Health domain always stays local — never overridden.
+        # Guard 2 — hardware constraint: skip local model when MITHRA_LOCAL_LLM_ENABLED=false.
+        # Health domain is exempt — always stays local regardless of this flag.
         _local_enabled = os.environ.get("MITHRA_LOCAL_LLM_ENABLED", "true").lower() != "false"
         if not _local_enabled and task_type != TaskType.HEALTH_DOMAIN and route.model.startswith("ollama"):
             route = _RouteConfig("claude-sonnet-4-6", None)
@@ -324,17 +329,21 @@ class LiteLLMRouterAdapter(LLMRouter):
         model = route.model
         fallback_triggered = False
         fallback_reason: str | None = None
-
         messages = _fit_context(messages)
 
-        # Step 2 — sanitise before any cloud call (Anthropic, Gemini, OpenAI)
-        if not model.startswith("ollama"):
+        # Sanitise before the first cloud call.
+        # DataSanitiser runs before ALL cloud providers — Anthropic, Gemini, OpenAI.
+        # Applied once here; the sanitised messages are reused for every fallback
+        # attempt so PII is never sent to any cloud model in any code path.
+        # Health domain (ollama) never reaches this block.
+        is_cloud = not model.startswith("ollama")
+        if is_cloud:
             serialised, sanitisation_report = self._sanitiser.sanitise(
                 json.dumps(messages), known_pii={}
             )
             messages = json.loads(serialised)
 
-        # Step 3 — call LiteLLM
+        # Primary call
         raw: Any = None
         error_str: str | None = None
         logger.debug("LLM call: task=%s domain=%s model=%s", task_type.value, domain, model)
@@ -344,24 +353,54 @@ class LiteLLMRouterAdapter(LLMRouter):
             error_str = str(exc)
             logger.warning("LLM call failed: model=%s error=%s", model, error_str)
 
-        # Step 4 — fallback (not allowed for health domain)
+        # Fallback A — local model failed → walk the full cloud chain.
+        # Not allowed for health domain (hard wall).
         if raw is None and route.fallback == "cloud" and domain != "health":
             fallback_triggered = True
             fallback_reason = error_str
-            logger.warning("Falling back to cloud: task=%s reason=%s", task_type.value, error_str)
             self._log_fallback(task_type, domain, error_str or "")
-            model = "claude-sonnet-4-6"
-            # Sanitise for the cloud fallback call
+            # Sanitise now — original model was local so no sanitisation done yet.
             serialised, sanitisation_report = self._sanitiser.sanitise(
                 json.dumps(messages), known_pii={}
             )
             messages = json.loads(serialised)
-            error_str = None
-            try:
-                raw = self._call(model, messages, tools)
-            except Exception as exc:
-                error_str = str(exc)
-                logger.warning("Cloud fallback also failed: error=%s", error_str)
+            for cloud_model in _CLOUD_CHAIN:
+                error_str = None
+                logger.warning(
+                    "Local→cloud fallback: model=%s task=%s", cloud_model, task_type.value
+                )
+                try:
+                    raw = self._call(cloud_model, messages, tools)
+                    model = cloud_model
+                    break
+                except Exception as exc:
+                    error_str = str(exc)
+                    logger.warning("Cloud model %s failed: %s", cloud_model, error_str)
+
+        # Fallback B — cloud provider failed → try remaining providers in the chain.
+        # Covers credit exhaustion (400), rate limits (429), and service errors (5xx).
+        # Messages are already sanitised from the block above.
+        # Health domain never enters this path.
+        elif raw is None and is_cloud and domain != "health":
+            start_idx = (
+                _CLOUD_CHAIN.index(model) + 1 if model in _CLOUD_CHAIN else len(_CLOUD_CHAIN)
+            )
+            for cloud_model in _CLOUD_CHAIN[start_idx:]:
+                fallback_triggered = True
+                fallback_reason = error_str
+                self._log_fallback(task_type, domain, error_str or "")
+                error_str = None
+                logger.warning(
+                    "Cloud provider unavailable, trying fallback: %s → %s",
+                    model, cloud_model,
+                )
+                try:
+                    raw = self._call(cloud_model, messages, tools)
+                    model = cloud_model
+                    break
+                except Exception as exc:
+                    error_str = str(exc)
+                    logger.warning("Cloud fallback %s also failed: %s", cloud_model, error_str)
 
         latency_ms = int((time.time() - start) * 1000)
 

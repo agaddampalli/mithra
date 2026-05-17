@@ -234,11 +234,12 @@ class TestFallback:
         assert result.fallback_triggered is False
         assert len(client.calls) == 1
 
-    def test_cloud_task_type_does_not_fallback(self):
+    def test_cloud_task_exhausts_full_provider_chain_on_failure(self):
+        # All three cloud providers fail → fallback_triggered, 3 calls total, success=False
         router, client = _make_router(fail=True)
         result = router.complete(TaskType.CROSS_DOMAIN_INSIGHT, "money", _messages())
-        assert result.fallback_triggered is False
-        assert len(client.calls) == 1
+        assert result.fallback_triggered is True
+        assert len(client.calls) == 3  # claude → gemini → gpt
         assert result.success is False
 
     def test_fallback_sanitises_for_cloud(self):
