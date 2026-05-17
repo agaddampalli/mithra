@@ -93,17 +93,17 @@ class TestModelRouting:
     def test_local_task_type_routes_to_phi3_mini(self):
         router, client = _make_router()
         router.complete(TaskType.DATA_CAPTURE, "food", _messages())
-        assert client.calls[0]["body"]["model"] == "ollama/phi3-mini"
+        assert client.calls[0]["body"]["model"] == "ollama/phi3:mini"
 
     def test_rule_based_alert_routes_to_phi3_mini(self):
         router, client = _make_router()
         router.complete(TaskType.RULE_BASED_ALERT, "home", _messages())
-        assert client.calls[0]["body"]["model"] == "ollama/phi3-mini"
+        assert client.calls[0]["body"]["model"] == "ollama/phi3:mini"
 
     def test_simple_retrieval_routes_to_phi3_mini(self):
         router, client = _make_router()
         router.complete(TaskType.SIMPLE_RETRIEVAL, "food", _messages())
-        assert client.calls[0]["body"]["model"] == "ollama/phi3-mini"
+        assert client.calls[0]["body"]["model"] == "ollama/phi3:mini"
 
     def test_cloud_task_type_routes_to_claude(self):
         router, client = _make_router()
@@ -136,13 +136,13 @@ class TestHealthDomainGuard:
         router, client = _make_router()
         result = router.complete(TaskType.DATA_CAPTURE, "health", _messages())
         # Must route to phi3-mini (local_only), never cloud
-        assert client.calls[0]["body"]["model"] == "ollama/phi3-mini"
+        assert client.calls[0]["body"]["model"] == "ollama/phi3:mini"
         assert result.route_taken == "local_only"
 
     def test_health_domain_cloud_task_type_overridden(self):
         router, client = _make_router()
         result = router.complete(TaskType.CROSS_DOMAIN_INSIGHT, "health", _messages())
-        assert client.calls[0]["body"]["model"] == "ollama/phi3-mini"
+        assert client.calls[0]["body"]["model"] == "ollama/phi3:mini"
         assert result.task_type == TaskType.HEALTH_DOMAIN
 
     def test_health_task_type_result_is_local_only(self):
@@ -273,7 +273,7 @@ class TestRoutingEventPersistence:
         events = [r for r in records if r.data.get("record_type") == "routing_event"]
         assert len(events) == 1
         assert events[0].data["domain"] == "food"
-        assert events[0].data["model_used"] == "ollama/phi3-mini"
+        assert events[0].data["model_used"] == "ollama/phi3:mini"
 
     def test_routing_event_written_on_failed_call(self, tmp_path):
         storage = LocalStorageAdapter(str(tmp_path / "files"), str(tmp_path / "db.sqlite"))

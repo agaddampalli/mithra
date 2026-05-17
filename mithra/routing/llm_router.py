@@ -79,7 +79,7 @@ class LLMResponse:
     """Typed response from LLMRouter.complete()."""
 
     content: str
-    model_used: str            # "phi3-mini" | "claude-sonnet-4-6"
+    model_used: str            # "ollama/phi3:mini" | "claude-sonnet-4-6"
     route_taken: str           # "local" | "cloud" | "local_only" | "fallback"
     task_type: TaskType
     prompt_tokens: int
@@ -199,17 +199,17 @@ class _RouteConfig:
 
 
 _TASK_ROUTES: dict[TaskType, _RouteConfig] = {
-    TaskType.DATA_CAPTURE:              _RouteConfig("ollama/phi3-mini", "cloud"),
-    TaskType.RULE_BASED_ALERT:          _RouteConfig("ollama/phi3-mini", "cloud"),
-    TaskType.SIMPLE_RETRIEVAL:          _RouteConfig("ollama/phi3-mini", "cloud"),
-    TaskType.INTENT_CLASSIFICATION:     _RouteConfig("ollama/phi3-mini", "cloud"),
-    TaskType.VOICE_DISAMBIGUATION:      _RouteConfig("ollama/phi3-mini", "cloud"),
+    TaskType.DATA_CAPTURE:              _RouteConfig("ollama/phi3:mini", "cloud"),
+    TaskType.RULE_BASED_ALERT:          _RouteConfig("ollama/phi3:mini", "cloud"),
+    TaskType.SIMPLE_RETRIEVAL:          _RouteConfig("ollama/phi3:mini", "cloud"),
+    TaskType.INTENT_CLASSIFICATION:     _RouteConfig("ollama/phi3:mini", "cloud"),
+    TaskType.VOICE_DISAMBIGUATION:      _RouteConfig("ollama/phi3:mini", "cloud"),
     TaskType.CROSS_DOMAIN_INSIGHT:      _RouteConfig("claude-sonnet-4-6", None),
     TaskType.NATURAL_LANGUAGE_DRAFTING: _RouteConfig("claude-sonnet-4-6", None),
     TaskType.DOCUMENT_PARSING:          _RouteConfig("claude-sonnet-4-6", None),
     TaskType.MONTHLY_SUMMARY:           _RouteConfig("claude-sonnet-4-6", None),
     TaskType.WEB_UNDERSTANDING:         _RouteConfig("claude-sonnet-4-6", None),
-    TaskType.HEALTH_DOMAIN:             _RouteConfig("ollama/phi3-mini", None),
+    TaskType.HEALTH_DOMAIN:             _RouteConfig("ollama/phi3:mini", None),
 }
 
 _CLOUD_COST_PER_TOKEN = 0.000003
