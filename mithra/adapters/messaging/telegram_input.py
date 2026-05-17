@@ -134,11 +134,22 @@ class TelegramInputAdapter(InputAdapter):
                     resp.raise_for_status()
                     data = resp.json()
                     for update in data.get("result", []):
-                        logger.info(f"Telegram update received: {update.get('update_id')}")
+                        logger.info(f"Telegram update received: {update.get('update_id')} keys={list(update.keys())}")
                         offset = update["update_id"] + 1
                         request = self.normalise(update, "telegram")
-                        if request and self._on_request:
-                            asyncio.create_task(self._on_request(request))
+                        if request is None:
+                            logger.warning(f"normalise() returned None for update {update.get('update_id')} — update={update}")
+                            continue
+                        if not self._on_request:
+                            logger.error("_on_request callback is not set — messages will be dropped")
+                            continue
+                        logger.info(f"Dispatching request to on_request: user={request.user_id} text={request.text!r}")
+                        task = asyncio.create_task(self._on_request(request))
+                        task.add_done_callback(
+                            lambda t: logger.error("on_request task failed: %s", t.exception(), exc_info=t.exception())
+                            if not t.cancelled() and t.exception()
+                            else None
+                        )
                 except asyncio.CancelledError:
                     return
                 except Exception as e:
@@ -220,6 +231,7 @@ class TelegramInputAdapter(InputAdapter):
                 device_id=device_id,
                 input_channel=InputChannel.TELEGRAM,
                 text=text,
+                signal={"chat_id": chat_id},
                 request_id=request_id,
                 session_id=session_id,
                 conversation_history=history,
