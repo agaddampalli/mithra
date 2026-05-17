@@ -1,0 +1,12 @@
+# Ensure shell scripts always use LF so they run correctly in Linux containers
+# even when checked out on Windows (where git defaults to CRLF)
+*.sh text eol=lf
+
+# Keep other text files consistent
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.py   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.txt  text eol=lf
