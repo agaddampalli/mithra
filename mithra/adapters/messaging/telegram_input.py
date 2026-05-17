@@ -114,11 +114,15 @@ class TelegramInputAdapter(InputAdapter):
         self._poll_task = asyncio.create_task(self._poll_loop())
 
     async def stop(self) -> None:
-        """Stop polling."""
+        """Stop polling and wait for the poll task to finish."""
         self._running = False
         self._polling = False
         if self._poll_task:
             self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     async def _poll_loop(self) -> None:
         logger.info("Telegram polling started")
