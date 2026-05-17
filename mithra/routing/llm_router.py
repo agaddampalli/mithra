@@ -255,7 +255,7 @@ class _DefaultHTTPClient:
         return {**self._base_headers, **(extra or {})}
 
     def post(self, url: str, json_body: dict, headers: dict | None = None) -> Any:
-        resp = _requests.post(url, json=json_body, headers=self._headers(headers), timeout=30)
+        resp = _requests.post(url, json=json_body, headers=self._headers(headers), timeout=120)
         resp.raise_for_status()
         return resp
 

@@ -48,6 +48,9 @@ services:
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - LITELLM_MASTER_KEY=${SECRET_KEY}
+    depends_on:
+      ollama:
+        condition: service_healthy
     networks:
       - mithra-net
     restart: unless-stopped
@@ -59,7 +62,7 @@ services:
 
   # ── Ollama (local LLM) ──────────────────────────────────
   ollama:
-    image: ollama/ollama:latest
+    build: ./services/ollama
     ports:
       - "11434:11434"
     volumes:
@@ -68,10 +71,11 @@ services:
       - mithra-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 60s
-      timeout: 15s
-      retries: 3
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   # ── ChromaDB (vector store) ─────────────────────────────
   vector-store:
