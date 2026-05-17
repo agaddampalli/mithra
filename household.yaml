@@ -4,9 +4,9 @@ locale: en-US
 
 members:
   - user_id: person_a
-    display_name: Nikitha
+    display_name: Abhiram
     device_ids:
-      - phone_nikitha
+      - phone_abhiram
     telegram_ids: []
     is_admin: true
     notification_channel: telegram
