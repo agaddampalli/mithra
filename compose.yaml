@@ -25,12 +25,12 @@ services:
       - HA_URL=http://homeassistant:8123
       - HA_TOKEN=${HA_TOKEN}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - MITHRA_LOCAL_LLM_ENABLED=${MITHRA_LOCAL_LLM_ENABLED:-true}
     volumes:
       - mithra-data:/data/mithra
     depends_on:
       - llm-router
       - vector-store
-      - homeassistant
     networks:
       - mithra-net
     restart: unless-stopped
@@ -41,6 +41,8 @@ services:
       retries: 3
 
   # ── LiteLLM proxy ───────────────────────────────────────
+  # Core service — always runs. When local-llm profile is active,
+  # it also routes to Ollama; otherwise cloud-only.
   llm-router:
     build: ./services/litellm
     ports:
@@ -48,9 +50,6 @@ services:
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - LITELLM_MASTER_KEY=${SECRET_KEY}
-    depends_on:
-      ollama:
-        condition: service_healthy
     networks:
       - mithra-net
     restart: unless-stopped
@@ -59,25 +58,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-
-  # ── Ollama (local LLM) ──────────────────────────────────
-  ollama:
-    build: ./services/ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama-models:/root/.ollama
-    environment:
-      - OLLAMA_NUM_CTX=2048
-    networks:
-      - mithra-net
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "ollama list 2>/dev/null | grep -q phi3:mini"]
-      interval: 15s
-      timeout: 10s
-      retries: 60
-      start_period: 30s
 
   # ── ChromaDB (vector store) ─────────────────────────────
   vector-store:
@@ -98,86 +78,6 @@ services:
       timeout: 10s
       retries: 3
 
-  # ── Home Assistant Core ─────────────────────────────────
-  homeassistant:
-    image: ghcr.io/home-assistant/home-assistant:stable
-    ports:
-      - "8123:8123"
-    volumes:
-      - ha-config:/config
-    environment:
-      - TZ=${TZ:-America/Chicago}
-    networks:
-      - mithra-net
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8123/api/"]
-      interval: 60s
-      timeout: 15s
-      retries: 5
-
-  # ── Wyoming Whisper (STT) ───────────────────────────────
-  wyoming-whisper:
-    image: rhasspy/wyoming-whisper
-    ports:
-      - "10300:10300"
-    volumes:
-      - whisper-models:/data
-    command: >
-      --uri tcp://0.0.0.0:10300
-      --model tiny-int8
-      --language en
-      --data-dir /data
-      --download-dir /data
-    networks:
-      - mithra-net
-    restart: unless-stopped
-
-  # ── Wyoming Piper (TTS) ─────────────────────────────────
-  wyoming-piper:
-    image: rhasspy/wyoming-piper
-    ports:
-      - "10200:10200"
-    volumes:
-      - piper-voices:/data
-    command: >
-      --uri tcp://0.0.0.0:10200
-      --voice en_US-lessac-medium
-      --data-dir /data
-      --download-dir /data
-    networks:
-      - mithra-net
-    restart: unless-stopped
-
-  # ── Wyoming openWakeWord ────────────────────────────────
-  wyoming-openwakeword:
-    image: rhasspy/wyoming-openwakeword
-    ports:
-      - "10400:10400"
-    command: >
-      --uri tcp://0.0.0.0:10400
-      --preload-model ok_nabu
-    networks:
-      - mithra-net
-    restart: unless-stopped
-
-  # ── WhatsApp bridge (Baileys) ───────────────────────────
-  whatsapp-bridge:
-    image: node:20-alpine
-    ports:
-      - "3000:3000"
-    volumes:
-      - whatsapp-sessions:/sessions/whatsapp
-      - ./services/whatsapp-bridge:/app
-    working_dir: /app
-    command: sh -c "npm install && node index.js"
-    environment:
-      - SESSION_PATH=/sessions/whatsapp
-      - PORT=3000
-    networks:
-      - mithra-net
-    restart: unless-stopped
-
   # ── Cloudflare tunnel ───────────────────────────────────
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -196,6 +96,129 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     command: --interval 3600 --label-enable
+    restart: unless-stopped
+
+  # ════════════════════════════════════════════════════════
+  # Profile: local-llm
+  # Start with: docker compose --profile local-llm up -d
+  # Requires MITHRA_LOCAL_LLM_ENABLED=true in .env
+  # Needs at least 6 GB Docker memory (phi3:mini = 3.1 GB)
+  # ════════════════════════════════════════════════════════
+
+  # ── Ollama (local LLM) ──────────────────────────────────
+  ollama:
+    profiles: [local-llm]
+    build: ./services/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      - OLLAMA_NUM_CTX=2048
+    networks:
+      - mithra-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list 2>/dev/null | grep -q phi3:mini"]
+      interval: 15s
+      timeout: 10s
+      retries: 60
+      start_period: 30s
+
+  # ════════════════════════════════════════════════════════
+  # Profile: voice
+  # Start with: docker compose --profile voice up -d
+  # Requires Home Assistant with Wyoming integration configured
+  # ════════════════════════════════════════════════════════
+
+  # ── Home Assistant Core ─────────────────────────────────
+  homeassistant:
+    profiles: [voice]
+    image: ghcr.io/home-assistant/home-assistant:stable
+    ports:
+      - "8123:8123"
+    volumes:
+      - ha-config:/config
+    environment:
+      - TZ=${TZ:-America/Chicago}
+    networks:
+      - mithra-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8123/api/"]
+      interval: 60s
+      timeout: 15s
+      retries: 5
+
+  # ── Wyoming Whisper (STT) ───────────────────────────────
+  wyoming-whisper:
+    profiles: [voice]
+    image: rhasspy/wyoming-whisper
+    ports:
+      - "10300:10300"
+    volumes:
+      - whisper-models:/data
+    command: >
+      --uri tcp://0.0.0.0:10300
+      --model tiny-int8
+      --language en
+      --data-dir /data
+      --download-dir /data
+    networks:
+      - mithra-net
+    restart: unless-stopped
+
+  # ── Wyoming Piper (TTS) ─────────────────────────────────
+  wyoming-piper:
+    profiles: [voice]
+    image: rhasspy/wyoming-piper
+    ports:
+      - "10200:10200"
+    volumes:
+      - piper-voices:/data
+    command: >
+      --uri tcp://0.0.0.0:10200
+      --voice en_US-lessac-medium
+      --data-dir /data
+      --download-dir /data
+    networks:
+      - mithra-net
+    restart: unless-stopped
+
+  # ── Wyoming openWakeWord ────────────────────────────────
+  wyoming-openwakeword:
+    profiles: [voice]
+    image: rhasspy/wyoming-openwakeword
+    ports:
+      - "10400:10400"
+    command: >
+      --uri tcp://0.0.0.0:10400
+      --preload-model ok_nabu
+    networks:
+      - mithra-net
+    restart: unless-stopped
+
+  # ════════════════════════════════════════════════════════
+  # Profile: messaging
+  # Start with: docker compose --profile messaging up -d
+  # ════════════════════════════════════════════════════════
+
+  # ── WhatsApp bridge (Baileys) ───────────────────────────
+  whatsapp-bridge:
+    profiles: [messaging]
+    image: node:20-alpine
+    ports:
+      - "3000:3000"
+    volumes:
+      - whatsapp-sessions:/sessions/whatsapp
+      - ./services/whatsapp-bridge:/app
+    working_dir: /app
+    command: sh -c "npm install && node index.js"
+    environment:
+      - SESSION_PATH=/sessions/whatsapp
+      - PORT=3000
+    networks:
+      - mithra-net
     restart: unless-stopped
 
 volumes:
