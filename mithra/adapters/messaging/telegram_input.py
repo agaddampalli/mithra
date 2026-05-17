@@ -47,12 +47,21 @@ class UserIdentityResolver:
     """
 
     def __init__(self, household_config: dict) -> None:
+        logger.debug("UserIdentityResolver household_config: %s", household_config)
         self._telegram_map: dict[int, str] = {}
         self._device_map: dict[str, str] = {}
         for member in household_config.get("members", []):
             uid = member["user_id"]
-            for tid in member.get("telegram_ids", []):
-                self._telegram_map[int(tid)] = uid
+            tids = member.get("telegram_ids", [])
+            if tids is None:
+                tids = []
+            if not isinstance(tids, list):
+                tids = [tids]
+            for tid in tids:
+                try:
+                    self._telegram_map[int(tid)] = uid
+                except (ValueError, TypeError):
+                    pass
             for did in member.get("device_ids", []):
                 self._device_map[str(did)] = uid
         # Shared devices always map to "household"

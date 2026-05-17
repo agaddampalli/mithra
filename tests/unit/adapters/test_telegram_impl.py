@@ -106,6 +106,26 @@ class TestUserIdentityResolver:
         resolver = UserIdentityResolver({})
         assert resolver.resolve_telegram(42) == "household"
 
+    def test_telegram_ids_as_list(self):
+        config = {"members": [{"user_id": "person_a", "telegram_ids": [123456789]}]}
+        resolver = UserIdentityResolver(config)
+        assert resolver.resolve_telegram(123456789) == "person_a"
+
+    def test_telegram_ids_as_bare_int(self):
+        config = {"members": [{"user_id": "person_a", "telegram_ids": 123456789}]}
+        resolver = UserIdentityResolver(config)
+        assert resolver.resolve_telegram(123456789) == "person_a"
+
+    def test_telegram_ids_as_empty_list(self):
+        config = {"members": [{"user_id": "person_a", "telegram_ids": []}]}
+        resolver = UserIdentityResolver(config)
+        assert resolver.resolve_telegram(123456789) == "household"
+
+    def test_telegram_ids_as_none(self):
+        config = {"members": [{"user_id": "person_a", "telegram_ids": None}]}
+        resolver = UserIdentityResolver(config)
+        assert resolver.resolve_telegram(123456789) == "household"
+
 
 # ---------------------------------------------------------------------------
 # TelegramInputAdapter.normalise()
