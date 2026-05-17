@@ -142,10 +142,8 @@ class LangGraphAdapter(AgentInterface):
     def _node_execute_tool(self, state: _GraphState) -> dict[str, Any]:
         tool_name = state.get("selected_tool")
         if tool_name is None or tool_name not in self._tools:
-            return {
-                "tool_result": None,
-                "error": f"Tool not found: {tool_name}",
-            }
+            # No domain tool registered for this intent — let generate_response use LLM
+            return {"tool_result": None, "error": None}
         tool = self._tools[tool_name]
         request: AgentRequest = state["request"]
         try:
@@ -175,7 +173,15 @@ class LangGraphAdapter(AgentInterface):
 
         # No tool matched — ask LLM to draft a response
         messages = [
-            {"role": "system", "content": "You are Mithra, a household assistant."},
+            {
+                "role": "system",
+                "content": (
+                    "You are Mithra, a voice-first household AI assistant. "
+                    "You help manage daily life across domains like food, home, money, health, "
+                    "people, and time. You are connected to calendars, smart home devices, "
+                    "and messaging. Be concise and helpful."
+                ),
+            },
             {"role": "user", "content": request.text or ""},
         ]
         try:

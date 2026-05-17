@@ -192,12 +192,15 @@ class TestRun:
         assert handler_called["value"] is True
         assert result.response_text == "Pantry updated."
 
-    def test_run_unknown_tool_returns_error(self):
+    def test_run_unknown_tool_falls_through_to_llm(self):
+        # No tool registered for this intent — LLM handles it, no error returned
         adapter = _make_adapter(
             intent="food.nonexistent_tool", confidence=0.95
         )
         result = adapter.run(_make_request())
-        assert result.error is not None
+        assert result.success is True
+        assert result.error is None
+        assert result.response_text
 
     def test_run_graph_exception_returns_failure(self):
         adapter = _make_adapter()
