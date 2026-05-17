@@ -312,6 +312,15 @@ class LiteLLMRouterAdapter(LLMRouter):
             task_type = TaskType.HEALTH_DOMAIN
 
         route = _TASK_ROUTES[task_type]
+
+        # When local LLM is unavailable (e.g. hardware constraints), skip
+        # straight to cloud for all non-health tasks.
+        # Set MITHRA_LOCAL_LLM_ENABLED=false in .env to activate.
+        # Health domain always stays local — never overridden.
+        _local_enabled = os.environ.get("MITHRA_LOCAL_LLM_ENABLED", "true").lower() != "false"
+        if not _local_enabled and task_type != TaskType.HEALTH_DOMAIN and route.model.startswith("ollama"):
+            route = _RouteConfig("claude-sonnet-4-6", None)
+
         model = route.model
         fallback_triggered = False
         fallback_reason: str | None = None
