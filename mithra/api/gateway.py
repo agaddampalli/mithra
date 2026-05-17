@@ -419,8 +419,13 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
 async def _process_request(agent_request) -> None:
     """Execute the full request lifecycle for a normalised AgentRequest."""
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"Processing request: user={agent_request.user_id} text={agent_request.text}")
+
     agent = _state.get("agent")
     if not agent:
+        logger.error("No agent in state")
         return
 
     domain_router = _state.get("domain_router")
@@ -432,18 +437,51 @@ async def _process_request(agent_request) -> None:
                 agent_request.domain_hint,
             )
             agent_request.context = ctx
-        except Exception:
-            pass
+            logger.info(f"Context assembled: {len(ctx.priority_domains)} priority domains")
+        except Exception as e:
+            logger.error(f"Context assembly failed: {e}", exc_info=True)
 
-    result = agent.run(agent_request)
+    try:
+        result = agent.run(agent_request)
+        logger.info(
+            f"Agent result: success={result.success} intent={result.intent} "
+            f"response={result.response_text[:50] if result.response_text else 'empty'}"
+        )
+    except Exception as e:
+        logger.error(f"Agent.run failed: {e}", exc_info=True)
+        return
 
     engine = _state.get("engine")
     executor = _state.get("executor")
     if engine and executor:
         try:
-            engine.process(result, executor)
-        except Exception:
-            pass
+            receipt = engine.process(result, executor)
+            logger.info(f"Engine processed: executed={len(receipt.executed)} pending={len(receipt.pending)}")
+        except Exception as e:
+            logger.error(f"Engine.process failed: {e}", exc_info=True)
+            return
+
+    # Send response back to Telegram
+    telegram_output = _state.get("telegram_output")
+    if telegram_output and result.response_text:
+        try:
+            from mithra.adapters.messaging import OutboundMessage
+            chat_id = agent_request.signal.get("chat_id") if agent_request.signal else None
+            if not chat_id:
+                device_id = agent_request.device_id or ""
+                if ":" in device_id:
+                    chat_id = int(device_id.split(":")[1])
+            if chat_id:
+                telegram_output.register_chat(agent_request.user_id, chat_id)
+                await telegram_output.send(
+                    agent_request.user_id,
+                    OutboundMessage(text=result.response_text),
+                )
+                logger.info(f"Reply sent to {agent_request.user_id}")
+            else:
+                logger.error(f"No chat_id found for {agent_request.user_id}")
+        except Exception as e:
+            logger.error(f"Send reply failed: {e}", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
