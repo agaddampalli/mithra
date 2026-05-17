@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
+
+logger = logging.getLogger(__name__)
 from typing import Any, Callable, Coroutine
 
 import httpx
@@ -109,6 +112,7 @@ class TelegramInputAdapter(InputAdapter):
             self._poll_task.cancel()
 
     async def _poll_loop(self) -> None:
+        logger.info("Telegram polling started")
         offset = 0
         async with httpx.AsyncClient() as client:
             while self._polling:
@@ -121,13 +125,15 @@ class TelegramInputAdapter(InputAdapter):
                     resp.raise_for_status()
                     data = resp.json()
                     for update in data.get("result", []):
+                        logger.info(f"Telegram update received: {update.get('update_id')}")
                         offset = update["update_id"] + 1
                         request = self.normalise(update, "telegram")
                         if request and self._on_request:
                             asyncio.create_task(self._on_request(request))
                 except asyncio.CancelledError:
                     return
-                except Exception:
+                except Exception as e:
+                    logger.error(f"Telegram poll error: {e}", exc_info=True)
                     await asyncio.sleep(5)
 
     def normalise(self, raw: Any, channel: str) -> AgentRequest | None:
