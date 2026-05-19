@@ -12,13 +12,13 @@
 
 ## Current Status — May 2026
 Stack running on Windows laptop.
-Telegram bot live — both household members registered.
+Webhook mode active — instant Telegram delivery.
+Both household members registered with admin approval flow.
 Claude Sonnet responding end to end.
-Admin approval flow working.
-Next: Cloudflare tunnel (CF-01 to CF-07)
+Next: Google OAuth (OA-03 to OA-07)
 
 ## Current Focus
-**CF-01 — cloudflared in compose.yaml** (Group K)
+**OA-03 — Google Cloud project** (Group J)
 
 ---
 
@@ -159,11 +159,11 @@ Next: Cloudflare tunnel (CF-01 to CF-07)
 ### Group K — Cloudflare & Networking
 
 - [x] CF-01 cloudflared — add to compose.yaml
-- [x] CF-02 Tunnel route — assistant.mithra-app.com → localhost:9000
+- [x] CF-02 Tunnel route — assistant.mithra-app.com → api-gateway:8000
 - [ ] CF-03 Cloudflare Access — Zero Trust policy for assistant.mithra-app.com
-- [ ] CF-04 Verify external access — curl from phone off home Wi-Fi
-- [ ] CF-05 Telegram webhook — register setWebhook against tunnel URL
-- [ ] CF-06 Webhook test — Telegram message arrives via tunnel end-to-end
+- [x] CF-04 Verify external access — confirmed from phone off home Wi-Fi
+- [x] CF-05 Telegram webhook — register setWebhook against tunnel URL
+- [x] CF-06 Webhook test — instant delivery confirmed end-to-end
 - [ ] CF-07 ha.mithra-app.com — optional HA remote access route
 
 ### Group L — Hardware Setup
@@ -242,7 +242,7 @@ Next: Cloudflare tunnel (CF-01 to CF-07)
 - [ ] VoiceConfirmationSession resolves correct pending action
 - [ ] LLM router: health forces HEALTH_DOMAIN regardless of agent
 - [ ] LLM router: DataSanitiser applied before every cloud call
-- [ ] assistant.mithra-app.com reachable from outside home network
+- [x] assistant.mithra-app.com reachable from outside home network
 - [ ] Health dashboard: all services show status + last-run + errors
 - [ ] 14 consecutive days stable on Windows laptop
 
