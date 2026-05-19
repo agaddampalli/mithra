@@ -258,8 +258,9 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        # Health route is unauthenticated
-        if request.url.path == "/api/v1/health":
+        # Health and Telegram webhook are unauthenticated via Bearer —
+        # webhook validates the X-Telegram-Bot-Api-Secret-Token header instead.
+        if request.url.path in ("/api/v1/health", "/api/v1/webhook/telegram"):
             return await call_next(request)
 
         secret_key = os.environ.get("SECRET_KEY", "")
@@ -341,6 +342,14 @@ def create_app(state_override: dict | None = None) -> FastAPI:
     @app.post("/api/v1/webhook/telegram")
     async def webhook_telegram(request: Request):
         """Receive a Telegram Update and process it through the full request lifecycle."""
+        # Validate Telegram's secret token when configured.
+        # Telegram sends this as X-Telegram-Bot-Api-Secret-Token on every update.
+        tg_secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+        if tg_secret:
+            incoming = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+            if incoming != tg_secret:
+                return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+
         telegram_input = _state.get("telegram_input")
         if not telegram_input:
             return {"ok": True}
