@@ -266,7 +266,7 @@ All 22 criteria must be met before any domain work begins:
 - [ ] VoiceConfirmationSession: resolves correct pending action on yes/no
 - [ ] LLM router: health domain forces HEALTH_DOMAIN regardless of agent
 - [ ] LLM router: DataSanitiser applied before every cloud call
-- [ ] Cloudflare tunnel: api.mithra-app.com reachable externally
+- [ ] Cloudflare tunnel: assistant.mithra-app.com reachable externally
 - [ ] Health dashboard: all services show status + last-run + error count
 - [ ] 14 consecutive days stable on Windows laptop
 

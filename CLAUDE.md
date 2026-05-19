@@ -83,7 +83,7 @@ work begins. See "Phase 0 build order" below.
 - Target runtime: Windows laptop
 - Development: Mac (build and test locally, deploy via git pull)
 - Watchtower for automatic container updates
-- Cloudflare tunnel → api.mithra-app.com (no port forwarding needed)
+- Cloudflare tunnel → assistant.mithra-app.com (no port forwarding needed)
 - Webhook in production, polling fallback if tunnel is unreachable
 
 ### Data sensitivity tiers
@@ -128,7 +128,7 @@ Voice TTS            Piper via Wyoming protocol (port 10200)
 Messaging in         python-telegram-bot
 Messaging out        Baileys (Node.js, Docker container)
 Storage              Microsoft Graph API (OneDrive) + local filesystem
-Tunnel               cloudflared → api.mithra-app.com
+Tunnel               cloudflared → assistant.mithra-app.com
 Gateway              FastAPI (port 8000)
 Orchestration        Docker Compose (single compose.yaml)
 ```
@@ -160,7 +160,7 @@ mithra/
     autonomy/
       autonomy.yaml               action levels + deadline windows
     cloudflared/
-      config.yaml                 tunnel config for api.mithra-app.com
+      config.yaml                 tunnel config for assistant.mithra-app.com
 
   mithra/                         main Python package
     __init__.py
@@ -729,7 +729,7 @@ Dead letters surfaced on health dashboard.
 - [ ] Voice confirmation: VoiceConfirmationSession resolves correct pending action
 - [ ] LLM router: health domain forces HEALTH_DOMAIN regardless of agent TaskType
 - [ ] LLM router: DataSanitiser applied before every cloud call
-- [ ] Cloudflare tunnel: api.mithra-app.com reachable from outside home network
+- [ ] Cloudflare tunnel: assistant.mithra-app.com reachable from outside home network
 - [ ] Health dashboard: all services show status, last-run, error count
 - [ ] 14 consecutive days stable on deployment machine (Windows laptop)
 

@@ -158,9 +158,9 @@ Next: Cloudflare tunnel (CF-01 to CF-07)
 
 ### Group K — Cloudflare & Networking
 
-- [ ] CF-01 cloudflared — add to compose.yaml
-- [ ] CF-02 Tunnel route — api.mithra-app.com → localhost:8000
-- [ ] CF-03 Cloudflare Access — Zero Trust policy for api.mithra-app.com
+- [x] CF-01 cloudflared — add to compose.yaml
+- [x] CF-02 Tunnel route — assistant.mithra-app.com → localhost:9000
+- [ ] CF-03 Cloudflare Access — Zero Trust policy for assistant.mithra-app.com
 - [ ] CF-04 Verify external access — curl from phone off home Wi-Fi
 - [ ] CF-05 Telegram webhook — register setWebhook against tunnel URL
 - [ ] CF-06 Webhook test — Telegram message arrives via tunnel end-to-end
@@ -200,7 +200,7 @@ Next: Cloudflare tunnel (CF-01 to CF-07)
 - [x] DP-06 Watchtower — add to compose.yaml, auto-update on push
 - [ ] DP-07 Windows sleep settings — never sleep
 - [ ] DP-08 Startup on boot — Docker Desktop + compose stack
-- [x] DP-09 Health check — curl api.mithra-app.com/api/v1/health from Mac
+- [x] DP-09 Health check — curl assistant.mithra-app.com/api/v1/health from Mac
 - [x] DP-10 Full smoke test on laptop — Telegram round-trip
 
 ### Group N — End-to-End Integration Tests
@@ -242,7 +242,7 @@ Next: Cloudflare tunnel (CF-01 to CF-07)
 - [ ] VoiceConfirmationSession resolves correct pending action
 - [ ] LLM router: health forces HEALTH_DOMAIN regardless of agent
 - [ ] LLM router: DataSanitiser applied before every cloud call
-- [ ] api.mithra-app.com reachable from outside home network
+- [ ] assistant.mithra-app.com reachable from outside home network
 - [ ] Health dashboard: all services show status + last-run + errors
 - [ ] 14 consecutive days stable on Windows laptop
 

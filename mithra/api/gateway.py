@@ -24,7 +24,7 @@ Request lifecycle (per CLAUDE.md contract):
 
 Auth: Bearer token middleware validates SECRET_KEY on all /api/v1/* routes.
 /api/v1/health is unauthenticated (Docker healthcheck).
-Exposed at api.mithra-app.com via the Cloudflare tunnel.
+Exposed at assistant.mithra-app.com via the Cloudflare tunnel.
 """
 
 from __future__ import annotations

@@ -86,7 +86,7 @@ If a `NEVER`-blocked action is attempted more than 3 times in an hour, a securit
 - **Telegram Bot** — create one via [@BotFather](https://t.me/BotFather)
 - **Microsoft OneDrive** — register an app in Azure to get Graph API credentials (free)
 - **Anthropic API key** — for cloud reasoning tasks
-- A Cloudflare account (free tier) if you want `api.mithra-app.com` accessible outside your home network
+- A Cloudflare account (free tier) if you want `assistant.mithra-app.com` accessible outside your home network
 
 For local voice only you can skip Cloudflare. For health and local-only operation you can skip OneDrive.
 
@@ -161,7 +161,7 @@ Set your webhook (replace with your actual URL or Cloudflare tunnel hostname):
 
 ```bash
 curl -X POST "https://api.telegram.org/bot<YOUR_TOKEN>/setWebhook" \
-  -d "url=https://api.mithra-app.com/api/v1/webhook/telegram"
+  -d "url=https://assistant.mithra-app.com/api/v1/webhook/telegram"
 ```
 
 If you don't have a tunnel yet, the bot auto-falls back to polling mode.
