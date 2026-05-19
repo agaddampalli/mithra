@@ -26,7 +26,8 @@ Authorization (Option B — admin approval required):
 UserIdentityResolver maps Telegram chat IDs -> Mithra user_ids.
 Unknown sender -> user_id = "household" (safe default).
 
-Env vars: TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, MITHRA_ADMIN_TELEGRAM_ID
+Env vars: TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, MITHRA_ADMIN_TELEGRAM_ID,
+  TELEGRAM_WEBHOOK_URL (set to enable webhook mode; leave empty for polling)
 """
 
 from __future__ import annotations
@@ -191,6 +192,7 @@ class TelegramInputAdapter(InputAdapter):
         self._polling = False
         self._poll_task: asyncio.Task | None = None
         self._running = False
+        self._webhook_url = os.environ.get("TELEGRAM_WEBHOOK_URL", "")
         # Per-chat_id timestamps of /start attempts — for rate limiting
         self._start_attempts: dict[int, list[float]] = {}
 
@@ -203,7 +205,12 @@ class TelegramInputAdapter(InputAdapter):
         return "household"
 
     async def start(self) -> None:
-        """Start polling for updates (webhook is preferred in production)."""
+        """Start in webhook mode if TELEGRAM_WEBHOOK_URL is set, else start polling."""
+        if self._webhook_url:
+            self._running = True
+            self._polling = False
+            logger.info("Telegram webhook mode active — polling disabled")
+            return
         self._running = True
         self._polling = True
         self._poll_task = asyncio.create_task(self._poll_loop())
