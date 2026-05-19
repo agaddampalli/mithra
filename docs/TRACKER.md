@@ -10,9 +10,15 @@
 - `[ ]` Todo
 - `[!]` Blocked (note reason)
 
-## Current Focus
-**DP-01 — Docker Desktop on Windows** (Group M)
+## Current Status — May 2026
+Stack running on Windows laptop.
+Telegram bot live — both household members registered.
+Claude Sonnet responding end to end.
+Admin approval flow working.
+Next: Cloudflare tunnel (CF-01 to CF-07)
 
+## Current Focus
+**CF-01 — cloudflared in compose.yaml** (Group K)
 
 ---
 
@@ -135,7 +141,7 @@
 
 ### Group J — OAuth & Credentials
 
-- [ ] OA-01 Anthropic API key — console.anthropic.com
+- [x] OA-01 Anthropic API key — console.anthropic.com
 - [ ] OA-02 Encryption key — generate 32-byte key, save as MITHRA_ENCRYPTION_KEY
 - [ ] OA-03 Google Cloud project — create, enable Calendar + Gmail + People APIs
 - [ ] OA-04 Google OAuth credentials — create client ID, download JSON
@@ -144,8 +150,8 @@
 - [ ] OA-07 Google Contacts auth — authorize read, test list contacts
 - [ ] OA-08 Microsoft Azure app — register for OneDrive Graph API
 - [ ] OA-09 OneDrive auth — authorize, test create /PLOS/ folder
-- [ ] OA-10 Telegram bot — @BotFather → /newbot, save BOT_TOKEN
-- [ ] OA-11 Telegram test — send message, verify round-trip
+- [x] OA-10 Telegram bot — @BotFather → /newbot, save BOT_TOKEN
+- [x] OA-11 Telegram test — send message, verify round-trip
 - [ ] OA-12 Baileys WhatsApp — start container, scan QR with Person A's phone
 - [ ] OA-13 WhatsApp test — send message to external contact
 - [ ] OA-14 Cloudflare tunnel token — create tunnel, save token
@@ -186,16 +192,16 @@
 ### Group M — Deployment to Windows Laptop
 
 - [x] DP-00 GitHub Actions build pipeline — tests run on PR, image pushed to ghcr.io on merge to main; GHA cache, metadata-action tags, Watchtower polls every hour (label-enable)
-- [ ] DP-01 Docker Desktop — install on Windows, enable WSL2
-- [ ] DP-02 Git — install on Windows, configure SSH for GitHub
-- [ ] DP-03 Clone repo on Windows laptop
-- [ ] DP-04 Create .env on Windows with all credentials
-- [ ] DP-05 First docker-compose up — all containers start
-- [ ] DP-06 Watchtower — add to compose.yaml, auto-update on push
+- [x] DP-01 Docker Desktop — install on Windows, enable WSL2
+- [x] DP-02 Git — install on Windows, configure SSH for GitHub
+- [x] DP-03 Clone repo on Windows laptop
+- [x] DP-04 Create .env on Windows with all credentials
+- [x] DP-05 First docker-compose up — all containers start
+- [x] DP-06 Watchtower — add to compose.yaml, auto-update on push
 - [ ] DP-07 Windows sleep settings — never sleep
 - [ ] DP-08 Startup on boot — Docker Desktop + compose stack
-- [ ] DP-09 Health check — curl api.mithra-app.com/api/v1/health from Mac
-- [ ] DP-10 Full smoke test on laptop — Telegram round-trip
+- [x] DP-09 Health check — curl api.mithra-app.com/api/v1/health from Mac
+- [x] DP-10 Full smoke test on laptop — Telegram round-trip
 
 ### Group N — End-to-End Integration Tests
 
@@ -229,9 +235,9 @@
 - [ ] DefaultAutonomyEngine: NEVER >3/hour triggers security alert
 - [ ] ActionExecutorRegistry: two action types routing correctly
 - [ ] DeadLetterQueue: 3 retries exhausted → dead letter store
-- [ ] Telegram input → normalised AgentRequest
+- [x] Telegram input → normalised AgentRequest
 - [ ] Calendar write → event appears in Google Calendar
-- [ ] run_stream() yields TEXT_DELTA → returns AgentResult
+- [x] run_stream() yields TEXT_DELTA → returns AgentResult
 - [ ] Second conversation turn loads history from session store
 - [ ] VoiceConfirmationSession resolves correct pending action
 - [ ] LLM router: health forces HEALTH_DOMAIN regardless of agent
