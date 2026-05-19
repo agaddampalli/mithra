@@ -361,81 +361,76 @@ class TestUserIdentityResolverRegistration:
 # normalise() — /start and registration callback
 # ---------------------------------------------------------------------------
 
-def _start_update(chat_id: int = 111, first_name: str = "Alice") -> dict:
+def _start_update(chat_id: int = 111, first_name: str = "Alice", username: str = "") -> dict:
+    from_data: dict = {"id": chat_id, "first_name": first_name}
+    if username:
+        from_data["username"] = username
     return {
         "update_id": 10,
         "message": {
             "message_id": 50,
             "chat": {"id": chat_id, "type": "private"},
-            "from": {"id": chat_id, "first_name": first_name},
+            "from": from_data,
             "text": "/start",
         },
     }
 
 
-def _register_callback(chat_id: int = 111, user_id: str = "person_a") -> dict:
-    return {
-        "update_id": 11,
-        "callback_query": {
-            "id": "cq-reg",
-            "message": {"chat": {"id": chat_id}, "message_id": 51},
-            "data": json.dumps({"action": "register", "user_id": user_id}),
-        },
-    }
+class TestNormaliseStart:
+    """Option B: /start returns None for unknown users, AgentRequest("hi") for known users."""
 
+    def _known_resolver(self, chat_id: int = 111) -> UserIdentityResolver:
+        return UserIdentityResolver({"members": [
+            {"user_id": "person_a", "telegram_ids": [chat_id], "display_name": "Alice"},
+        ]})
 
-class TestNormaliseRegistration:
-    def test_start_command_returns_registration_signal(self):
-        adapter = _make_input_adapter()
-        result = adapter.normalise(_start_update(chat_id=111, first_name="Alice"), "telegram")
+    def _unknown_resolver(self) -> UserIdentityResolver:
+        return UserIdentityResolver({})
+
+    def test_start_by_unknown_user_returns_none(self):
+        adapter = _make_input_adapter(identity_resolver=self._unknown_resolver())
+        result = adapter.normalise(_start_update(chat_id=777), "telegram")
+        assert result is None
+
+    def test_start_by_unknown_user_records_attempt(self):
+        adapter = _make_input_adapter(identity_resolver=self._unknown_resolver())
+        adapter.normalise(_start_update(chat_id=777), "telegram")
+        assert len(adapter._start_attempts.get(777, [])) == 1
+
+    def test_start_by_authorized_user_returns_agent_request(self):
+        adapter = _make_input_adapter(identity_resolver=self._known_resolver(111))
+        result = adapter.normalise(_start_update(chat_id=111), "telegram")
         assert isinstance(result, AgentRequest)
-        assert result.signal["registration"] is True
-        assert result.signal["chat_id"] == 111
-        assert result.signal["first_name"] == "Alice"
+        assert result.text == "hi"
 
-    def test_start_command_uses_household_user_id(self):
-        adapter = _make_input_adapter()
-        result = adapter.normalise(_start_update(), "telegram")
-        assert result.user_id == "household"
-
-    def test_start_command_sets_device_id(self):
-        adapter = _make_input_adapter()
-        result = adapter.normalise(_start_update(chat_id=222), "telegram")
-        assert result.device_id == "telegram:222"
-
-    def test_register_callback_returns_registered_signal(self):
-        resolver = UserIdentityResolver(
-            {"members": [{"user_id": "person_a", "telegram_ids": []}]}
-        )
-        adapter = _make_input_adapter(identity_resolver=resolver)
-        result = adapter.normalise(_register_callback(chat_id=111, user_id="person_a"), "telegram")
-        assert isinstance(result, AgentRequest)
-        assert result.signal["registered"] is True
-        assert result.signal["user_id"] == "person_a"
-
-    def test_register_callback_calls_resolver_register(self):
-        resolver = UserIdentityResolver({})
-        adapter = _make_input_adapter(identity_resolver=resolver)
-        adapter.normalise(_register_callback(chat_id=555, user_id="person_b"), "telegram")
-        assert resolver.resolve_telegram(555) == "person_b"
-
-    def test_register_callback_sets_user_id_on_request(self):
-        resolver = UserIdentityResolver({})
-        adapter = _make_input_adapter(identity_resolver=resolver)
-        result = adapter.normalise(_register_callback(chat_id=111, user_id="person_a"), "telegram")
+    def test_start_by_authorized_user_sets_user_id(self):
+        adapter = _make_input_adapter(identity_resolver=self._known_resolver(111))
+        result = adapter.normalise(_start_update(chat_id=111), "telegram")
         assert result.user_id == "person_a"
+
+    def test_start_by_authorized_user_sets_device_id(self):
+        adapter = _make_input_adapter(identity_resolver=self._known_resolver(111))
+        result = adapter.normalise(_start_update(chat_id=111), "telegram")
+        assert result.device_id == "telegram:111"
+
+    def test_start_by_authorized_user_not_rate_limited(self):
+        adapter = _make_input_adapter(identity_resolver=self._known_resolver(111))
+        for _ in range(5):
+            result = adapter.normalise(_start_update(chat_id=111), "telegram")
+            assert result is not None and result.text == "hi"
+        # No rate-limit tracking for authorized users
+        assert len(adapter._start_attempts.get(111, [])) == 0
+
+    def test_start_with_no_resolver_returns_none(self):
+        # No resolver: cannot confirm authorized → treated as unknown → None
+        adapter = _make_input_adapter()
+        result = adapter.normalise(_start_update(chat_id=111), "telegram")
+        assert result is None
 
     def test_non_register_callback_still_works(self):
         adapter = _make_input_adapter()
         result = adapter.normalise(_callback_update(action="confirm"), "telegram")
         assert result.signal["confirmation"] == "confirm"
-
-    def test_start_not_intercepted_as_plain_text(self):
-        adapter = _make_input_adapter()
-        result = adapter.normalise(_start_update(), "telegram")
-        # Must be the registration path, not a plain text AgentRequest
-        assert result.signal.get("registration") is True
-        assert result.signal.get("chat_id") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -519,30 +514,14 @@ class TestAuthorization:
         assert result is not None
         assert result.text == "Hello Mithra"
 
-    def test_start_allowed_for_unknown_user(self):
+    def test_start_bypasses_auth_gate_for_unknown_user(self):
         resolver = self._resolver_with_member(chat_id=111)
         adapter = _make_input_adapter(identity_resolver=resolver)
-        # chat_id=999 is unknown but /start must be allowed
-        result = adapter.normalise(_start_update(chat_id=999), "telegram")
-        assert result is not None
-        assert result.signal.get("registration") is True
-
-    def test_register_callback_allowed_for_unknown_user(self):
-        resolver = self._resolver_with_member(chat_id=111)
-        adapter = _make_input_adapter(identity_resolver=resolver)
-        # chat_id=999 is unknown but completing registration must be allowed
-        result = adapter.normalise(_register_callback(chat_id=999, user_id="person_b"), "telegram")
-        assert result is not None
-        assert result.signal.get("registered") is True
-
-    def test_after_registration_user_is_authorized(self):
-        resolver = UserIdentityResolver({})
-        adapter = _make_input_adapter(identity_resolver=resolver)
-        # Register via callback
-        adapter.normalise(_register_callback(chat_id=555, user_id="person_b"), "telegram")
-        # Subsequent text message must pass
-        result = adapter.normalise(_text_update(chat_id=555), "telegram")
-        assert result is not None
+        # chat_id=999 is unknown but /start must bypass the auth gate (Option B)
+        # It returns None (holding message sent async) — NOT rejected by auth gate
+        adapter.normalise(_start_update(chat_id=999), "telegram")
+        # Rate-limit tracking proves the holding-message path was reached, not auth rejection
+        assert len(adapter._start_attempts.get(999, [])) == 1
 
     def test_no_resolver_allows_all_users(self):
         # No resolver attached — auth check is skipped entirely
@@ -556,43 +535,56 @@ class TestAuthorization:
 # ---------------------------------------------------------------------------
 
 class TestStartRateLimit:
+    """Rate limit only applies to unknown users (to prevent admin notification spam)."""
+
     def _resolver_unknown(self) -> UserIdentityResolver:
         return UserIdentityResolver({})
 
-    def test_first_three_starts_allowed(self):
-        adapter = _make_input_adapter(identity_resolver=self._resolver_unknown())
-        for _ in range(3):
-            result = adapter.normalise(_start_update(chat_id=111), "telegram")
-            assert result is not None
-            assert result.signal.get("registration") is True
+    def _resolver_known(self, chat_id: int = 111) -> UserIdentityResolver:
+        return UserIdentityResolver({"members": [
+            {"user_id": "person_a", "telegram_ids": [chat_id], "display_name": "Alice"},
+        ]})
 
-    def test_fourth_start_blocked(self):
+    def test_three_start_attempts_recorded_for_unknown_user(self):
         adapter = _make_input_adapter(identity_resolver=self._resolver_unknown())
         for _ in range(3):
             adapter.normalise(_start_update(chat_id=111), "telegram")
+        assert len(adapter._start_attempts.get(111, [])) == 3
+
+    def test_fourth_start_silently_dropped(self):
+        adapter = _make_input_adapter(identity_resolver=self._resolver_unknown())
+        for _ in range(3):
+            adapter.normalise(_start_update(chat_id=111), "telegram")
+        # 4th: returns None without adding to attempts (silent drop)
         result = adapter.normalise(_start_update(chat_id=111), "telegram")
         assert result is None
+        assert len(adapter._start_attempts.get(111, [])) == 3
 
     def test_rate_limit_is_per_chat_id(self):
         adapter = _make_input_adapter(identity_resolver=self._resolver_unknown())
-        # Exhaust limit for chat 111
         for _ in range(3):
             adapter.normalise(_start_update(chat_id=111), "telegram")
-        # chat 222 must still be allowed
-        result = adapter.normalise(_start_update(chat_id=222), "telegram")
-        assert result is not None
+        # chat 222 gets its own attempt counter
+        adapter.normalise(_start_update(chat_id=222), "telegram")
+        assert len(adapter._start_attempts.get(222, [])) == 1
 
     def test_rate_limit_resets_after_window(self):
         import time as _time
         adapter = _make_input_adapter(identity_resolver=self._resolver_unknown())
-        # Exhaust limit
         for _ in range(3):
             adapter.normalise(_start_update(chat_id=111), "telegram")
-        # Manually age the timestamps past the window
+        # Age the timestamps past the window
         adapter._start_attempts[111] = [_time.time() - 3601] * 3
-        # Should be allowed again
-        result = adapter.normalise(_start_update(chat_id=111), "telegram")
-        assert result is not None
+        # Next attempt clears stale entries and records fresh one
+        adapter.normalise(_start_update(chat_id=111), "telegram")
+        assert len(adapter._start_attempts.get(111, [])) == 1
+
+    def test_authorized_user_start_never_rate_limited(self):
+        adapter = _make_input_adapter(identity_resolver=self._resolver_known(111))
+        for _ in range(5):
+            result = adapter.normalise(_start_update(chat_id=111), "telegram")
+            assert result is not None and result.text == "hi"
+        assert len(adapter._start_attempts.get(111, [])) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -654,24 +646,32 @@ class TestBlockedUsers:
 # Admin approve / block callbacks
 # ---------------------------------------------------------------------------
 
-def _admin_allow_callback(admin_chat_id: int = 999, target_id: int = 555) -> dict:
+def _admin_approve_callback(
+    admin_chat_id: int = 999, target_id: int = 555, uid: str = "person_a"
+) -> dict:
     return {
         "update_id": 20,
         "callback_query": {
             "id": "cq-admin",
             "message": {"chat": {"id": admin_chat_id}, "message_id": 100},
-            "data": json.dumps({"action": "admin_allow", "id": target_id}),
+            "data": json.dumps(
+                {"action": "admin_approve", "id": target_id, "uid": uid},
+                separators=(',', ':'),
+            ),
         },
     }
 
 
-def _admin_block_callback(admin_chat_id: int = 999, target_id: int = 555) -> dict:
+def _admin_deny_callback(admin_chat_id: int = 999, target_id: int = 555) -> dict:
     return {
         "update_id": 21,
         "callback_query": {
-            "id": "cq-admin-block",
+            "id": "cq-admin-deny",
             "message": {"chat": {"id": admin_chat_id}, "message_id": 101},
-            "data": json.dumps({"action": "admin_block", "id": target_id}),
+            "data": json.dumps(
+                {"action": "admin_deny", "id": target_id},
+                separators=(',', ':'),
+            ),
         },
     }
 
@@ -679,62 +679,61 @@ def _admin_block_callback(admin_chat_id: int = 999, target_id: int = 555) -> dic
 class TestAdminApprove:
     def _resolver_with_admin(self) -> UserIdentityResolver:
         # Admin (999) is pre-authorized — mirrors MITHRA_ADMIN_TELEGRAM_ID in prod
-        config = {"members": [{"user_id": "person_a", "telegram_ids": [999]}]}
+        config = {"members": [
+            {"user_id": "person_a", "telegram_ids": [999], "display_name": "Abhiram"},
+            {"user_id": "person_b", "telegram_ids": [], "display_name": "Wife"},
+        ]}
         return UserIdentityResolver(config)
 
-    def test_admin_allow_registers_user_as_household(self):
+    def test_admin_approve_registers_as_specified_user_id(self):
         resolver = self._resolver_with_admin()
         adapter = _make_input_adapter(identity_resolver=resolver)
-        adapter.normalise(_admin_allow_callback(admin_chat_id=999, target_id=555), "telegram")
+        adapter.normalise(_admin_approve_callback(admin_chat_id=999, target_id=555, uid="person_b"), "telegram")
         assert resolver.is_authorized(555) is True
-        assert resolver.resolve_telegram(555) == "household"
+        assert resolver.resolve_telegram(555) == "person_b"
 
-    def test_admin_allow_returns_none(self):
+    def test_admin_approve_returns_none(self):
         resolver = self._resolver_with_admin()
         adapter = _make_input_adapter(identity_resolver=resolver)
-        result = adapter.normalise(_admin_allow_callback(admin_chat_id=999), "telegram")
+        result = adapter.normalise(_admin_approve_callback(admin_chat_id=999), "telegram")
         assert result is None
 
-    def test_admin_allow_no_resolver_does_not_crash(self):
+    def test_admin_approve_no_resolver_does_not_crash(self):
         adapter = _make_input_adapter()
-        result = adapter.normalise(_admin_allow_callback(), "telegram")
+        result = adapter.normalise(_admin_approve_callback(), "telegram")
         assert result is None
 
-    def test_admin_block_blocks_user(self):
+    def test_admin_deny_blocks_user(self):
         resolver = self._resolver_with_admin()
         adapter = _make_input_adapter(identity_resolver=resolver)
-        adapter.normalise(_admin_block_callback(admin_chat_id=999, target_id=666), "telegram")
+        adapter.normalise(_admin_deny_callback(admin_chat_id=999, target_id=666), "telegram")
         assert resolver.is_authorized(666) is False
         # Confirm it's actually blocked, not just unknown
         resolver.register(666, "person_a")
         assert resolver.is_authorized(666) is False
 
-    def test_admin_block_returns_none(self):
+    def test_admin_deny_returns_none(self):
         resolver = self._resolver_with_admin()
         adapter = _make_input_adapter(identity_resolver=resolver)
-        result = adapter.normalise(_admin_block_callback(admin_chat_id=999), "telegram")
+        result = adapter.normalise(_admin_deny_callback(admin_chat_id=999), "telegram")
         assert result is None
 
-    def test_admin_block_no_resolver_does_not_crash(self):
+    def test_admin_deny_no_resolver_does_not_crash(self):
         adapter = _make_input_adapter()
-        result = adapter.normalise(_admin_block_callback(), "telegram")
+        result = adapter.normalise(_admin_deny_callback(), "telegram")
         assert result is None
 
-    def test_allowed_user_can_send_messages_after_approval(self):
+    def test_approved_user_can_send_messages(self):
         resolver = self._resolver_with_admin()
         adapter = _make_input_adapter(identity_resolver=resolver)
-        # Admin approves user 555
-        adapter.normalise(_admin_allow_callback(admin_chat_id=999, target_id=555), "telegram")
-        # 555 should now pass the auth gate
+        adapter.normalise(_admin_approve_callback(admin_chat_id=999, target_id=555), "telegram")
         result = adapter.normalise(_text_update(chat_id=555), "telegram")
         assert result is not None
 
-    def test_blocked_user_rejected_even_after_explicit_register(self):
+    def test_denied_user_blocked_even_after_explicit_register(self):
         resolver = self._resolver_with_admin()
         adapter = _make_input_adapter(identity_resolver=resolver)
-        # Admin blocks 666
-        adapter.normalise(_admin_block_callback(admin_chat_id=999, target_id=666), "telegram")
-        # Even if somehow registered, blocked takes precedence
+        adapter.normalise(_admin_deny_callback(admin_chat_id=999, target_id=666), "telegram")
         resolver.register(666, "person_a")
         result = adapter.normalise(_text_update(chat_id=666), "telegram")
         assert result is None
@@ -746,7 +745,7 @@ class TestAdminApprove:
 
 class TestAdminNotification:
     @pytest.mark.asyncio
-    async def test_notify_admin_sends_message_with_buttons(self, monkeypatch):
+    async def test_request_admin_approval_sends_member_buttons(self, monkeypatch):
         monkeypatch.setenv("MITHRA_ADMIN_TELEGRAM_ID", "999")
         captured: list[dict] = []
 
@@ -754,13 +753,19 @@ class TestAdminNotification:
             captured.append(json.loads(request.content))
             return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
 
+        config = {"members": [
+            {"user_id": "person_a", "telegram_ids": [], "display_name": "Abhiram"},
+            {"user_id": "person_b", "telegram_ids": [], "display_name": "Wife"},
+        ]}
+        resolver = UserIdentityResolver(config)
+
         with respx.mock:
             respx.post("https://api.telegram.org/bottest-token/sendMessage").mock(
                 side_effect=capture
             )
-            adapter = _make_input_adapter()
-            await adapter._notify_admin_of_unknown_user(
-                chat_id=555, first_name="Alice", username="alice99", message_text="hello"
+            adapter = _make_input_adapter(identity_resolver=resolver)
+            await adapter._request_admin_approval(
+                chat_id=555, first_name="Alice", username="alice99"
             )
 
         assert len(captured) == 1
@@ -768,19 +773,32 @@ class TestAdminNotification:
         assert body["chat_id"] == 999
         assert "555" in body["text"]
         assert "Alice" in body["text"]
-        keyboard = body["reply_markup"]["inline_keyboard"][0]
-        for btn in keyboard:
-            # Telegram enforces 64-byte hard limit on callback_data
-            assert len(btn["callback_data"].encode()) <= 64
-        actions = [json.loads(btn["callback_data"])["action"] for btn in keyboard]
-        assert "admin_allow" in actions
-        assert "admin_block" in actions
-        # Verify "id" key carries the target chat_id
-        allow_btn = next(b for b in keyboard if json.loads(b["callback_data"])["action"] == "admin_allow")
-        assert json.loads(allow_btn["callback_data"])["id"] == 555
+
+        # Flatten rows to get all buttons
+        all_buttons = [btn for row in body["reply_markup"]["inline_keyboard"] for btn in row]
+
+        # All callback_data within Telegram's 64-byte limit
+        for btn in all_buttons:
+            assert len(btn["callback_data"].encode()) <= 64, (
+                f"callback_data too long: {btn['callback_data']!r}"
+            )
+
+        actions = [json.loads(b["callback_data"])["action"] for b in all_buttons]
+        assert "admin_approve" in actions
+        assert "admin_deny" in actions
+
+        # 2 approve buttons (one per member) + 1 deny
+        assert len(all_buttons) == 3
+
+        # Each approve button carries uid and id
+        approve_btns = [b for b in all_buttons if json.loads(b["callback_data"])["action"] == "admin_approve"]
+        uids = {json.loads(b["callback_data"])["uid"] for b in approve_btns}
+        assert uids == {"person_a", "person_b"}
+        for b in approve_btns:
+            assert json.loads(b["callback_data"])["id"] == 555
 
     @pytest.mark.asyncio
-    async def test_notify_admin_skipped_when_no_admin_id(self, monkeypatch):
+    async def test_request_admin_approval_skipped_when_no_admin_id(self, monkeypatch):
         monkeypatch.delenv("MITHRA_ADMIN_TELEGRAM_ID", raising=False)
         captured: list[dict] = []
 
@@ -789,6 +807,26 @@ class TestAdminNotification:
                 side_effect=lambda req, route: captured.append(req) or httpx.Response(200, json={"ok": True})
             )
             adapter = _make_input_adapter()
-            await adapter._notify_admin_of_unknown_user(555, "", "", "")
+            await adapter._request_admin_approval(555, "", "")
 
         assert len(captured) == 0
+
+    @pytest.mark.asyncio
+    async def test_send_holding_message_notifies_user(self):
+        captured: list[dict] = []
+
+        def capture(request, route):
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 2}})
+
+        with respx.mock:
+            respx.post("https://api.telegram.org/bottest-token/sendMessage").mock(
+                side_effect=capture
+            )
+            adapter = _make_input_adapter()
+            await adapter._send_holding_message(555, "Alice")
+
+        assert len(captured) == 1
+        assert captured[0]["chat_id"] == 555
+        assert "Alice" in captured[0]["text"]
+        assert "access request" in captured[0]["text"].lower()

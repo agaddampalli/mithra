@@ -13,12 +13,14 @@ Normalises:
   - Documents       -> returns None immediately; async download via create_task
   - Callback queries -> AgentRequest with confirmation signal
 
-Authorization:
+Authorization (Option B — admin approval required):
   - Unknown Telegram IDs are rejected before any processing.
-  - /start is always allowed so unknown users can self-register.
-  - /start is rate-limited to 3 attempts per hour per chat_id.
-  - Register callbacks (action="register") are allowed for unknown users
-    so they can complete registration after pressing the member button.
+  - /start is always allowed so unknown users can request access.
+  - /start for already-authorized users returns AgentRequest with text="hi".
+  - /start for unknown users: sends holding message to user + approval request to admin.
+  - /start rate-limited to 3 attempts/hour per chat_id (unknown users only); silently ignored when over limit.
+  - Admin approves via inline button → user registered as the chosen household member.
+  - Admin denies via inline button → user blocked permanently.
   - MITHRA_ADMIN_TELEGRAM_ID always authorized as person_a.
 
 UserIdentityResolver maps Telegram chat IDs -> Mithra user_ids.
@@ -269,121 +271,100 @@ class TelegramInputAdapter(InputAdapter):
         else:
             return None
 
-        # Classify this update so we know which paths bypass auth
-        is_start = bool(message and message.get("text") == "/start")
-        is_register_callback = False
+        # Parse callback data once
         cb_data: dict = {}
         if callback and callback.get("data"):
             try:
                 cb_data = json.loads(callback["data"])
-                is_register_callback = cb_data.get("action") == "register"
             except (json.JSONDecodeError, TypeError):
                 pass
 
+        is_start = bool(message and message.get("text") == "/start")
+
         # Authorization gate — reject unknown users before any processing.
-        # Exemptions: /start (lets users begin registration) and register callbacks
-        # (lets users complete registration by tapping the member-selection button).
-        if not is_start and not is_register_callback:
+        # Only exemption: /start lets unknown users request access from admin.
+        if not is_start:
             if self._identity_resolver and not self._identity_resolver.is_authorized(chat_id):
                 logger.warning("Rejected unauthorized Telegram user: chat_id=%d", chat_id)
-                first_name = ""
-                username = ""
-                msg_text = ""
-                if message:
-                    sender = message.get("from", {})
-                    first_name = sender.get("first_name", "")
-                    username = sender.get("username", "")
-                    msg_text = message.get("text", "")
                 try:
                     loop = asyncio.get_running_loop()
                     loop.create_task(self._reject_unauthorized(chat_id))
-                    loop.create_task(self._notify_admin_of_unknown_user(
-                        chat_id, first_name, username, msg_text,
-                    ))
                 except RuntimeError:
                     pass
                 return None
 
-        # --- /start — self-registration flow ---
+        # --- /start ---
         if is_start:
-            # Rate limit: max 3 /start attempts per hour to prevent abuse
+            # Already authorized → greet them and pass through
+            if self._identity_resolver and self._identity_resolver.is_authorized(chat_id):
+                return AgentRequest(
+                    user_id=self._resolve_user(chat_id),
+                    device_id=f"telegram:{chat_id}",
+                    input_channel=InputChannel.TELEGRAM,
+                    text="hi",
+                    signal={"chat_id": chat_id},
+                    request_id=str(uuid.uuid4()),
+                    session_id=f"tg:{chat_id}",
+                )
+
+            # Unknown user — rate limit to prevent admin notification spam
             now = time.time()
             attempts = self._start_attempts.get(chat_id, [])
             attempts = [t for t in attempts if now - t < _START_RATE_WINDOW]
             if len(attempts) >= _START_RATE_LIMIT:
                 logger.warning("Rate-limited /start from chat_id=%d", chat_id)
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(self._reject_unauthorized(chat_id))
-                except RuntimeError:
-                    pass
-                return None
+                return None  # silent ignore — no message
             attempts.append(now)
             self._start_attempts[chat_id] = attempts
 
             first_name = message.get("from", {}).get("first_name", "")
-            return AgentRequest(
-                user_id="household",
-                device_id=f"telegram:{chat_id}",
-                input_channel=InputChannel.TELEGRAM,
-                text="/start",
-                signal={
-                    "registration": True,
-                    "chat_id": chat_id,
-                    "first_name": first_name,
-                },
-                request_id=str(uuid.uuid4()),
-                session_id=f"tg:{chat_id}",
-            )
+            username = message.get("from", {}).get("username", "")
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._send_holding_message(chat_id, first_name))
+                loop.create_task(self._request_admin_approval(chat_id, first_name, username))
+            except RuntimeError:
+                pass
+            return None
 
-        # --- Registration callback (member selection button tapped) ---
-        if is_register_callback:
-            user_id = cb_data.get("user_id", "")
-            if self._identity_resolver and user_id:
-                self._identity_resolver.register(chat_id, user_id)
-            return AgentRequest(
-                user_id=user_id,
-                device_id=f"telegram:{chat_id}",
-                input_channel=InputChannel.TELEGRAM,
-                signal={
-                    "registered": True,
-                    "user_id": user_id,
-                },
-                request_id=str(uuid.uuid4()),
-                session_id=f"tg:{chat_id}",
-            )
-
-        # --- Generic callback (Level-1 confirmation response) ---
+        # --- Generic callback (admin approval or Level-1 confirmation) ---
         if callback:
             action = cb_data.get("action")
 
-            # Admin approve — register the pending user as household member
-            if action == "admin_allow":
-                allowed_id = int(cb_data["id"])
+            # Admin approves the pending user as a specific household member
+            if action == "admin_approve":
+                target_id = int(cb_data["id"])
+                uid = cb_data.get("uid", "household")
                 if self._identity_resolver:
-                    self._identity_resolver.register(allowed_id, "household")
+                    self._identity_resolver.register(target_id, uid)
+                    display_name = next(
+                        (m["display_name"] for m in self._identity_resolver.get_members()
+                         if m["user_id"] == uid),
+                        uid,
+                    )
+                else:
+                    display_name = uid
                 try:
                     loop = asyncio.get_running_loop()
                     loop.create_task(self._confirm_admin_action(
-                        chat_id,
-                        f"✅ User {allowed_id} has been allowed.",
+                        chat_id, f"✅ Approved as {display_name}.",
                     ))
-                    loop.create_task(self._notify_allowed_user(allowed_id))
+                    loop.create_task(self._notify_approved(target_id, display_name))
                 except RuntimeError:
                     pass
                 return None
 
-            # Admin deny — block the user permanently
-            if action == "admin_block":
-                blocked_id = int(cb_data["id"])
+            # Admin denies — block the user permanently
+            if action == "admin_deny":
+                target_id = int(cb_data["id"])
                 if self._identity_resolver:
-                    self._identity_resolver.block(blocked_id)
+                    self._identity_resolver.block(target_id)
                 try:
                     loop = asyncio.get_running_loop()
                     loop.create_task(self._confirm_admin_action(
-                        chat_id,
-                        f"❌ User {blocked_id} has been blocked.",
+                        chat_id, f"❌ User {target_id} denied.",
                     ))
+                    loop.create_task(self._notify_denied(target_id))
                 except RuntimeError:
                     pass
                 return None
@@ -475,45 +456,60 @@ class TelegramInputAdapter(InputAdapter):
         except Exception:
             pass
 
-    async def _notify_admin_of_unknown_user(
-        self,
-        chat_id: int,
-        first_name: str,
-        username: str,
-        message_text: str,
+    async def _send_holding_message(self, chat_id: int, first_name: str) -> None:
+        """Tell the unknown user their request has been sent to the admin."""
+        name = first_name or "there"
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    self._api("sendMessage"),
+                    json={
+                        "chat_id": chat_id,
+                        "text": (
+                            f"Hi {name}! Your access request has been sent to the admin. "
+                            "You'll be notified once it's approved."
+                        ),
+                    },
+                    timeout=5,
+                )
+        except Exception:
+            pass
+
+    async def _request_admin_approval(
+        self, chat_id: int, first_name: str, username: str
     ) -> None:
-        """Notify the admin when an unknown user attempts access, with Allow/Block buttons."""
+        """Send the admin an approval request with one button per household member plus Deny."""
         admin_id_str = os.environ.get("MITHRA_ADMIN_TELEGRAM_ID")
         if not admin_id_str:
             return
         try:
-            # Keep callback_data under Telegram's 64-byte limit.
-            # first_name is visible in the message text — no need to repeat it.
-            keyboard = {
-                "inline_keyboard": [[
-                    {
-                        "text": "✅ Allow",
-                        "callback_data": json.dumps({
-                            "action": "admin_allow",
-                            "id": chat_id,
-                        }),
-                    },
-                    {
-                        "text": "❌ Block",
-                        "callback_data": json.dumps({
-                            "action": "admin_block",
-                            "id": chat_id,
-                        }),
-                    },
-                ]]
-            }
+            members = self._identity_resolver.get_members() if self._identity_resolver else []
+            # One approve button per member, then deny — each on its own row.
+            # callback_data kept under Telegram's 64-byte hard limit via compact separators.
+            approve_rows = [
+                [{
+                    "text": f"✅ {m['display_name']}",
+                    "callback_data": json.dumps(
+                        {"action": "admin_approve", "id": chat_id, "uid": m["user_id"]},
+                        separators=(',', ':'),
+                    ),
+                }]
+                for m in members
+            ]
+            deny_row = [{
+                "text": "❌ Deny",
+                "callback_data": json.dumps(
+                    {"action": "admin_deny", "id": chat_id},
+                    separators=(',', ':'),
+                ),
+            }]
+            keyboard = {"inline_keyboard": approve_rows + [deny_row]}
             text = (
-                f"⚠️ Unknown user tried to access Mithra\n\n"
-                f"Name: {first_name}\n"
+                f"🔔 New access request\n\n"
+                f"Name: {first_name or 'Unknown'}\n"
                 f"Username: @{username or 'none'}\n"
-                f"Telegram ID: {chat_id}\n"
-                f"Message: '{message_text[:50]}'\n\n"
-                f"Do you want to allow this person?"
+                f"Telegram ID: {chat_id}\n\n"
+                f"Approve as which member?"
             )
             async with httpx.AsyncClient() as client:
                 await client.post(
@@ -540,15 +536,33 @@ class TelegramInputAdapter(InputAdapter):
         except Exception:
             pass
 
-    async def _notify_allowed_user(self, chat_id: int) -> None:
-        """Tell a newly-allowed user that they now have access."""
+    async def _notify_approved(self, chat_id: int, display_name: str) -> None:
+        """Tell the newly-approved user which household member they were registered as."""
         try:
             async with httpx.AsyncClient() as client:
                 await client.post(
                     self._api("sendMessage"),
                     json={
                         "chat_id": chat_id,
-                        "text": "✅ You have been granted access to Mithra. Say hello!",
+                        "text": (
+                            f"✅ You've been approved as {display_name}! "
+                            "You can now use Mithra."
+                        ),
+                    },
+                    timeout=5,
+                )
+        except Exception:
+            pass
+
+    async def _notify_denied(self, chat_id: int) -> None:
+        """Tell the denied user their request was declined."""
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    self._api("sendMessage"),
+                    json={
+                        "chat_id": chat_id,
+                        "text": "❌ Your access request has been declined.",
                     },
                     timeout=5,
                 )
