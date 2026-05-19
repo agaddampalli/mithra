@@ -36,10 +36,12 @@ services:
       - mithra-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 15s
 
   # ── LiteLLM proxy ───────────────────────────────────────
   # Core service — always runs. When local-llm profile is active,
@@ -60,7 +62,8 @@ services:
       - mithra-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:4000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
