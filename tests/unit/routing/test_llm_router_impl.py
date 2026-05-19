@@ -105,15 +105,15 @@ class TestModelRouting:
         router.complete(TaskType.SIMPLE_RETRIEVAL, "food", _messages())
         assert client.calls[0]["body"]["model"] == "ollama/phi3:mini"
 
-    def test_cloud_task_type_routes_to_claude(self):
+    def test_cloud_task_type_routes_to_gemini_first(self):
         router, client = _make_router()
         router.complete(TaskType.CROSS_DOMAIN_INSIGHT, "money", _messages())
-        assert client.calls[0]["body"]["model"] == "claude-sonnet-4-6"
+        assert client.calls[0]["body"]["model"] == "gemini-flash"
 
-    def test_document_parsing_routes_to_claude(self):
+    def test_document_parsing_routes_to_gemini_first(self):
         router, client = _make_router()
         router.complete(TaskType.DOCUMENT_PARSING, "documents", _messages())
-        assert client.calls[0]["body"]["model"] == "claude-sonnet-4-6"
+        assert client.calls[0]["body"]["model"] == "gemini-flash"
 
     def test_route_taken_is_local_for_phi3(self):
         router, client = _make_router()
@@ -219,9 +219,9 @@ class TestFallback:
         result = router.complete(TaskType.DATA_CAPTURE, "food", _messages())
         assert result.fallback_triggered is True
         assert result.success is True
-        # Two calls: first failed, second succeeded with cloud model
+        # Two calls: first (local) failed, second succeeded with first cloud model
         assert len(client.calls) == 2
-        assert client.calls[1]["body"]["model"] == "claude-sonnet-4-6"
+        assert client.calls[1]["body"]["model"] == "gemini-flash"
 
     def test_fallback_route_taken_label(self):
         router, client = _make_router(fail_first_call=True)

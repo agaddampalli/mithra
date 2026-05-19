@@ -201,25 +201,30 @@ class _RouteConfig:
     fallback: str | None  # "cloud" or None
 
 
+# Cloud routing order: Gemini first (free tier, 1M tokens/day), then GPT-4o-mini
+# (cheap buffer), then Claude last (paid credits, highest quality).
+# When local LLM is unavailable, cloud tasks start at the top of _CLOUD_CHAIN.
+# Health domain is always local-only — never enters the cloud chain.
 _TASK_ROUTES: dict[TaskType, _RouteConfig] = {
     TaskType.DATA_CAPTURE:              _RouteConfig("ollama/phi3:mini", "cloud"),
     TaskType.RULE_BASED_ALERT:          _RouteConfig("ollama/phi3:mini", "cloud"),
     TaskType.SIMPLE_RETRIEVAL:          _RouteConfig("ollama/phi3:mini", "cloud"),
     TaskType.INTENT_CLASSIFICATION:     _RouteConfig("ollama/phi3:mini", "cloud"),
     TaskType.VOICE_DISAMBIGUATION:      _RouteConfig("ollama/phi3:mini", "cloud"),
-    TaskType.CROSS_DOMAIN_INSIGHT:      _RouteConfig("claude-sonnet-4-6", None),
-    TaskType.NATURAL_LANGUAGE_DRAFTING: _RouteConfig("claude-sonnet-4-6", None),
-    TaskType.DOCUMENT_PARSING:          _RouteConfig("claude-sonnet-4-6", None),
-    TaskType.MONTHLY_SUMMARY:           _RouteConfig("claude-sonnet-4-6", None),
-    TaskType.WEB_UNDERSTANDING:         _RouteConfig("claude-sonnet-4-6", None),
+    TaskType.CROSS_DOMAIN_INSIGHT:      _RouteConfig("gemini-flash", None),
+    TaskType.NATURAL_LANGUAGE_DRAFTING: _RouteConfig("gemini-flash", None),
+    TaskType.DOCUMENT_PARSING:          _RouteConfig("gemini-flash", None),
+    TaskType.MONTHLY_SUMMARY:           _RouteConfig("gemini-flash", None),
+    TaskType.WEB_UNDERSTANDING:         _RouteConfig("gemini-flash", None),
     TaskType.HEALTH_DOMAIN:             _RouteConfig("ollama/phi3:mini", None),
 }
 
 # Priority-ordered cloud provider chain.
-# When the primary cloud provider fails for ANY reason (credit exhaustion,
-# rate limit, service error), the Python layer tries each in sequence.
+# Gemini Flash: free tier (1M tokens/day via Google AI Studio key).
+# GPT-4o-mini: very cheap (~$0.15/1M tokens), no free tier.
+# Claude Sonnet: paid credits, highest reasoning quality — used last.
 # Health domain never enters this chain — local only, hardcoded.
-_CLOUD_CHAIN = ["claude-sonnet-4-6", "gemini-flash", "gpt-4o-mini"]
+_CLOUD_CHAIN = ["gemini-flash", "gpt-4o-mini", "claude-sonnet-4-6"]
 
 _CLOUD_COST_PER_TOKEN = 0.000003
 
@@ -324,7 +329,7 @@ class LiteLLMRouterAdapter(LLMRouter):
         # Health domain is exempt — always stays local regardless of this flag.
         _local_enabled = os.environ.get("MITHRA_LOCAL_LLM_ENABLED", "true").lower() != "false"
         if not _local_enabled and task_type != TaskType.HEALTH_DOMAIN and route.model.startswith("ollama"):
-            route = _RouteConfig("claude-sonnet-4-6", None)
+            route = _RouteConfig(_CLOUD_CHAIN[0], None)  # start at top of cloud chain
 
         model = route.model
         fallback_triggered = False

@@ -19,13 +19,13 @@ model_list:
       model: openai/gpt-4o-mini
       api_key: os.environ/OPENAI_API_KEY
 
-# Automatic fallback chain: Anthropic → Gemini → OpenAI.
-# Triggered when a provider returns a rate-limit, quota, or service error.
+# Automatic fallback chain: Gemini → GPT-4o-mini → Claude.
+# Gemini free tier exhausted → GPT-4o-mini (cheap) → Claude (paid credits).
 # Health domain (ollama/phi3:mini) has no fallbacks — architecture requirement.
 router_settings:
   fallbacks:
-    - {"claude-sonnet-4-6": ["gemini-flash", "gpt-4o-mini"]}
-    - {"gemini-flash": ["gpt-4o-mini"]}
+    - {"gemini-flash": ["gpt-4o-mini", "claude-sonnet-4-6"]}
+    - {"gpt-4o-mini": ["claude-sonnet-4-6"]}
   num_retries: 0
 
 litellm_settings:
