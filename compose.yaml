@@ -133,6 +133,10 @@ services:
       - NANGO_DB_SSL=false
       - RECORDS_DATABASE_URL=postgresql://nango:${NANGO_DB_PASSWORD}@nango-db:5432/nango
       - NODE_ENV=production
+      - NANGO_EMAIL_VALIDATION_DISABLED=true
+      - NANGO_SIGNUP_DISABLED=false
+      - MAILGUN_API_KEY=
+      - SENDGRID_API_KEY=
     volumes:
       - nango-data:/usr/nango/data
     networks:
