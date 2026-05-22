@@ -12,7 +12,6 @@ directly. DeadLetterQueue does not retry — it is a terminal failure store.
 
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -69,12 +68,14 @@ def _dict_to_letter(d: dict) -> DeadLetter:
 class DeadLetterQueue:
     """Stores and surfaces failed deliveries for operator review."""
 
-    def __init__(self, storage_adapter: StorageAdapter) -> None:
+    def __init__(self, storage_adapter: StorageAdapter, household_id: str = "") -> None:
         """
         Args:
             storage_adapter: StorageAdapter used for domain="observability" layer="history".
+            household_id: Household namespace from household.yaml.
         """
         self._storage = storage_adapter
+        self._household_id = household_id
 
     def enqueue(self, letter: DeadLetter) -> DeadLetter:
         """Persist a failed delivery to the dead-letter store."""
@@ -86,14 +87,16 @@ class DeadLetterQueue:
             user_id=letter.user_id,
             version=1,
             updated_at=letter.last_attempted_at,
-            household_id=os.environ.get("MITHRA_HOUSEHOLD_ID", ""),
+            household_id=self._household_id,
         )
         self._storage.write(record)
         return letter
 
     def list_unresolved(self, limit: int = 100) -> list[DeadLetter]:
         """Return unresolved dead letters, newest first."""
-        records = self._storage.list("observability", "history", "household")
+        records = self._storage.list(
+            "observability", "history", "household", self._household_id
+        )
         letters = [
             _dict_to_letter(r.data)
             for r in records
@@ -104,7 +107,9 @@ class DeadLetterQueue:
 
     def resolve(self, letter_id: str) -> bool:
         """Mark a dead letter as resolved. Return True if found."""
-        record = self._storage.read("observability", letter_id, "history", "household")
+        record = self._storage.read(
+            "observability", letter_id, "history", "household", self._household_id
+        )
         if not record:
             return False
         record.data["resolved"] = True

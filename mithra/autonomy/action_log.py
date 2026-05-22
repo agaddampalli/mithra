@@ -13,8 +13,6 @@ Used for:
 
 from __future__ import annotations
 
-import os
-
 from mithra.autonomy.engine import ActionLogEntry, Reversibility
 from mithra.storage.adapter import StorageAdapter, StorageRecord
 
@@ -70,12 +68,14 @@ def _dict_to_entry(d: dict) -> ActionLogEntry:
 class ActionLog:
     """Append-only store for ActionLogEntry records."""
 
-    def __init__(self, storage_adapter: StorageAdapter) -> None:
+    def __init__(self, storage_adapter: StorageAdapter, household_id: str = "") -> None:
         """
         Args:
             storage_adapter: A StorageAdapter used for domain="autonomy" layer="history".
+            household_id: Household namespace from household.yaml.
         """
         self._storage = storage_adapter
+        self._household_id = household_id
 
     def append(self, entry: ActionLogEntry) -> ActionLogEntry:
         """Append an entry and return it (with any storage-assigned fields set)."""
@@ -87,7 +87,7 @@ class ActionLog:
             user_id=entry.user_id,
             version=1,
             updated_at=entry.timestamp,
-            household_id=os.environ.get("MITHRA_HOUSEHOLD_ID", ""),
+            household_id=self._household_id,
         )
         self._storage.write(record)
         return entry

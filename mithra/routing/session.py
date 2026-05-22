@@ -17,7 +17,6 @@ input adapter before the agent call.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -111,15 +110,18 @@ class ConversationSessionManager:
         self,
         storage_adapter: StorageAdapter,
         known_user_ids: list[str] | None = None,
+        household_id: str = "",
     ) -> None:
         """
         Args:
             storage_adapter: StorageAdapter for session persistence.
             known_user_ids: User IDs to scan in expire_inactive(). Defaults to
                 ["household"]. Pass household member IDs from household.yaml at startup.
+            household_id: Household namespace from household.yaml.
         """
         self._storage = storage_adapter
         self._known_user_ids: list[str] = known_user_ids or ["household"]
+        self._household_id = household_id
 
     # ------------------------------------------------------------------
     # get_or_create
@@ -257,6 +259,6 @@ class ConversationSessionManager:
                 user_id=session.user_id,
                 version=1,
                 updated_at=_now(),
-                household_id=os.environ.get("MITHRA_HOUSEHOLD_ID", ""),
+                household_id=self._household_id,
             )
         )

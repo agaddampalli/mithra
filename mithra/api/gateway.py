@@ -140,12 +140,14 @@ def _build_llm_router(local_adapter):
     )
 
 
-def _build_autonomy(storage_router, local_adapter):
+def _build_autonomy(storage_router, local_adapter, household_id: str = ""):
     from mithra.autonomy.default_engine import DefaultAutonomyEngine
     from mithra.autonomy.executor import ActionExecutorRegistry
     from mithra.autonomy.action_log import ActionLog
+    from mithra.autonomy.dead_letter import DeadLetterQueue
 
-    action_log = ActionLog(local_adapter)
+    action_log = ActionLog(local_adapter, household_id=household_id)
+    dead_letter_queue = DeadLetterQueue(local_adapter, household_id=household_id)
     executor = ActionExecutorRegistry()
     config_path = os.environ.get(
         "AUTONOMY_CONFIG_PATH", "services/autonomy/autonomy.yaml"
@@ -156,7 +158,7 @@ def _build_autonomy(storage_router, local_adapter):
         config_path=config_path,
         executor=executor,
     )
-    return engine, executor, action_log
+    return engine, executor, action_log, dead_letter_queue
 
 
 # ---------------------------------------------------------------------------
@@ -181,10 +183,13 @@ async def lifespan(app: FastAPI):
     llm_router = _build_llm_router(local_adapter)
     _state["llm_router"] = llm_router
 
-    engine, executor, action_log = _build_autonomy(storage_router, local_adapter)
+    engine, executor, action_log, dead_letter_queue = _build_autonomy(
+        storage_router, local_adapter, household_id=household_id
+    )
     _state["engine"] = engine
     _state["executor"] = executor
     _state["action_log"] = action_log
+    _state["dead_letter_queue"] = dead_letter_queue
 
     from mithra.agent.langgraph_adapter import LangGraphAdapter
     agent = LangGraphAdapter(
@@ -211,6 +216,7 @@ async def lifespan(app: FastAPI):
         session_mgr = ConversationSessionManager(
             local_adapter,
             known_user_ids=[m["user_id"] for m in household_config.get("members", [])],
+            household_id=household_id,
         )
 
         telegram_input = TelegramInputAdapter(
@@ -254,6 +260,18 @@ async def lifespan(app: FastAPI):
             cipher=cipher,
         )
         _state["google_integration"] = google_integration
+
+    calendar_creds = os.environ.get("GOOGLE_CALENDAR_CREDENTIALS", "")
+    if calendar_creds or nango_key:
+        from mithra.adapters.output.calendar import CalendarAdapter
+        nango_client = _state.get("nango")
+        calendar_adapter = CalendarAdapter(
+            credentials_path=calendar_creds,
+            nango_client=nango_client,
+            household_id=household_id,
+        )
+        _state["calendar_adapter"] = calendar_adapter
+        executor.register("create_calendar_event", calendar_adapter)
 
     yield
 
