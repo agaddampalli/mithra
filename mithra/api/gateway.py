@@ -105,7 +105,7 @@ def _build_storage_router(household_config: dict, tmp_dir: str | None = None):
         onedrive_adapter=onedrive,
         encrypted_local_adapter=encrypted_local,
         encrypted_onedrive_adapter=encrypted_onedrive,
-    ), local
+    ), local, cipher if enc_key else None
 
 
 def _build_domain_router(storage_router, household_config: dict):
@@ -168,7 +168,7 @@ async def lifespan(app: FastAPI):
     household_config = _load_household_config()
     _state["household_config"] = household_config
 
-    storage_router, local_adapter = _build_storage_router(household_config)
+    storage_router, local_adapter, cipher = _build_storage_router(household_config)
     _state["storage_router"] = storage_router
     _state["local_adapter"] = local_adapter
 
@@ -229,6 +229,22 @@ async def lifespan(app: FastAPI):
 
         asyncio.create_task(telegram_input.start())
 
+    google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    google_client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+    base_url = os.environ.get(
+        "MITHRA_BASE_URL", "https://assistant.mithra-app.com"
+    )
+    if google_client_id:
+        from mithra.integrations.google_oauth import GoogleIntegration
+        google_integration = GoogleIntegration(
+            client_id=google_client_id,
+            client_secret=google_client_secret,
+            redirect_uri=f"{base_url}/auth/google/callback",
+            storage_adapter=local_adapter,
+            cipher=cipher,
+        )
+        _state["google_integration"] = google_integration
+
     yield
 
     # Shutdown
@@ -252,15 +268,27 @@ def create_app(state_override: dict | None = None) -> FastAPI:
     if state_override is not None:
         _state.update(state_override)
 
+    # SessionMiddleware is required by Authlib to store OAuth state between
+    # the /auth/google redirect and the /auth/google/callback.
+    from starlette.middleware.sessions import SessionMiddleware
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=os.environ.get("SECRET_KEY", "dev"),
+    )
+
     # -----------------------------------------------------------------------
     # Auth middleware
     # -----------------------------------------------------------------------
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        # Health and Telegram webhook are unauthenticated via Bearer —
-        # webhook validates the X-Telegram-Bot-Api-Secret-Token header instead.
-        if request.url.path in ("/api/v1/health", "/api/v1/webhook/telegram"):
+        # Health, Telegram webhook, and OAuth routes are unauthenticated via Bearer.
+        if request.url.path in (
+            "/api/v1/health",
+            "/api/v1/webhook/telegram",
+            "/auth/google",
+            "/auth/google/callback",
+        ):
             return await call_next(request)
 
         secret_key = os.environ.get("SECRET_KEY", "")
@@ -431,6 +459,59 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             ),
         }
 
+    @app.get("/auth/google")
+    async def google_auth(request: Request, user_id: str = "household"):
+        """Redirect to Google OAuth consent screen."""
+        google = _state.get("google_integration")
+        if not google:
+            raise HTTPException(503, "Google not configured")
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(google.get_auth_url(user_id))
+
+    @app.get("/auth/google/callback")
+    async def google_callback(
+        request: Request,
+        code: str,
+        state: str = "household",
+    ):
+        """Handle Google callback — save tokens, notify user via Telegram."""
+        google = _state.get("google_integration")
+        if not google:
+            raise HTTPException(503, "Google not configured")
+        user_id = state
+        try:
+            await google.exchange_code(code, user_id)
+        except Exception as exc:
+            raise HTTPException(400, f"OAuth failed: {exc}")
+
+        telegram_output = _state.get("telegram_output")
+        identity = _state.get("identity_resolver")
+        if telegram_output and identity:
+            chat_id = identity.get_chat_id_for_user(user_id)
+            if chat_id:
+                from mithra.adapters.messaging import OutboundMessage
+                telegram_output.register_chat(user_id, chat_id)
+                await telegram_output.send(
+                    user_id,
+                    OutboundMessage(
+                        text=(
+                            "✅ Google Calendar, Gmail & Contacts connected!\n\n"
+                            "You can now:\n"
+                            "• Ask me to add/check calendar events\n"
+                            "• I'll read receipts from Gmail\n"
+                            "• I'll import your contacts"
+                        )
+                    ),
+                )
+
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse("""
+            <html><body style="font-family:sans-serif;text-align:center;padding:50px">
+              <h2>&#x2705; Google Connected!</h2>
+              <p>You can close this tab and return to Telegram.</p>
+            </body></html>
+        """)
+
     return app
 
 
@@ -481,6 +562,35 @@ async def _process_request(agent_request) -> None:
                     user_id,
                     OutboundMessage(text="You're all set! Say hello to Mithra."),
                 )
+        return
+
+    # "connect google" intent — send OAuth link without going through the LLM
+    text_lower = (agent_request.text or "").lower()
+    if any(phrase in text_lower for phrase in [
+        "connect google", "link google", "setup google",
+        "connect calendar", "link calendar",
+    ]):
+        google = _state.get("google_integration")
+        base_url = os.environ.get(
+            "MITHRA_BASE_URL", "https://assistant.mithra-app.com"
+        )
+        if google:
+            uid = agent_request.user_id
+            if google.is_connected(uid):
+                result_text = "✅ Your Google account is already connected."
+            else:
+                url = f"{base_url}/auth/google?user_id={uid}"
+                result_text = (
+                    f"Tap the link to connect your Google account:\n{url}\n\n"
+                    f"This gives Mithra access to your Calendar, Gmail, and Contacts."
+                )
+            telegram_output = _state.get("telegram_output")
+            device_parts = (agent_request.device_id or "").split(":")
+            if telegram_output and len(device_parts) > 1:
+                from mithra.adapters.messaging import OutboundMessage
+                chat_id = int(device_parts[1])
+                telegram_output.register_chat(uid, chat_id)
+                await telegram_output.send(uid, OutboundMessage(text=result_text))
         return
 
     agent = _state.get("agent")

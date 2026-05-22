@@ -28,6 +28,9 @@ services:
       - HA_TOKEN=${HA_TOKEN}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - MITHRA_LOCAL_LLM_ENABLED=${MITHRA_LOCAL_LLM_ENABLED:-true}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - MITHRA_BASE_URL=${MITHRA_BASE_URL:-https://assistant.mithra-app.com}
     volumes:
       - mithra-data:/data/mithra
     depends_on:

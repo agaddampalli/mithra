@@ -172,6 +172,13 @@ class UserIdentityResolver:
         """Return the Mithra user_id for a device ID, or 'household'."""
         return self._device_map.get(str(device_id), "household")
 
+    def get_chat_id_for_user(self, user_id: str) -> int | None:
+        """Return the Telegram chat_id for a Mithra user_id, or None."""
+        for tid, uid in self._telegram_map.items():
+            if uid == user_id:
+                return tid
+        return None
+
 
 class TelegramInputAdapter(InputAdapter):
     """Receives Telegram Updates and converts them to AgentRequests."""

@@ -7,9 +7,12 @@ python-telegram-bot
 httpx
 requests
 msal
+authlib
+itsdangerous
 google-api-python-client
 google-auth
 google-auth-httplib2
+google-auth-oauthlib
 chromadb
 pyyaml
 pywebpush
