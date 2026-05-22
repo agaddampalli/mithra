@@ -125,7 +125,13 @@ services:
       - NANGO_SECRET_KEY=${NANGO_SECRET_KEY}
       - SERVER_URL=https://assistant.mithra-app.com
       - NANGO_ENCRYPTION_KEY=${MITHRA_ENCRYPTION_KEY}
-      - DATABASE_URL=postgresql://nango:${NANGO_DB_PASSWORD}@nango-db:5432/nango
+      - NANGO_DB_USER=nango
+      - NANGO_DB_PASSWORD=${NANGO_DB_PASSWORD}
+      - NANGO_DB_HOST=nango-db
+      - NANGO_DB_PORT=5432
+      - NANGO_DB_NAME=nango
+      - NANGO_DB_SSL=false
+      - RECORDS_DATABASE_URL=postgresql://nango:${NANGO_DB_PASSWORD}@nango-db:5432/nango
       - NODE_ENV=production
     volumes:
       - nango-data:/usr/nango/data
