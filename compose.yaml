@@ -103,20 +103,37 @@ services:
     depends_on:
       - api-gateway
 
+  # ── Nango PostgreSQL database ───────────────────────────
+  nango-db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=nango
+      - POSTGRES_USER=nango
+      - POSTGRES_PASSWORD=${NANGO_DB_PASSWORD}
+    volumes:
+      - nango-db-data:/var/lib/postgresql/data
+    networks:
+      - mithra-net
+    restart: unless-stopped
+
   # ── Nango (OAuth token management) ─────────────────────
   nango:
-    image: nangohq/nango:latest
+    image: nangohq/nango-server:hosted
     ports:
       - "3003:3003"
     environment:
       - NANGO_SECRET_KEY=${NANGO_SECRET_KEY}
       - SERVER_URL=https://assistant.mithra-app.com
-      - NANGO_DB_ENCRYPTION_KEY=${MITHRA_ENCRYPTION_KEY}
+      - NANGO_ENCRYPTION_KEY=${MITHRA_ENCRYPTION_KEY}
+      - DATABASE_URL=postgresql://nango:${NANGO_DB_PASSWORD}@nango-db:5432/nango
+      - NODE_ENV=production
     volumes:
       - nango-data:/usr/nango/data
     networks:
       - mithra-net
     restart: unless-stopped
+    depends_on:
+      - nango-db
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:3003/health')"]
@@ -267,6 +284,7 @@ volumes:
   piper-voices:
   whatsapp-sessions:
   nango-data:
+  nango-db-data:
 
 networks:
   mithra-net:
