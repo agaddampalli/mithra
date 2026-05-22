@@ -23,7 +23,7 @@ class NangoClient:
     MICROSOFT_PROVIDER = "microsoft-graph"
 
     def __init__(self, nango_url: str = "", secret_key: str = "") -> None:
-        self._url = (nango_url or os.environ.get("NANGO_URL", "http://nango:3003")).rstrip("/")
+        self._url = (nango_url or os.environ.get("NANGO_URL", "http://nango:8080")).rstrip("/")
         self._secret = secret_key or os.environ.get("NANGO_SECRET_KEY", "")
 
     def get_connection_id(self, user_id: str, household_id: str) -> str:
