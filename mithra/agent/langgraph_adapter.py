@@ -14,6 +14,7 @@ Conditional routing after classify_intent:
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from typing import Any, Generator, TypedDict
@@ -48,6 +49,7 @@ class _GraphState(TypedDict):
     confidence: float
     selected_tool: str | None
     tool_result: dict[str, Any] | None
+    pending_actions: list
     response_text: str
     error: str | None
     stream_events: list[AgentStreamEvent]
@@ -161,6 +163,7 @@ class LangGraphAdapter(AgentInterface):
         request: AgentRequest = state["request"]
         tool_result = state.get("tool_result")
         error = state.get("error")
+        intent_str = str(state.get("intent", "")).lower()
 
         # Tool executed successfully — return its response
         if tool_result:
@@ -169,6 +172,75 @@ class LangGraphAdapter(AgentInterface):
         # Real tool execution error (not "no tool found")
         if error:
             return {"response_text": f"I encountered an error: {error}"}
+
+        # Detect calendar/scheduling intents — build a structured pending action
+        _CALENDAR_PREFIXES = ("time.", "calendar.")
+        _CALENDAR_KEYWORDS = (
+            "add_event", "create_event", "schedule_event",
+            "schedule", "appointment", "add_appointment",
+        )
+        is_calendar_intent = any(intent_str.startswith(p) for p in _CALENDAR_PREFIXES) or any(
+            k in intent_str for k in _CALENDAR_KEYWORDS
+        )
+
+        if is_calendar_intent:
+            extract_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract calendar event details from the user's message. "
+                        "Return ONLY a JSON object with these fields: "
+                        "summary (string, required), "
+                        "start_datetime (ISO 8601 string, required), "
+                        "end_datetime (ISO 8601 string, required), "
+                        "description (string, optional), "
+                        "location (string, optional). "
+                        "If duration is unspecified, default to 1 hour. "
+                        "If no date is given, use today. "
+                        "Do not include any explanation or markdown fences."
+                    ),
+                },
+                {"role": "user", "content": request.text or ""},
+            ]
+            event_data: dict[str, Any] = {}
+            try:
+                extract_resp = self._llm_router.complete(
+                    TaskType.DATA_CAPTURE, "time", extract_messages
+                )
+                if extract_resp.success and extract_resp.content:
+                    raw = extract_resp.content.strip()
+                    if raw.startswith("```"):
+                        raw = raw.split("\n", 1)[-1]
+                    if raw.endswith("```"):
+                        raw = raw.rsplit("```", 1)[0]
+                    event_data = json.loads(raw.strip())
+            except Exception:  # noqa: BLE001
+                event_data = {}
+
+            if not event_data.get("summary"):
+                event_data["summary"] = request.text or "New event"
+            event_data["user_id"] = request.user_id
+
+            summary = event_data.get("summary", "New event")
+            start = event_data.get("start_datetime", "")
+            if start:
+                response_text = f"I'll add '{summary}' to your calendar starting {start}. Confirm?"
+            else:
+                response_text = f"I'll add '{summary}' to your calendar. Confirm?"
+
+            return {
+                "response_text": response_text,
+                "pending_actions": [
+                    {
+                        "action_type": "calendar_write",
+                        "domain": "time",
+                        "payload": event_data,
+                        "output_channel": "calendar",
+                        "autonomy_level": 1,
+                        "reversibility": "full",
+                    }
+                ],
+            }
 
         # No tool matched or intent unclear — always try LLM first
         messages = [
@@ -212,6 +284,7 @@ class LangGraphAdapter(AgentInterface):
             "confidence": 0.0,
             "selected_tool": None,
             "tool_result": None,
+            "pending_actions": [],
             "response_text": "",
             "error": None,
             "stream_events": [],
@@ -247,6 +320,7 @@ class LangGraphAdapter(AgentInterface):
             "confidence": 0.0,
             "selected_tool": None,
             "tool_result": None,
+            "pending_actions": [],
             "response_text": "",
             "error": None,
             "stream_events": [],
@@ -384,6 +458,18 @@ class LangGraphAdapter(AgentInterface):
                     payload=tool_result.get("payload", {}),
                     output_channel=tool_result.get("output_channel", "none"),
                     autonomy_level=tool_result.get("autonomy_level", 1),
+                )
+            )
+
+        for pa in state.get("pending_actions", []):
+            actions.append(
+                AgentAction(
+                    action_type=pa["action_type"],
+                    domain=pa.get("domain", domain),
+                    payload=pa.get("payload", {}),
+                    output_channel=pa.get("output_channel", "none"),
+                    autonomy_level=pa.get("autonomy_level", 1),
+                    reversibility=pa.get("reversibility", "full"),
                 )
             )
 

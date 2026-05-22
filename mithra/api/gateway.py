@@ -268,7 +268,7 @@ async def lifespan(app: FastAPI):
             household_id=household_id,
         )
         _state["calendar_adapter"] = calendar_adapter
-        executor.register("create_calendar_event", calendar_adapter)
+        executor.register("calendar_write", calendar_adapter)
 
     yield
 
@@ -687,6 +687,7 @@ async def _process_request(agent_request) -> None:
 
     engine = _state.get("engine")
     executor = _state.get("executor")
+    receipt = None
     if engine and executor:
         try:
             receipt = await engine.process(result, agent_request.user_id, executor)
@@ -694,6 +695,18 @@ async def _process_request(agent_request) -> None:
         except Exception as e:
             logger.error(f"Engine.process failed: {e}", exc_info=True)
             return
+
+    # FIX 4: Override response_text to reflect what actually happened
+    if receipt is not None:
+        if receipt.executed:
+            # ACT_TELL/ACT_SILENT — actions were executed, report outcome
+            if receipt.response_text:
+                result.response_text = receipt.response_text
+        elif receipt.rejected:
+            # NEVER-blocked — tell the user something was blocked
+            blocked = ", ".join(r.intent for r in receipt.rejected)
+            result.response_text = f"That action is not allowed: {blocked}"
+        # SURFACE (pending): keep result.response_text — it's the human-friendly confirm prompt
 
     # Send response back to Telegram
     telegram_output = _state.get("telegram_output")

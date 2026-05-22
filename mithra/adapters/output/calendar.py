@@ -13,6 +13,7 @@ Undo strategy: delete event via event_id stored in DeliveryReceipt.undo_payload
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
@@ -177,6 +178,44 @@ class CalendarAdapter(OutputAdapter):
         async for chunk in stream:
             text += chunk
         return await self.send(user_id, OutboundMessage(text=text, domain="calendar"))
+
+    async def execute(self, action: Any) -> Any:
+        """Execute an AgentAction — create a calendar event from action.payload."""
+        from mithra.autonomy.executor import ExecutionResult
+
+        payload = action.payload or {}
+        user_id = payload.get("user_id", "")
+        calendar_id = f"{user_id}@group.calendar.google.com" if user_id else "primary"
+
+        start = payload.get("start_datetime", _now())
+        end = payload.get("end_datetime", _now())
+        event: dict[str, Any] = {
+            "summary": payload.get("summary", "New event"),
+            "start": {"dateTime": start, "timeZone": "UTC"},
+            "end": {"dateTime": end, "timeZone": "UTC"},
+        }
+        if payload.get("description"):
+            event["description"] = payload["description"]
+        if payload.get("location"):
+            event["location"] = payload["location"]
+
+        action_id = str(uuid.uuid4())
+        try:
+            event_id = await self.create_event(calendar_id, event, user_id=user_id)
+            return ExecutionResult(
+                action_id=action_id,
+                action_type=action.action_type,
+                success=True,
+                delivery_receipt={"event_id": event_id, "calendar_id": calendar_id},
+                undo_payload={"event_id": event_id, "calendar_id": calendar_id},
+            )
+        except Exception as exc:
+            return ExecutionResult(
+                action_id=action_id,
+                action_type=action.action_type,
+                success=False,
+                error=str(exc),
+            )
 
     async def undo(self, receipt: DeliveryReceipt) -> bool:
         """Delete the calendar event using the event_id in the receipt."""
