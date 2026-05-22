@@ -3,13 +3,11 @@ Google Calendar output adapter.
 
 Implements OutputAdapter. Writes events to Google Calendar via the v3 API.
 
-Constructor accepts an optional http_client for test injection. When provided,
-no credentials are loaded and all API calls go through the injected client.
+Tokens are sourced exclusively from NangoClient (per-user OAuth).
+Constructor accepts an optional http_client for test injection.
 
 Undo strategy: delete event via event_id stored in DeliveryReceipt.undo_payload
 (Reversibility.FULL).
-
-Env vars: GOOGLE_CALENDAR_CREDENTIALS, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
 """
 
 from __future__ import annotations
@@ -28,7 +26,6 @@ from mithra.adapters.messaging import (
 )
 
 _CALENDAR_BASE = "https://www.googleapis.com/calendar/v3"
-_SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 
 def _now() -> str:
@@ -51,41 +48,13 @@ class CalendarAdapter(OutputAdapter):
 
     def __init__(
         self,
-        credentials_path: str,
         http_client: httpx.AsyncClient | None = None,
         nango_client: Any | None = None,
         household_id: str = "",
     ) -> None:
-        self.credentials_path = credentials_path
         self._http_client = http_client
-        self._creds: Any = None
         self._nango = nango_client
         self._household_id = household_id
-        if http_client is None and nango_client is None:
-            self._load_credentials()
-
-    def _load_credentials(self) -> None:
-        try:
-            from google.oauth2 import service_account
-            self._creds = service_account.Credentials.from_service_account_file(
-                self.credentials_path, scopes=_SCOPES
-            )
-        except Exception:
-            self._creds = None
-
-    def _auth_headers(self) -> dict[str, str]:
-        if self._creds is None:
-            return {}
-        try:
-            from google.auth.transport.requests import Request
-            if not self._creds.valid:
-                self._creds.refresh(Request())
-            return {
-                "Authorization": f"Bearer {self._creds.token}",
-                "Content-Type": "application/json",
-            }
-        except Exception:
-            return {}
 
     def _client(self):
         if self._http_client is not None:
@@ -107,12 +76,12 @@ class CalendarAdapter(OutputAdapter):
         return None
 
     async def _headers_for(self, user_id: str = "") -> dict[str, str]:
-        """Return auth headers — Nango token takes priority over service account creds."""
+        """Return auth headers from Nango token, or empty dict if unavailable."""
         if user_id:
             token = await self._get_nango_token(user_id)
             if token:
                 return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        return self._auth_headers()
+        return {}
 
     async def create_event(
         self, calendar_id: str, event: dict[str, Any], user_id: str = ""
@@ -126,28 +95,23 @@ class CalendarAdapter(OutputAdapter):
             return resp.json()["id"]
 
     async def update_event(
-        self, calendar_id: str, event_id: str, updates: dict[str, Any]
+        self, calendar_id: str, event_id: str, updates: dict[str, Any], user_id: str = ""
     ) -> None:
         """Update an existing calendar event."""
         url = f"{_CALENDAR_BASE}/calendars/{calendar_id}/events/{event_id}"
+        headers = await self._headers_for(user_id)
         async with self._client() as client:
-            resp = await client.patch(
-                url,
-                headers=self._auth_headers(),
-                json=updates,
-                timeout=15,
-            )
+            resp = await client.patch(url, headers=headers, json=updates, timeout=15)
             resp.raise_for_status()
 
-    async def delete_event(self, calendar_id: str, event_id: str) -> None:
+    async def delete_event(
+        self, calendar_id: str, event_id: str, user_id: str = ""
+    ) -> None:
         """Delete a calendar event by ID."""
         url = f"{_CALENDAR_BASE}/calendars/{calendar_id}/events/{event_id}"
+        headers = await self._headers_for(user_id)
         async with self._client() as client:
-            resp = await client.delete(
-                url,
-                headers=self._auth_headers(),
-                timeout=15,
-            )
+            resp = await client.delete(url, headers=headers, timeout=15)
             if resp.status_code not in (200, 204, 404):
                 resp.raise_for_status()
 
@@ -230,9 +194,7 @@ class CalendarAdapter(OutputAdapter):
 
     def health(self) -> dict:
         """Return adapter health."""
-        creds_valid = bool(self._creds and getattr(self._creds, "valid", False))
         return {
             "status": "ok",
-            "credentials_valid": creds_valid,
-            "credentials_path": self.credentials_path,
+            "nango_configured": self._nango is not None,
         }

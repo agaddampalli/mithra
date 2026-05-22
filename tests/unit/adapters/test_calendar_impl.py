@@ -16,10 +16,8 @@ _BASE = "https://www.googleapis.com/calendar/v3"
 
 
 def _make_adapter() -> CalendarAdapter:
-    """Create an adapter with a real httpx client (mocked via respx)."""
-    # No credentials_path needed when http_client is injected -- but we still
-    # pass a placeholder to satisfy the constructor signature.
-    return CalendarAdapter(credentials_path="/dev/null")
+    """Create an adapter with no Nango client (token auth skipped in unit tests)."""
+    return CalendarAdapter()
 
 
 # ---------------------------------------------------------------------------
@@ -172,4 +170,4 @@ class TestHealth:
         adapter = _make_adapter()
         h = adapter.health()
         assert h["status"] == "ok"
-        assert "credentials_path" in h
+        assert "nango_configured" in h

@@ -261,13 +261,10 @@ async def lifespan(app: FastAPI):
         )
         _state["google_integration"] = google_integration
 
-    calendar_creds = os.environ.get("GOOGLE_CALENDAR_CREDENTIALS", "")
-    if calendar_creds or nango_key:
+    if nango_key:
         from mithra.adapters.output.calendar import CalendarAdapter
-        nango_client = _state.get("nango")
         calendar_adapter = CalendarAdapter(
-            credentials_path=calendar_creds,
-            nango_client=nango_client,
+            nango_client=_state.get("nango"),
             household_id=household_id,
         )
         _state["calendar_adapter"] = calendar_adapter
