@@ -352,6 +352,27 @@ class TestClassifyIntent:
         assert result is not None
         assert result.confidence == 0.75
 
+    def test_strips_markdown_code_fences_before_parsing(self):
+        payload = {"intent": "calendar.create_event", "domain": "time", "confidence": 0.97, "alternatives": []}
+        fenced = _ok_response(
+            content=f"```json\n{json.dumps(payload)}\n```"
+        )
+        router, _ = _make_router(response=fenced)
+        result = router.classify_intent("add a test appointment", {})
+        assert result is not None
+        assert result.intent == "calendar.create_event"
+        assert result.confidence == 0.97
+
+    def test_strips_plain_code_fences_before_parsing(self):
+        payload = {"intent": "food.query", "domain": "food", "confidence": 0.88, "alternatives": []}
+        fenced = _ok_response(
+            content=f"```\n{json.dumps(payload)}\n```"
+        )
+        router, _ = _make_router(response=fenced)
+        result = router.classify_intent("what should i cook?", {})
+        assert result is not None
+        assert result.intent == "food.query"
+
 
 # ---------------------------------------------------------------------------
 # get_usage

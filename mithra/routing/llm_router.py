@@ -243,6 +243,19 @@ def _route_label(model: str, fallback_triggered: bool, task_type: TaskType) -> s
     return "local"
 
 
+def _strip_fences(raw: str) -> str:
+    """Strip markdown code fences from an LLM response before JSON parsing.
+
+    Claude and other models sometimes wrap JSON in ```json\\n...\\n``` blocks.
+    """
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1]
+    if raw.endswith("```"):
+        raw = raw.rsplit("```", 1)[0]
+    return raw.strip()
+
+
 def _fit_context(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Truncate history to system message(s) + last 6 turns + current user message."""
     if len(messages) <= 8:
@@ -471,7 +484,7 @@ class LiteLLMRouterAdapter(LLMRouter):
             logger.warning("classify_intent LLM call failed: %s", response.error)
             return None
         try:
-            data = json.loads(response.content)  # type: ignore[union-attr]
+            data = json.loads(_strip_fences(response.content))  # type: ignore[union-attr]
             confidence = float(data.get("confidence", 0.0))
             if confidence < 0.75:
                 logger.info("classify_intent low confidence %.2f for: %s", confidence, text[:60])
