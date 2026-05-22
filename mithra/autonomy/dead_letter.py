@@ -12,6 +12,7 @@ directly. DeadLetterQueue does not retry — it is a terminal failure store.
 
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -85,6 +86,7 @@ class DeadLetterQueue:
             user_id=letter.user_id,
             version=1,
             updated_at=letter.last_attempted_at,
+            household_id=os.environ.get("MITHRA_HOUSEHOLD_ID", ""),
         )
         self._storage.write(record)
         return letter

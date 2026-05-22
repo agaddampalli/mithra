@@ -13,6 +13,8 @@ Used for:
 
 from __future__ import annotations
 
+import os
+
 from mithra.autonomy.engine import ActionLogEntry, Reversibility
 from mithra.storage.adapter import StorageAdapter, StorageRecord
 
@@ -85,6 +87,7 @@ class ActionLog:
             user_id=entry.user_id,
             version=1,
             updated_at=entry.timestamp,
+            household_id=os.environ.get("MITHRA_HOUSEHOLD_ID", ""),
         )
         self._storage.write(record)
         return entry

@@ -167,6 +167,8 @@ def _build_autonomy(storage_router, local_adapter):
 async def lifespan(app: FastAPI):
     household_config = _load_household_config()
     _state["household_config"] = household_config
+    household_id = household_config.get("household_id", "default")
+    _state["household_id"] = household_id
 
     storage_router, local_adapter, cipher = _build_storage_router(household_config)
     _state["storage_router"] = storage_router
@@ -229,11 +231,19 @@ async def lifespan(app: FastAPI):
 
         asyncio.create_task(telegram_input.start())
 
+    base_url = os.environ.get("MITHRA_BASE_URL", "https://assistant.mithra-app.com")
+
+    nango_key = os.environ.get("NANGO_SECRET_KEY", "")
+    if nango_key:
+        from mithra.integrations.nango_client import NangoClient
+        nango = NangoClient(
+            nango_url=os.environ.get("NANGO_URL", "http://nango:3003"),
+            secret_key=nango_key,
+        )
+        _state["nango"] = nango
+
     google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
     google_client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-    base_url = os.environ.get(
-        "MITHRA_BASE_URL", "https://assistant.mithra-app.com"
-    )
     if google_client_id:
         from mithra.integrations.google_oauth import GoogleIntegration
         google_integration = GoogleIntegration(
@@ -288,6 +298,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             "/api/v1/webhook/telegram",
             "/auth/google",
             "/auth/google/callback",
+            "/auth/google/success",
         ):
             return await call_next(request)
 
@@ -461,12 +472,32 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
     @app.get("/auth/google")
     async def google_auth(request: Request, user_id: str = "household"):
-        """Redirect to Google OAuth consent screen."""
+        """Redirect to OAuth consent — Nango if configured, else direct Google OAuth."""
+        from fastapi.responses import RedirectResponse
+        nango = _state.get("nango")
+        if nango:
+            from mithra.integrations.nango_client import NangoClient
+            hid = _state.get("household_id", "default")
+            base = os.environ.get("MITHRA_BASE_URL", "https://assistant.mithra-app.com")
+            redirect_url = f"{base}/auth/google/success"
+            return RedirectResponse(
+                nango.get_connect_url(NangoClient.GOOGLE_PROVIDER, user_id, hid, redirect_url=redirect_url)
+            )
         google = _state.get("google_integration")
         if not google:
             raise HTTPException(503, "Google not configured")
-        from fastapi.responses import RedirectResponse
         return RedirectResponse(google.get_auth_url(user_id))
+
+    @app.get("/auth/google/success")
+    async def google_success(request: Request):
+        """Nango redirect target after a successful Google OAuth connection."""
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse("""
+            <html><body style="font-family:sans-serif;text-align:center;padding:50px">
+              <h2>&#x2705; Google Connected!</h2>
+              <p>You can close this tab and return to Telegram.</p>
+            </body></html>
+        """)
 
     @app.get("/auth/google/callback")
     async def google_callback(
@@ -570,27 +601,45 @@ async def _process_request(agent_request) -> None:
         "connect google", "link google", "setup google",
         "connect calendar", "link calendar",
     ]):
+        nango = _state.get("nango")
         google = _state.get("google_integration")
-        base_url = os.environ.get(
-            "MITHRA_BASE_URL", "https://assistant.mithra-app.com"
-        )
-        if google:
-            uid = agent_request.user_id
+        base_url = os.environ.get("MITHRA_BASE_URL", "https://assistant.mithra-app.com")
+        uid = agent_request.user_id
+        household_id = _state.get("household_id", "default")
+
+        if nango:
+            from mithra.integrations.nango_client import NangoClient
+            is_connected = await nango.is_connected(NangoClient.GOOGLE_PROVIDER, uid, household_id)
+            if is_connected:
+                result_text = "✅ Your Google account is already connected."
+            else:
+                redirect_url = f"{base_url}/auth/google/success"
+                url = nango.get_connect_url(
+                    NangoClient.GOOGLE_PROVIDER, uid, household_id, redirect_url=redirect_url
+                )
+                result_text = (
+                    f"Tap the link to connect your Google account:\n{url}\n\n"
+                    "This gives Mithra access to your Calendar, Gmail, and Contacts."
+                )
+        elif google:
             if google.is_connected(uid):
                 result_text = "✅ Your Google account is already connected."
             else:
                 url = f"{base_url}/auth/google?user_id={uid}"
                 result_text = (
                     f"Tap the link to connect your Google account:\n{url}\n\n"
-                    f"This gives Mithra access to your Calendar, Gmail, and Contacts."
+                    "This gives Mithra access to your Calendar, Gmail, and Contacts."
                 )
-            telegram_output = _state.get("telegram_output")
-            device_parts = (agent_request.device_id or "").split(":")
-            if telegram_output and len(device_parts) > 1:
-                from mithra.adapters.messaging import OutboundMessage
-                chat_id = int(device_parts[1])
-                telegram_output.register_chat(uid, chat_id)
-                await telegram_output.send(uid, OutboundMessage(text=result_text))
+        else:
+            result_text = "Google integration is not configured."
+
+        telegram_output = _state.get("telegram_output")
+        device_parts = (agent_request.device_id or "").split(":")
+        if telegram_output and len(device_parts) > 1:
+            from mithra.adapters.messaging import OutboundMessage
+            chat_id = int(device_parts[1])
+            telegram_output.register_chat(uid, chat_id)
+            await telegram_output.send(uid, OutboundMessage(text=result_text))
         return
 
     agent = _state.get("agent")

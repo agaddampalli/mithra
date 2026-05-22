@@ -28,14 +28,42 @@ CREATE TABLE IF NOT EXISTS records (
     key          TEXT NOT NULL,
     layer        TEXT NOT NULL,
     user_id      TEXT NOT NULL,
+    household_id TEXT NOT NULL DEFAULT '',
     data         TEXT NOT NULL,
     version      INTEGER NOT NULL DEFAULT 1,
     updated_at   TEXT NOT NULL,
     content_type TEXT NOT NULL DEFAULT 'record',
-    PRIMARY KEY (domain, key, layer, user_id)
+    PRIMARY KEY (domain, key, layer, user_id, household_id)
 );
 CREATE INDEX IF NOT EXISTS idx_records_scope ON records (domain, layer, user_id);
 """
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add household_id column and update PRIMARY KEY if missing (handles existing databases)."""
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(records)").fetchall()]
+    if "household_id" not in cols:
+        conn.executescript("""
+            ALTER TABLE records RENAME TO records_v1;
+            CREATE TABLE records (
+                domain       TEXT NOT NULL,
+                key          TEXT NOT NULL,
+                layer        TEXT NOT NULL,
+                user_id      TEXT NOT NULL,
+                household_id TEXT NOT NULL DEFAULT '',
+                data         TEXT NOT NULL,
+                version      INTEGER NOT NULL DEFAULT 1,
+                updated_at   TEXT NOT NULL,
+                content_type TEXT NOT NULL DEFAULT 'record',
+                PRIMARY KEY (domain, key, layer, user_id, household_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_records_scope ON records (domain, layer, user_id);
+            INSERT INTO records (domain, key, layer, user_id, household_id, data, version, updated_at, content_type)
+                SELECT domain, key, layer, user_id, '', data, version, updated_at, content_type
+                FROM records_v1;
+            DROP TABLE records_v1;
+        """)
+        conn.commit()
 
 
 def _now() -> str:
@@ -51,6 +79,7 @@ def _row_to_record(row: sqlite3.Row) -> StorageRecord:
         user_id=row["user_id"],
         version=row["version"],
         updated_at=row["updated_at"],
+        household_id=row["household_id"],
         content_type=row["content_type"],
     )
 
@@ -73,25 +102,30 @@ class LocalStorageAdapter(StorageAdapter):
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_DDL)
         self._conn.commit()
+        _migrate(self._conn)
 
-    def read(self, domain: str, key: str, layer: str, user_id: str) -> StorageRecord | None:
-        """Return a record by (domain, key, layer, user_id), or None if not found."""
+    def read(
+        self, domain: str, key: str, layer: str, user_id: str, household_id: str = ""
+    ) -> StorageRecord | None:
+        """Return a record by (domain, key, layer, user_id, household_id), or None if not found."""
         row = self._conn.execute(
-            "SELECT * FROM records WHERE domain=? AND key=? AND layer=? AND user_id=?",
-            (domain, key, layer, user_id),
+            "SELECT * FROM records WHERE domain=? AND key=? AND layer=? AND user_id=? AND household_id=?",
+            (domain, key, layer, user_id, household_id),
         ).fetchone()
         return _row_to_record(row) if row else None
 
     def write(self, record: StorageRecord) -> StorageRecord:
         """Upsert a record; increments version and stamps updated_at."""
-        existing = self.read(record.domain, record.key, record.layer, record.user_id)
+        existing = self.read(
+            record.domain, record.key, record.layer, record.user_id, record.household_id
+        )
         new_version = (existing.version + 1) if existing else 1
         now = _now()
         self._conn.execute(
             """
-            INSERT INTO records (domain, key, layer, user_id, data, version, updated_at, content_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(domain, key, layer, user_id) DO UPDATE SET
+            INSERT INTO records (domain, key, layer, user_id, household_id, data, version, updated_at, content_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(domain, key, layer, user_id, household_id) DO UPDATE SET
                 data=excluded.data,
                 version=excluded.version,
                 updated_at=excluded.updated_at,
@@ -102,6 +136,7 @@ class LocalStorageAdapter(StorageAdapter):
                 record.key,
                 record.layer,
                 record.user_id,
+                record.household_id,
                 json.dumps(record.data),
                 new_version,
                 now,
@@ -115,19 +150,19 @@ class LocalStorageAdapter(StorageAdapter):
         record.updated_at = now
         return record
 
-    def list(self, domain: str, layer: str, user_id: str) -> list[StorageRecord]:
-        """Return all records in a (domain, layer, user_id) scope."""
+    def list(self, domain: str, layer: str, user_id: str, household_id: str = "") -> list[StorageRecord]:
+        """Return all records in a (domain, layer, user_id, household_id) scope."""
         rows = self._conn.execute(
-            "SELECT * FROM records WHERE domain=? AND layer=? AND user_id=? ORDER BY updated_at DESC",
-            (domain, layer, user_id),
+            "SELECT * FROM records WHERE domain=? AND layer=? AND user_id=? AND household_id=? ORDER BY updated_at DESC",
+            (domain, layer, user_id, household_id),
         ).fetchall()
         return [_row_to_record(r) for r in rows]
 
-    def delete(self, domain: str, key: str, user_id: str) -> bool:
+    def delete(self, domain: str, key: str, user_id: str, household_id: str = "") -> bool:
         """Delete a record across all layers. Return True if any row was deleted."""
         cur = self._conn.execute(
-            "DELETE FROM records WHERE domain=? AND key=? AND user_id=?",
-            (domain, key, user_id),
+            "DELETE FROM records WHERE domain=? AND key=? AND user_id=? AND household_id=?",
+            (domain, key, user_id, household_id),
         )
         self._conn.commit()
         return cur.rowcount > 0

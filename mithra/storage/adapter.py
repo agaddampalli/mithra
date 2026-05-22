@@ -39,6 +39,7 @@ class StorageRecord:
     user_id: str
     version: int
     updated_at: str
+    household_id: str = ""
     content_type: str = "record"
 
 
@@ -48,8 +49,10 @@ class StorageAdapter(ABC):
     # --- Structured records ---
 
     @abstractmethod
-    def read(self, domain: str, key: str, layer: str, user_id: str) -> StorageRecord | None:
-        """Return a record by (domain, key, layer, user_id), or None if not found."""
+    def read(
+        self, domain: str, key: str, layer: str, user_id: str, household_id: str = ""
+    ) -> StorageRecord | None:
+        """Return a record by (domain, key, layer, user_id, household_id), or None if not found."""
         ...
 
     @abstractmethod
@@ -58,12 +61,12 @@ class StorageAdapter(ABC):
         ...
 
     @abstractmethod
-    def list(self, domain: str, layer: str, user_id: str) -> list[StorageRecord]:
-        """Return all records in a (domain, layer, user_id) scope."""
+    def list(self, domain: str, layer: str, user_id: str, household_id: str = "") -> list[StorageRecord]:
+        """Return all records in a (domain, layer, user_id, household_id) scope."""
         ...
 
     @abstractmethod
-    def delete(self, domain: str, key: str, user_id: str) -> bool:
+    def delete(self, domain: str, key: str, user_id: str, household_id: str = "") -> bool:
         """Delete a record. Return True if it existed, False otherwise."""
         ...
 

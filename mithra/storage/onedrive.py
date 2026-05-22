@@ -34,12 +34,13 @@ CREATE TABLE IF NOT EXISTS records (
     key          TEXT NOT NULL,
     layer        TEXT NOT NULL,
     user_id      TEXT NOT NULL,
+    household_id TEXT NOT NULL DEFAULT '',
     data         TEXT NOT NULL,
     version      INTEGER NOT NULL DEFAULT 1,
     updated_at   TEXT NOT NULL,
     content_type TEXT NOT NULL DEFAULT 'record',
     cached_at    REAL NOT NULL,
-    PRIMARY KEY (domain, key, layer, user_id)
+    PRIMARY KEY (domain, key, layer, user_id, household_id)
 );
 CREATE INDEX IF NOT EXISTS idx_records_scope ON records (domain, layer, user_id);
 
@@ -77,6 +78,34 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add household_id column and update PRIMARY KEY if missing (handles existing databases)."""
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(records)").fetchall()]
+    if cols and "household_id" not in cols:
+        conn.executescript("""
+            ALTER TABLE records RENAME TO records_v1;
+            CREATE TABLE records (
+                domain       TEXT NOT NULL,
+                key          TEXT NOT NULL,
+                layer        TEXT NOT NULL,
+                user_id      TEXT NOT NULL,
+                household_id TEXT NOT NULL DEFAULT '',
+                data         TEXT NOT NULL,
+                version      INTEGER NOT NULL DEFAULT 1,
+                updated_at   TEXT NOT NULL,
+                content_type TEXT NOT NULL DEFAULT 'record',
+                cached_at    REAL NOT NULL,
+                PRIMARY KEY (domain, key, layer, user_id, household_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_records_scope ON records (domain, layer, user_id);
+            INSERT INTO records (domain, key, layer, user_id, household_id, data, version, updated_at, content_type, cached_at)
+                SELECT domain, key, layer, user_id, '', data, version, updated_at, content_type, cached_at
+                FROM records_v1;
+            DROP TABLE records_v1;
+        """)
+        conn.commit()
+
+
 def _row_to_record(row: sqlite3.Row) -> StorageRecord:
     return StorageRecord(
         domain=row["domain"],
@@ -86,6 +115,7 @@ def _row_to_record(row: sqlite3.Row) -> StorageRecord:
         user_id=row["user_id"],
         version=row["version"],
         updated_at=row["updated_at"],
+        household_id=row["household_id"],
         content_type=row["content_type"],
     )
 
@@ -254,6 +284,7 @@ class OneDriveAdapter(StorageAdapter):
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_DDL)
         self._conn.commit()
+        _migrate(self._conn)
         self._lock = threading.Lock()
 
         self._auth_valid: bool = False
@@ -287,12 +318,12 @@ class OneDriveAdapter(StorageAdapter):
     # ------------------------------------------------------------------
 
     def _cache_get(
-        self, domain: str, key: str, layer: str, user_id: str
+        self, domain: str, key: str, layer: str, user_id: str, household_id: str = ""
     ) -> StorageRecord | None:
         with self._lock:
             row = self._conn.execute(
-                "SELECT * FROM records WHERE domain=? AND key=? AND layer=? AND user_id=?",
-                (domain, key, layer, user_id),
+                "SELECT * FROM records WHERE domain=? AND key=? AND layer=? AND user_id=? AND household_id=?",
+                (domain, key, layer, user_id, household_id),
             ).fetchone()
         if row is None:
             return None
@@ -304,14 +335,14 @@ class OneDriveAdapter(StorageAdapter):
         with self._lock:
             self._conn.execute(
                 """INSERT INTO records
-                   (domain, key, layer, user_id, data, version, updated_at, content_type, cached_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(domain, key, layer, user_id) DO UPDATE SET
+                   (domain, key, layer, user_id, household_id, data, version, updated_at, content_type, cached_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(domain, key, layer, user_id, household_id) DO UPDATE SET
                        data=excluded.data, version=excluded.version,
                        updated_at=excluded.updated_at, content_type=excluded.content_type,
                        cached_at=excluded.cached_at""",
                 (
-                    record.domain, record.key, record.layer, record.user_id,
+                    record.domain, record.key, record.layer, record.user_id, record.household_id,
                     json.dumps(record.data), record.version, record.updated_at,
                     record.content_type, time.time(),
                 ),
@@ -319,31 +350,31 @@ class OneDriveAdapter(StorageAdapter):
             self._conn.commit()
 
     def _cache_list(
-        self, domain: str, layer: str, user_id: str
+        self, domain: str, layer: str, user_id: str, household_id: str = ""
     ) -> list[StorageRecord]:
         now = time.time()
         with self._lock:
             rows = self._conn.execute(
                 """SELECT * FROM records
-                   WHERE domain=? AND layer=? AND user_id=?
+                   WHERE domain=? AND layer=? AND user_id=? AND household_id=?
                      AND ? - cached_at <= ?
                    ORDER BY updated_at DESC""",
-                (domain, layer, user_id, now, _CACHE_TTL_SECONDS),
+                (domain, layer, user_id, household_id, now, _CACHE_TTL_SECONDS),
             ).fetchall()
         return [_row_to_record(r) for r in rows]
 
-    def _cache_delete(self, domain: str, key: str, user_id: str) -> list[str]:
-        """Delete all layers for (domain, key, user_id) from cache.
+    def _cache_delete(self, domain: str, key: str, user_id: str, household_id: str = "") -> list[str]:
+        """Delete all layers for (domain, key, user_id, household_id) from cache.
         Returns list of layer names that existed."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT layer FROM records WHERE domain=? AND key=? AND user_id=?",
-                (domain, key, user_id),
+                "SELECT layer FROM records WHERE domain=? AND key=? AND user_id=? AND household_id=?",
+                (domain, key, user_id, household_id),
             ).fetchall()
             layers = [r["layer"] for r in rows]
             self._conn.execute(
-                "DELETE FROM records WHERE domain=? AND key=? AND user_id=?",
-                (domain, key, user_id),
+                "DELETE FROM records WHERE domain=? AND key=? AND user_id=? AND household_id=?",
+                (domain, key, user_id, household_id),
             )
             self._conn.commit()
         return layers
@@ -363,6 +394,7 @@ class OneDriveAdapter(StorageAdapter):
                     json.dumps(record.data), record.version, record.updated_at,
                     record.content_type, _now(),
                 ),
+                # household_id is not stored in write_queue (operational table)
             )
             self._conn.commit()
 
@@ -450,9 +482,11 @@ class OneDriveAdapter(StorageAdapter):
     # StorageAdapter interface
     # ------------------------------------------------------------------
 
-    def read(self, domain: str, key: str, layer: str, user_id: str) -> StorageRecord | None:
+    def read(
+        self, domain: str, key: str, layer: str, user_id: str, household_id: str = ""
+    ) -> StorageRecord | None:
         """Cache hit: return immediately. Miss: fetch from Graph API, populate cache."""
-        cached = self._cache_get(domain, key, layer, user_id)
+        cached = self._cache_get(domain, key, layer, user_id, household_id)
         if cached:
             return cached
         try:
@@ -467,6 +501,7 @@ class OneDriveAdapter(StorageAdapter):
             data=payload["data"], user_id=payload["user_id"],
             version=payload.get("version", 1),
             updated_at=payload.get("updated_at", _now()),
+            household_id=payload.get("household_id", household_id),
             content_type=payload.get("content_type", "record"),
         )
         self._cache_put(record)
@@ -474,7 +509,9 @@ class OneDriveAdapter(StorageAdapter):
 
     def write(self, record: StorageRecord) -> StorageRecord:
         """Write to cache immediately; enqueue Graph API write asynchronously."""
-        existing = self._cache_get(record.domain, record.key, record.layer, record.user_id)
+        existing = self._cache_get(
+            record.domain, record.key, record.layer, record.user_id, record.household_id
+        )
         record.version = (existing.version + 1) if existing else 1
         record.updated_at = _now()
         self._cache_put(record)
@@ -483,9 +520,9 @@ class OneDriveAdapter(StorageAdapter):
         self._enqueue_write(record)
         return record
 
-    def list(self, domain: str, layer: str, user_id: str) -> list[StorageRecord]:
+    def list(self, domain: str, layer: str, user_id: str, household_id: str = "") -> list[StorageRecord]:
         """Return cached records; fall back to Graph API when cache is cold."""
-        cached = self._cache_list(domain, layer, user_id)
+        cached = self._cache_list(domain, layer, user_id, household_id)
         if cached:
             return cached
         try:
@@ -499,15 +536,16 @@ class OneDriveAdapter(StorageAdapter):
                 data=payload["data"], user_id=payload["user_id"],
                 version=payload.get("version", 1),
                 updated_at=payload.get("updated_at", _now()),
+                household_id=payload.get("household_id", household_id),
                 content_type=payload.get("content_type", "record"),
             )
             self._cache_put(record)
             records.append(record)
         return records
 
-    def delete(self, domain: str, key: str, user_id: str) -> bool:
+    def delete(self, domain: str, key: str, user_id: str, household_id: str = "") -> bool:
         """Remove from cache and enqueue Graph API deletes for all affected layers."""
-        layers = self._cache_delete(domain, key, user_id)
+        layers = self._cache_delete(domain, key, user_id, household_id)
         if not layers:
             return False
         for layer in layers:

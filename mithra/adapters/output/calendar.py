@@ -53,11 +53,15 @@ class CalendarAdapter(OutputAdapter):
         self,
         credentials_path: str,
         http_client: httpx.AsyncClient | None = None,
+        nango_client: Any | None = None,
+        household_id: str = "",
     ) -> None:
         self.credentials_path = credentials_path
         self._http_client = http_client
         self._creds: Any = None
-        if http_client is None:
+        self._nango = nango_client
+        self._household_id = household_id
+        if http_client is None and nango_client is None:
             self._load_credentials()
 
     def _load_credentials(self) -> None:
@@ -88,16 +92,36 @@ class CalendarAdapter(OutputAdapter):
             return _NullContext(self._http_client)
         return httpx.AsyncClient()
 
-    async def create_event(self, calendar_id: str, event: dict[str, Any]) -> str:
+    async def _get_nango_token(self, user_id: str) -> str | None:
+        """Fetch an access token from Nango for this user, or None if unavailable."""
+        if self._nango is None:
+            return None
+        try:
+            token_data = await self._nango.get_token(
+                self._nango.GOOGLE_PROVIDER, user_id, self._household_id
+            )
+            if token_data:
+                return token_data.get("access_token")
+        except Exception:
+            pass
+        return None
+
+    async def _headers_for(self, user_id: str = "") -> dict[str, str]:
+        """Return auth headers — Nango token takes priority over service account creds."""
+        if user_id:
+            token = await self._get_nango_token(user_id)
+            if token:
+                return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        return self._auth_headers()
+
+    async def create_event(
+        self, calendar_id: str, event: dict[str, Any], user_id: str = ""
+    ) -> str:
         """Create a calendar event and return its Google event ID."""
         url = f"{_CALENDAR_BASE}/calendars/{calendar_id}/events"
+        headers = await self._headers_for(user_id)
         async with self._client() as client:
-            resp = await client.post(
-                url,
-                headers=self._auth_headers(),
-                json=event,
-                timeout=15,
-            )
+            resp = await client.post(url, headers=headers, json=event, timeout=15)
             resp.raise_for_status()
             return resp.json()["id"]
 
@@ -153,7 +177,7 @@ class CalendarAdapter(OutputAdapter):
             event["location"] = event_data["location"]
 
         try:
-            event_id = await self.create_event(calendar_id, event)
+            event_id = await self.create_event(calendar_id, event, user_id=user_id)
             return DeliveryReceipt(
                 channel="calendar",
                 message_id=event_id,

@@ -102,9 +102,11 @@ class EncryptedStorageAdapter(StorageAdapter):
                     pass  # non-encrypted legacy field; leave as-is
         return result
 
-    def read(self, domain: str, key: str, layer: str, user_id: str) -> StorageRecord | None:
+    def read(
+        self, domain: str, key: str, layer: str, user_id: str, household_id: str = ""
+    ) -> StorageRecord | None:
         """Read and decrypt a record from the inner adapter."""
-        record = self._inner.read(domain, key, layer, user_id)
+        record = self._inner.read(domain, key, layer, user_id, household_id)
         if record is None:
             return None
         record.data = self._decrypt_data(record.data)
@@ -120,6 +122,7 @@ class EncryptedStorageAdapter(StorageAdapter):
             user_id=record.user_id,
             version=record.version,
             updated_at=record.updated_at,
+            household_id=record.household_id,
             content_type=record.content_type,
         )
         saved = self._inner.write(encrypted)
@@ -127,16 +130,16 @@ class EncryptedStorageAdapter(StorageAdapter):
         record.updated_at = saved.updated_at
         return record
 
-    def list(self, domain: str, layer: str, user_id: str) -> list[StorageRecord]:
+    def list(self, domain: str, layer: str, user_id: str, household_id: str = "") -> list[StorageRecord]:
         """List and decrypt all records from the inner adapter."""
-        records = self._inner.list(domain, layer, user_id)
+        records = self._inner.list(domain, layer, user_id, household_id)
         for r in records:
             r.data = self._decrypt_data(r.data)
         return records
 
-    def delete(self, domain: str, key: str, user_id: str) -> bool:
+    def delete(self, domain: str, key: str, user_id: str, household_id: str = "") -> bool:
         """Delegate delete to the inner adapter."""
-        return self._inner.delete(domain, key, user_id)
+        return self._inner.delete(domain, key, user_id, household_id)
 
     def write_file(
         self, domain: str, file_name: str, content: bytes, mime_type: str, user_id: str

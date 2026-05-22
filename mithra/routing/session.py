@@ -17,6 +17,7 @@ input adapter before the agent call.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -256,5 +257,6 @@ class ConversationSessionManager:
                 user_id=session.user_id,
                 version=1,
                 updated_at=_now(),
+                household_id=os.environ.get("MITHRA_HOUSEHOLD_ID", ""),
             )
         )

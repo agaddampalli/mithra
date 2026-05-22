@@ -103,6 +103,27 @@ services:
     depends_on:
       - api-gateway
 
+  # ── Nango (OAuth token management) ─────────────────────
+  nango:
+    image: nangohq/nango:latest
+    ports:
+      - "3003:3003"
+    environment:
+      - NANGO_SECRET_KEY=${NANGO_SECRET_KEY}
+      - SERVER_URL=https://assistant.mithra-app.com
+      - NANGO_DB_ENCRYPTION_KEY=${MITHRA_ENCRYPTION_KEY}
+    volumes:
+      - nango-data:/usr/nango/data
+    networks:
+      - mithra-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:3003/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   # ── Watchtower (auto-updates) ───────────────────────────
   watchtower:
     image: containrrr/watchtower
@@ -245,6 +266,7 @@ volumes:
   whisper-models:
   piper-voices:
   whatsapp-sessions:
+  nango-data:
 
 networks:
   mithra-net:
