@@ -581,19 +581,33 @@ async def _send_telegram(
     device_id: str,
     text: str,
     actions=None,
+    fallback_chat_id: int | None = None,
 ) -> None:
     """Send message via Telegram output adapter."""
+    _logger = logging.getLogger(__name__)
     telegram_output = _state.get("telegram_output")
-    chat_id = _get_chat_id(device_id)
-    if not telegram_output or not chat_id:
+    chat_id = _get_chat_id(device_id) or fallback_chat_id
+    _logger.info(
+        "_send_telegram: user=%s device=%s chat_id=%s has_output=%s text_len=%d",
+        user_id, device_id, chat_id, telegram_output is not None, len(text or ""),
+    )
+    if not telegram_output:
+        _logger.warning("_send_telegram: telegram_output not in state — skipping")
+        return
+    if not chat_id:
+        _logger.warning("_send_telegram: no chat_id resolved from device_id=%r — skipping", device_id)
         return
     telegram_output.register_chat(user_id, chat_id)
     from mithra.adapters.messaging import OutboundMessage
     msg = OutboundMessage(text=text)
-    if actions:
-        await telegram_output.send_with_actions(user_id, msg, actions)
-    else:
-        await telegram_output.send(user_id, msg)
+    try:
+        if actions:
+            await telegram_output.send_with_actions(user_id, msg, actions)
+        else:
+            await telegram_output.send(user_id, msg)
+        _logger.info("_send_telegram: sent successfully to user=%s chat_id=%s", user_id, chat_id)
+    except Exception as exc:
+        _logger.error("_send_telegram: send failed: %s", exc, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -821,11 +835,47 @@ async def _process_request(agent_request) -> None:
         result.response_text = receipt.response_text
 
     # 6. Send response
+    logger.info("Response text before send: %r", (result.response_text or "")[:80])
     if result.response_text:
+        # For pending actions, attach Yes / No confirmation buttons
+        tg_actions = None
+        if receipt and receipt.pending:
+            from mithra.adapters.messaging import ActionButton
+            pending = receipt.pending[0]
+            tg_actions = [
+                ActionButton(
+                    label="✅ Yes",
+                    action="confirm",
+                    payload={
+                        "confirmation": "confirm",
+                        "request_id": pending.request_id,
+                        "action_index": pending.action_index,
+                    },
+                ),
+                ActionButton(
+                    label="❌ No",
+                    action="reject",
+                    payload={
+                        "confirmation": "reject",
+                        "request_id": pending.request_id,
+                        "action_index": pending.action_index,
+                    },
+                ),
+            ]
+        # Prefer chat_id embedded in signal (set by TelegramInputAdapter for every text msg)
+        fallback_chat_id: int | None = None
+        raw_cid = (agent_request.signal or {}).get("chat_id")
+        if raw_cid is not None:
+            try:
+                fallback_chat_id = int(raw_cid)
+            except (TypeError, ValueError):
+                pass
         await _send_telegram(
             agent_request.user_id,
             agent_request.device_id,
             result.response_text,
+            actions=tg_actions,
+            fallback_chat_id=fallback_chat_id,
         )
 
 
