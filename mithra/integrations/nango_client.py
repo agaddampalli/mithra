@@ -68,11 +68,12 @@ class NangoClient:
                 if resp.status_code in (200, 201):
                     data = resp.json().get("data", {})
                     token = data.get("token")
-                    # Nango self-hosted returns localhost URL — rewrite to public proxy.
-                    base = os.environ.get(
-                        "MITHRA_BASE_URL", "https://assistant.mithra-app.com"
+                    # Nango self-hosted doesn't bundle the Connect UI frontend.
+                    # Use Nango's cloud-hosted Connect UI which accepts self-hosted session tokens.
+                    connect_ui = os.environ.get(
+                        "NANGO_CONNECT_UI_URL", "https://app.nango.dev"
                     ).rstrip("/")
-                    connect_link = f"{base}/connect-ui/?session_token={token}" if token else None
+                    connect_link = f"{connect_ui}/?session_token={token}" if token else None
                     return {
                         "token": token,
                         "connect_link": connect_link,
