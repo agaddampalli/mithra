@@ -90,7 +90,13 @@ class NangoClient:
         Idempotent — safe to call on every startup. Without scopes configured,
         Nango sends OAuth requests to Google with no scope parameter and Google
         rejects them immediately with a 400 error.
+
+        Nango's API distinguishes create (POST) from update (PUT). PUT returns
+        404 when the integration doesn't exist yet, so we check first and pick
+        the right method.
         """
+        import logging
+        _log = logging.getLogger(__name__)
         body: dict[str, Any] = {
             "provider_config_key": provider_config_key,
             "provider": provider,
@@ -100,14 +106,29 @@ class NangoClient:
         }
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.put(
+                exists_resp = await client.get(
+                    f"{self._url}/config/{provider_config_key}",
+                    headers=self._headers,
+                    timeout=10,
+                )
+                exists = exists_resp.status_code == 200
+                method = "put" if exists else "post"
+                resp = await getattr(client, method)(
                     f"{self._url}/config",
                     headers={**self._headers, "Content-Type": "application/json"},
                     json=body,
                     timeout=10,
                 )
-                return resp.status_code in (200, 201, 204)
-        except Exception:
+                if resp.status_code not in (200, 201, 204):
+                    _log.warning(
+                        "ensure_integration %s %s → %d: %s",
+                        method.upper(), provider_config_key,
+                        resp.status_code, resp.text[:300],
+                    )
+                    return False
+                return True
+        except Exception as exc:
+            _log.warning("ensure_integration exception: %s", exc)
             return False
 
     async def setup_configured_integrations(self) -> None:
