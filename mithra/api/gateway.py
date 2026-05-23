@@ -42,7 +42,7 @@ logging.basicConfig(
 from typing import Any
 
 import yaml
-from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 # ---------------------------------------------------------------------------
@@ -481,141 +481,9 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             ),
         }
 
-    @app.get("/connect/google")
-    async def connect_google(token: str = ""):
-        """Serve the Google OAuth connect page.
-
-        User taps a Telegram link → lands here → Nango Frontend SDK opens a popup
-        that goes to /oauth/connect/google-calendar (proxied to Nango internally).
-        host must be the public gateway URL so the browser can reach it.
-        """
-        from fastapi.responses import HTMLResponse
-        base_url = os.environ.get("MITHRA_BASE_URL", "https://assistant.mithra-app.com").rstrip("/")
-        if not token:
-            return HTMLResponse("<p>Invalid link — missing session token.</p>", status_code=400)
-        return HTMLResponse(f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Connect Google — Mithra</title>
-  <style>
-    body {{ font-family: sans-serif; text-align: center; padding: 60px 20px; color: #333; }}
-    p {{ font-size: 1.1rem; }}
-  </style>
-</head>
-<body>
-  <p>Connecting your Google account&hellip;</p>
-  <script type="module">
-    import Nango from 'https://cdn.jsdelivr.net/npm/@nangohq/frontend/dist/index.js';
-    const nango = new Nango({{
-      connectSessionToken: {token!r},
-      host: {base_url!r},
-    }});
-    nango.auth('google-calendar')
-      .then(() => {{
-        document.body.innerHTML =
-          '<h2>&#x2705; Google Connected!</h2><p>You can close this tab and return to Telegram.</p>';
-      }})
-      .catch(err => {{
-        document.body.innerHTML =
-          '<p>&#x274C; Connection failed: ' + err.message + '<br>Please try again.</p>';
-      }});
-  </script>
-</body>
-</html>""")
-
-    async def _proxy_ws_to_nango(websocket: WebSocket, path: str) -> None:
-        """Bidirectional WebSocket proxy to the internal Nango server.
-
-        The Nango Frontend SDK opens a WebSocket to {host} before triggering the
-        OAuth popup. It uses this channel to receive the OAuth result notification.
-        {host} is the public gateway URL, so the gateway must proxy the connection
-        to ws://nango:8080 — same single-entry-point principle as the /oauth/ proxy.
-        """
-        import websockets as _ws
-        nango_url = os.environ.get("NANGO_URL", "http://nango:8080")
-        ws_base = nango_url.replace("http://", "ws://").replace("https://", "wss://").rstrip("/")
-        target = f"{ws_base}/{path.lstrip('/')}"
-        query = str(websocket.url.query)
-        if query:
-            target = f"{target}?{query}"
-        await websocket.accept()
-        try:
-            async with _ws.connect(target) as upstream:
-                async def _to_upstream() -> None:
-                    try:
-                        while True:
-                            raw = await websocket.receive()
-                            if raw.get("type") == "websocket.disconnect":
-                                break
-                            if raw.get("bytes") is not None:
-                                await upstream.send(raw["bytes"])
-                            elif raw.get("text") is not None:
-                                await upstream.send(raw["text"])
-                    except Exception:
-                        pass
-
-                async def _to_client() -> None:
-                    try:
-                        async for msg in upstream:
-                            if isinstance(msg, bytes):
-                                await websocket.send_bytes(msg)
-                            else:
-                                await websocket.send_text(msg)
-                    except Exception:
-                        pass
-
-                tasks = [
-                    asyncio.create_task(_to_upstream()),
-                    asyncio.create_task(_to_client()),
-                ]
-                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                for t in tasks:
-                    t.cancel()
-        except Exception:
-            pass
-        finally:
-            try:
-                await websocket.close()
-            except Exception:
-                pass
-
-    @app.websocket("/")
-    async def ws_nango_root(websocket: WebSocket):
-        """Proxy root WebSocket (Nango SDK realtime channel) to internal Nango."""
-        await _proxy_ws_to_nango(websocket, "")
-
-    @app.websocket("/{path:path}")
-    async def ws_nango_path(websocket: WebSocket, path: str):
-        """Proxy any other WebSocket path (e.g. /socket.io/) to internal Nango."""
-        await _proxy_ws_to_nango(websocket, path)
-
-    @app.api_route("/oauth/{path:path}", methods=["GET", "POST"])
-    async def nango_oauth_proxy(request: Request, path: str):
-        """Proxy all Nango OAuth routes to the internal Nango container.
-
-        /oauth/connect/{provider} — SDK popup lands here, Nango redirects to Google.
-        /oauth/callback           — Google redirects here, Nango exchanges code for tokens.
-        No auth header: these are browser-facing endpoints.
-        """
-        from fastapi.responses import Response
-        import httpx
-        nango_url = os.environ.get("NANGO_URL", "http://nango:8080")
-        skip = {"host", "content-length", "transfer-encoding"}
-        headers = {k: v for k, v in request.headers.items() if k.lower() not in skip}
-        async with httpx.AsyncClient() as client:
-            resp = await client.request(
-                method=request.method,
-                url=f"{nango_url}/oauth/{path}",
-                params=dict(request.query_params),
-                headers=headers,
-                content=await request.body(),
-                follow_redirects=False,
-                timeout=30,
-            )
-        out_headers = {k: v for k, v in resp.headers.items() if k.lower() != "transfer-encoding"}
-        return Response(content=resp.content, status_code=resp.status_code, headers=out_headers)
+    # OAuth proxy — connect page, HTTP proxy, WebSocket proxy for Nango SDK.
+    from mithra.api.routes.oauth_proxy import router as _oauth_router
+    app.include_router(_oauth_router)
 
     return app
 
