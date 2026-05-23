@@ -67,9 +67,15 @@ class NangoClient:
                 )
                 if resp.status_code in (200, 201):
                     data = resp.json().get("data", {})
+                    token = data.get("token")
+                    # Nango self-hosted returns localhost URL — rewrite to public proxy.
+                    base = os.environ.get(
+                        "MITHRA_BASE_URL", "https://assistant.mithra-app.com"
+                    ).rstrip("/")
+                    connect_link = f"{base}/connect-ui/?session_token={token}" if token else None
                     return {
-                        "token": data.get("token"),
-                        "connect_link": data.get("connect_link"),
+                        "token": token,
+                        "connect_link": connect_link,
                         "expires_at": data.get("expires_at"),
                         "connection_id": connection_id,
                     }

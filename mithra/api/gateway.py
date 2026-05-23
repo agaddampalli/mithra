@@ -300,9 +300,13 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        # Health and Telegram webhook are unauthenticated.
+        # Health, Telegram webhook, and Nango Connect UI are unauthenticated.
         p = request.url.path
-        if p == "/api/v1/health" or p == "/api/v1/webhook/telegram":
+        if (
+            p == "/api/v1/health"
+            or p == "/api/v1/webhook/telegram"
+            or p.startswith("/connect-ui")
+        ):
             return await call_next(request)
 
         secret_key = os.environ.get("SECRET_KEY", "")
@@ -472,6 +476,31 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                 else None
             ),
         }
+
+    @app.api_route("/connect-ui/{path:path}", methods=["GET", "POST", "OPTIONS"])
+    async def nango_connect_ui(request: Request, path: str):
+        """Proxy Nango Connect UI (port 3009) through the public gateway tunnel."""
+        import httpx
+        from fastapi.responses import Response
+        nango_ui = os.environ.get("NANGO_CONNECT_UI_INTERNAL", "http://nango:3009")
+        url = f"{nango_ui}/{path}"
+        skip = {"host", "content-length", "transfer-encoding"}
+        headers = {k: v for k, v in request.headers.items() if k.lower() not in skip}
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.request(
+                    method=request.method,
+                    url=url,
+                    params=dict(request.query_params),
+                    headers=headers,
+                    content=await request.body(),
+                    follow_redirects=True,
+                    timeout=30,
+                )
+            out_headers = {k: v for k, v in resp.headers.items() if k.lower() != "transfer-encoding"}
+            return Response(content=resp.content, status_code=resp.status_code, headers=out_headers)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Connect UI unavailable: {exc}")
 
     return app
 
