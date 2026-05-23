@@ -71,44 +71,29 @@ class NangoClient:
         If the integration already exists it is deleted first, then recreated
         with the correct credentials and scopes.
         """
-        body: dict[str, Any] = {
-            "provider_config_key": provider_config_key,
+        # Nango v0.70+ upsert endpoint: PUT /api/v1/integrations
+        # Older versions used POST /config — no longer exists in v0.70.4.
+        v1_body = {
+            "integrationId": provider_config_key,
             "provider": provider,
-            "oauth_client_id": oauth_client_id,
-            "oauth_client_secret": oauth_client_secret,
+            "credentials": {
+                "client_id": oauth_client_id,
+                "client_secret": oauth_client_secret,
+            },
             "oauth_scopes": oauth_scopes,
         }
         try:
             async with httpx.AsyncClient() as client:
-                exists_resp = await client.get(
-                    f"{self._url}/config/{provider_config_key}",
-                    headers=self._headers,
-                    timeout=10,
-                )
-                if exists_resp.status_code == 200:
-                    # No update endpoint — delete first, then recreate.
-                    del_resp = await client.delete(
-                        f"{self._url}/config/{provider_config_key}",
-                        headers=self._headers,
-                        timeout=10,
-                    )
-                    if del_resp.status_code not in (200, 204):
-                        _logger.warning(
-                            "ensure_integration DELETE %s → %d: %s",
-                            provider_config_key, del_resp.status_code, del_resp.text[:200],
-                        )
-                        return False
-
-                resp = await client.post(
-                    f"{self._url}/config",
+                resp = await client.put(
+                    f"{self._url}/api/v1/integrations",
                     headers={**self._headers, "Content-Type": "application/json"},
-                    json=body,
+                    json=v1_body,
                     timeout=10,
                 )
                 if resp.status_code not in (200, 201, 204):
                     _logger.warning(
-                        "ensure_integration POST %s → %d: %s",
-                        provider_config_key, resp.status_code, resp.text[:200],
+                        "ensure_integration PUT /api/v1/integrations %s → %d: %s",
+                        provider_config_key, resp.status_code, resp.text[:300],
                     )
                     return False
                 return True
