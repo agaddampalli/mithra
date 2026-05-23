@@ -675,6 +675,84 @@ async def _process_request(agent_request) -> None:
         except Exception as e:
             logger.error(f"Context assembly failed: {e}", exc_info=True)
 
+    # Detect confirmation responses before routing to the agent
+    text_lower = (agent_request.text or "").lower().strip()
+    confirmation_words = [
+        "yes", "confirm", "ok", "okay", "sure",
+        "yes confirm", "yes please", "go ahead",
+        "confirmed", "do it", "add it",
+    ]
+    is_confirmation = any(
+        text_lower == w or text_lower.startswith(w + " ") or text_lower.endswith(" " + w)
+        for w in confirmation_words
+    )
+
+    if is_confirmation:
+        session_mgr = _state.get("session_mgr")
+        if session_mgr:
+            history = session_mgr.load_history(
+                agent_request.session_id, agent_request.user_id
+            )
+            for turn in reversed(history[-5:]):
+                if turn.role == "assistant" and (
+                    "calendar" in (turn.text or "").lower()
+                    and "confirm" in (turn.text or "").lower()
+                ):
+                    pending_text = turn.text or ""
+                    extract_messages = [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Extract calendar event from this confirmation message. "
+                                "Return JSON only, no markdown:\n"
+                                '{"summary": "title", '
+                                '"start_datetime": "ISO8601", '
+                                '"end_datetime": "ISO8601"}'
+                            ),
+                        },
+                        {"role": "user", "content": pending_text},
+                    ]
+                    try:
+                        from mithra.routing.llm_router import TaskType, _strip_fences
+                        import json as _json
+                        llm = _state.get("llm_router")
+                        extract_resp = llm.complete(
+                            TaskType.DATA_CAPTURE, "time", extract_messages
+                        )
+                        event_data = _json.loads(_strip_fences(extract_resp.content))
+
+                        executor = _state.get("executor")
+                        if executor:
+                            from mithra.agent.interface import AgentAction
+                            action = AgentAction(
+                                action_type="calendar_write",
+                                domain="time",
+                                payload=event_data,
+                                output_channel="calendar",
+                                autonomy_level=2,
+                                reversibility="full",
+                            )
+                            exec_result = await executor.execute(action)
+
+                            telegram_output = _state.get("telegram_output")
+                            device_parts = (agent_request.device_id or "").split(":")
+                            if telegram_output and len(device_parts) > 1:
+                                from mithra.adapters.messaging import OutboundMessage
+                                chat_id = int(device_parts[1])
+                                telegram_output.register_chat(agent_request.user_id, chat_id)
+                                msg = (
+                                    "✅ Added to your calendar!"
+                                    if exec_result.success
+                                    else f"❌ Couldn't add the event. Error: {exec_result.error}"
+                                )
+                                await telegram_output.send(
+                                    agent_request.user_id, OutboundMessage(text=msg)
+                                )
+                        return
+                    except Exception:
+                        pass  # Fall through to normal processing
+                    break
+
     try:
         result = agent.run(agent_request)
         logger.info(

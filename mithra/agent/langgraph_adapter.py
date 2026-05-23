@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Generator, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -184,10 +185,13 @@ class LangGraphAdapter(AgentInterface):
         )
 
         if is_calendar_intent:
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
             extract_messages = [
                 {
                     "role": "system",
                     "content": (
+                        f"Today is {today}. Tomorrow is {tomorrow}. "
                         "Extract calendar event details from the user's message. "
                         "Return ONLY a JSON object with these fields: "
                         "summary (string, required), "
