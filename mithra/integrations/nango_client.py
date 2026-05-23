@@ -48,15 +48,16 @@ class NangoClient:
         The connect_link is a hosted Nango URL the user opens to complete OAuth.
         """
         connection_id = self.get_connection_id(user_id, household_id)
+        # Use `tags` (the current field) rather than the deprecated `end_user` object.
+        tags: dict[str, str] = {"end_user_id": connection_id}
+        if display_name:
+            tags["display_name"] = display_name
+        if email:
+            tags["email"] = email
         body: dict[str, Any] = {
-            "end_user": {
-                "id": connection_id,
-                "display_name": display_name or user_id,
-            },
+            "tags": tags,
             "allowed_integrations": [provider],
         }
-        if email:
-            body["end_user"]["email"] = email
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
@@ -68,8 +69,9 @@ class NangoClient:
                 if resp.status_code in (200, 201):
                     data = resp.json().get("data", {})
                     token = data.get("token")
-                    # Nango self-hosted doesn't bundle the Connect UI frontend.
-                    # Use Nango's cloud-hosted Connect UI which accepts self-hosted session tokens.
+                    # Nango self-hosted doesn't serve the Connect UI frontend.
+                    # Use Nango's cloud-hosted UI (app.nango.dev) which accepts
+                    # self-hosted session tokens via the embedded SERVER_URL.
                     connect_ui = os.environ.get(
                         "NANGO_CONNECT_UI_URL", "https://app.nango.dev"
                     ).rstrip("/")

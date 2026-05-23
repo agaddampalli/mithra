@@ -300,9 +300,13 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        # Health and Telegram webhook are unauthenticated.
+        # Health, Telegram webhook, and Nango OAuth callback are unauthenticated.
         p = request.url.path
-        if p == "/api/v1/health" or p == "/api/v1/webhook/telegram":
+        if (
+            p == "/api/v1/health"
+            or p == "/api/v1/webhook/telegram"
+            or p == "/oauth/callback"
+        ):
             return await call_next(request)
 
         secret_key = os.environ.get("SECRET_KEY", "")
@@ -472,6 +476,32 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                 else None
             ),
         }
+
+    @app.api_route("/oauth/callback", methods=["GET", "POST"])
+    async def nango_oauth_callback(request: Request):
+        """Forward Google/provider OAuth callback to Nango.
+
+        NANGO_CALLBACK_URL points here. Nango needs to receive this to exchange
+        the auth code for tokens — it never touches our app logic.
+        """
+        from fastapi.responses import Response
+        import httpx
+        nango_url = os.environ.get("NANGO_URL", "http://nango:8080")
+        url = f"{nango_url}/oauth/callback"
+        skip = {"host", "content-length", "transfer-encoding"}
+        headers = {k: v for k, v in request.headers.items() if k.lower() not in skip}
+        async with httpx.AsyncClient() as client:
+            resp = await client.request(
+                method=request.method,
+                url=url,
+                params=dict(request.query_params),
+                headers=headers,
+                content=await request.body(),
+                follow_redirects=False,
+                timeout=30,
+            )
+        out_headers = {k: v for k, v in resp.headers.items() if k.lower() != "transfer-encoding"}
+        return Response(content=resp.content, status_code=resp.status_code, headers=out_headers)
 
     return app
 
