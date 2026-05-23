@@ -65,7 +65,7 @@ class NangoClient:
                     json=body,
                     timeout=10,
                 )
-                if resp.status_code == 200:
+                if resp.status_code in (200, 201):
                     data = resp.json().get("data", {})
                     return {
                         "token": data.get("token"),
