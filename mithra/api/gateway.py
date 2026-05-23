@@ -245,7 +245,6 @@ async def lifespan(app: FastAPI):
         nango = NangoClient(
             nango_url=os.environ.get("NANGO_URL", "http://nango:8080"),
             secret_key=nango_key,
-            public_key=os.environ.get("NANGO_PUBLIC_KEY", ""),
         )
         _state["nango"] = nango
 
@@ -301,12 +300,12 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        # Health, Telegram webhook, and OAuth routes are unauthenticated.
+        # Health, Telegram webhook, and Nango OAuth callback are unauthenticated.
         p = request.url.path
         if (
             p == "/api/v1/health"
             or p == "/api/v1/webhook/telegram"
-            or p.startswith("/oauth/")
+            or p == "/oauth/callback"
         ):
             return await call_next(request)
 
@@ -478,24 +477,22 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             ),
         }
 
-    @app.api_route("/oauth/{path:path}", methods=["GET", "POST"])
-    async def nango_oauth_proxy(request: Request, path: str):
-        """Proxy all Nango OAuth routes through the public gateway.
+    @app.api_route("/oauth/callback", methods=["GET", "POST"])
+    async def nango_oauth_callback(request: Request):
+        """Forward provider OAuth callback to self-hosted Nango for token exchange.
 
-        /oauth/connect/{provider} — browser opens this, Nango redirects to provider consent.
-        /oauth/callback           — provider redirects here after consent, Nango exchanges code.
-        No auth header: these are browser-facing endpoints.
+        NANGO_CALLBACK_URL points here. app.nango.dev passes the auth code to
+        Google with this as redirect_uri — Nango then exchanges it for tokens.
         """
         from fastapi.responses import Response
         import httpx
         nango_url = os.environ.get("NANGO_URL", "http://nango:8080")
-        url = f"{nango_url}/oauth/{path}"
         skip = {"host", "content-length", "transfer-encoding"}
         headers = {k: v for k, v in request.headers.items() if k.lower() not in skip}
         async with httpx.AsyncClient() as client:
             resp = await client.request(
                 method=request.method,
-                url=url,
+                url=f"{nango_url}/oauth/callback",
                 params=dict(request.query_params),
                 headers=headers,
                 content=await request.body(),

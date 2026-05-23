@@ -2,10 +2,12 @@
 NangoClient — thin wrapper around the Nango OAuth token management API.
 
 Nango handles the full OAuth web flow (connect sessions, token exchange, auto-refresh).
-Mithra calls create_connect_session() to get a hosted connect link, then get_token()
-to fetch fresh access tokens for API calls.
+Mithra calls create_connect_session() to get a connect_link, sends it to the user,
+and calls get_token() to fetch fresh access tokens for API calls.
 
 connection_id = f"{household_id}__{user_id}" — globally unique per household + user.
+NANGO_UI_URL=https://app.nango.dev in the nango service makes Nango generate the
+correct connect_link. Credentials stay in the self-hosted Nango PostgreSQL.
 """
 
 from __future__ import annotations
@@ -22,32 +24,13 @@ class NangoClient:
     GOOGLE_PROVIDER = "google-calendar"
     MICROSOFT_PROVIDER = "microsoft-graph"
 
-    def __init__(self, nango_url: str = "", secret_key: str = "", public_key: str = "") -> None:
+    def __init__(self, nango_url: str = "", secret_key: str = "") -> None:
         self._url = (nango_url or os.environ.get("NANGO_URL", "http://nango:8080")).rstrip("/")
         self._secret = secret_key or os.environ.get("NANGO_SECRET_KEY", "")
-        # Public key is the client-side identifier (safe to embed in URLs, like Stripe publishable key).
-        self._public_key = public_key or os.environ.get("NANGO_PUBLIC_KEY", "")
 
     def get_connection_id(self, user_id: str, household_id: str) -> str:
         """Return the Nango connection ID for a user."""
         return f"{household_id}__{user_id}"
-
-    def get_connect_url(self, provider: str, user_id: str, household_id: str) -> str:
-        """Return the OAuth start URL for a user.
-
-        Routes through the gateway's /oauth/connect proxy — Nango redirects
-        the browser directly to the provider's consent screen.
-        public_key is Nango's client-side identifier (safe in URLs, like Stripe publishable key).
-        """
-        import urllib.parse
-        connection_id = self.get_connection_id(user_id, household_id)
-        base = os.environ.get(
-            "MITHRA_BASE_URL", "https://assistant.mithra-app.com"
-        ).rstrip("/")
-        url = f"{base}/oauth/connect/{provider}?connection_id={urllib.parse.quote(connection_id)}"
-        if self._public_key:
-            url += f"&public_key={urllib.parse.quote(self._public_key)}"
-        return url
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -64,10 +47,11 @@ class NangoClient:
         """Create a Nango connect session.
 
         Returns {token, connect_link, expires_at, connection_id} or None.
-        The connect_link is a hosted Nango URL the user opens to complete OAuth.
+        connect_link points to app.nango.dev (configured via NANGO_UI_URL in
+        the nango service). The UI is a shell only — credentials stay in the
+        self-hosted Nango PostgreSQL.
         """
         connection_id = self.get_connection_id(user_id, household_id)
-        # Use `tags` (the current field) rather than the deprecated `end_user` object.
         tags: dict[str, str] = {"end_user_id": connection_id}
         if display_name:
             tags["display_name"] = display_name
@@ -87,17 +71,9 @@ class NangoClient:
                 )
                 if resp.status_code in (200, 201):
                     data = resp.json().get("data", {})
-                    token = data.get("token")
-                    # Nango self-hosted doesn't serve the Connect UI frontend.
-                    # Use Nango's cloud-hosted UI (app.nango.dev) which accepts
-                    # self-hosted session tokens via the embedded SERVER_URL.
-                    connect_ui = os.environ.get(
-                        "NANGO_CONNECT_UI_URL", "https://app.nango.dev"
-                    ).rstrip("/")
-                    connect_link = f"{connect_ui}/?session_token={token}" if token else None
                     return {
-                        "token": token,
-                        "connect_link": connect_link,
+                        "token": data.get("token"),
+                        "connect_link": data.get("connect_link"),
                         "expires_at": data.get("expires_at"),
                         "connection_id": connection_id,
                     }
