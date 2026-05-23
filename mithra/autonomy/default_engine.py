@@ -346,7 +346,21 @@ class DefaultAutonomyEngine(AutononomyEngine):
         # --------------------------------------------------------------------
         # Step 6 — Build response_text
         # --------------------------------------------------------------------
-        receipt.response_text = _build_response_text(receipt)
+        executed_descs = [e.action_type for e in receipt.executed]
+        pending_descs = [p.description for p in receipt.pending]
+        rejected_intents = [r.intent for r in receipt.rejected]
+
+        if receipt.executed:
+            if any("calendar" in e for e in executed_descs):
+                receipt.response_text = "✅ Added to your calendar!"
+            else:
+                receipt.response_text = "✅ Done."
+        elif receipt.pending:
+            desc = pending_descs[0] if pending_descs else "this action"
+            receipt.response_text = f"Should I {desc}?"
+        elif receipt.rejected:
+            receipt.response_text = "Sorry, that action is not permitted."
+        # If no actions — leave receipt.response_text empty; agent response is used
         return receipt
 
     async def confirm(
@@ -549,20 +563,3 @@ def _notification_channel(action: "AgentAction") -> str:
     return "telegram"
 
 
-def _build_response_text(receipt: ExecutionReceipt) -> str:
-    parts: list[str] = []
-    succeeded = [e for e in receipt.executed if e.success]
-    failed = [e for e in receipt.executed if not e.success]
-    if succeeded:
-        parts.append("Done: " + ", ".join(e.action_type for e in succeeded))
-    if failed:
-        parts.append("Failed: " + ", ".join(e.action_type for e in failed))
-    if receipt.pending:
-        parts.append(
-            "Awaiting confirmation: " + ", ".join(p.action_type for p in receipt.pending)
-        )
-    if receipt.rejected:
-        parts.append("Blocked: " + ", ".join(r.intent for r in receipt.rejected))
-    if receipt.skipped:
-        parts.append(f"Observed: {len(receipt.skipped)} signal(s)")
-    return ". ".join(parts) if parts else "No actions."

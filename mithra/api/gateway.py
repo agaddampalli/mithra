@@ -561,107 +561,192 @@ def create_app(state_override: dict | None = None) -> FastAPI:
     return app
 
 
-async def _process_request(agent_request) -> None:
-    """Execute the full request lifecycle for a normalised AgentRequest."""
-    logger = logging.getLogger(__name__)
+# ---------------------------------------------------------------------------
+# Helper utilities
+# ---------------------------------------------------------------------------
 
-    logger.info(f"Processing request: user={agent_request.user_id} text={agent_request.text}")
+def _get_chat_id(device_id: str) -> int | None:
+    """Extract Telegram chat_id from device_id string."""
+    parts = (device_id or "").split(":")
+    if len(parts) > 1:
+        try:
+            return int(parts[1])
+        except ValueError:
+            return None
+    return None
 
+
+async def _send_telegram(
+    user_id: str,
+    device_id: str,
+    text: str,
+    actions=None,
+) -> None:
+    """Send message via Telegram output adapter."""
+    telegram_output = _state.get("telegram_output")
+    chat_id = _get_chat_id(device_id)
+    if not telegram_output or not chat_id:
+        return
+    telegram_output.register_chat(user_id, chat_id)
+    from mithra.adapters.messaging import OutboundMessage
+    msg = OutboundMessage(text=text)
+    if actions:
+        await telegram_output.send_with_actions(user_id, msg, actions)
+    else:
+        await telegram_output.send(user_id, msg)
+
+
+# ---------------------------------------------------------------------------
+# Signal handlers
+# ---------------------------------------------------------------------------
+
+async def _handle_registration_signal(agent_request) -> bool:
+    """Handle /start and registration callbacks. Returns True if handled."""
     signal = agent_request.signal or {}
 
-    # /start — present member selection buttons so the user can self-register
     if signal.get("registration"):
-        telegram_output = _state.get("telegram_output")
         household_config = _state.get("household_config", {})
-        if telegram_output:
-            from mithra.adapters.messaging import ActionButton, OutboundMessage
-            chat_id = signal.get("chat_id")
-            first_name = signal.get("first_name", "")
-            members = household_config.get("members", [])
-            actions = [
-                ActionButton(
-                    label=m["display_name"],
-                    action="register",
-                    payload={"user_id": m["user_id"]},
-                )
-                for m in members
-            ]
-            telegram_output.register_chat("household", chat_id)
-            await telegram_output.send_with_actions(
-                "household",
-                OutboundMessage(text=f"Hi {first_name}! Who are you?"),
-                actions,
+        members = household_config.get("members", [])
+        from mithra.adapters.messaging import ActionButton
+        actions = [
+            ActionButton(
+                label=m["display_name"],
+                action="register",
+                payload={"user_id": m["user_id"], "action": "register"},
             )
-        return
+            for m in members
+        ]
+        first_name = signal.get("first_name", "")
+        await _send_telegram(
+            "household",
+            agent_request.device_id,
+            f"Hi {first_name}! Who are you?",
+            actions=actions,
+        )
+        return True
 
-    # Registration confirmed — acknowledge and update the chat mapping
     if signal.get("registered"):
+        user_id = signal.get("user_id", "")
+        device_id = agent_request.device_id
+        chat_id = _get_chat_id(device_id)
         telegram_output = _state.get("telegram_output")
-        if telegram_output:
-            from mithra.adapters.messaging import OutboundMessage
-            user_id = signal.get("user_id")
-            device_id = agent_request.device_id or ""
-            chat_id = int(device_id.split(":")[1]) if ":" in device_id else None
-            if chat_id:
-                telegram_output.register_chat(user_id, chat_id)
-                await telegram_output.send(
-                    user_id,
-                    OutboundMessage(text="You're all set! Say hello to Mithra."),
-                )
-        return
+        if telegram_output and chat_id:
+            telegram_output.register_chat(user_id, chat_id)
+        await _send_telegram(user_id, device_id, "You're all set! Say hello to Mithra.")
 
-    # "connect google" intent — send OAuth link without going through the LLM
+        admin_id = os.environ.get("MITHRA_ADMIN_TELEGRAM_ID")
+        if admin_id:
+            household_config = _state.get("household_config", {})
+            member_name = next(
+                (m["display_name"] for m in household_config.get("members", [])
+                 if m["user_id"] == user_id),
+                user_id,
+            )
+            telegram_output = _state.get("telegram_output")
+            if telegram_output:
+                from mithra.adapters.messaging import OutboundMessage
+                telegram_output.register_chat("admin", int(admin_id))
+                await telegram_output.send(
+                    "admin",
+                    OutboundMessage(
+                        text=f"✅ New registration\nName: {member_name}\nUser ID: {user_id}"
+                    ),
+                )
+        return True
+
+    return False
+
+
+async def _handle_integration_signal(agent_request) -> bool:
+    """Handle connect_integration signals. Returns True if handled."""
+    signal = agent_request.signal or {}
     text_lower = (agent_request.text or "").lower()
-    if any(phrase in text_lower for phrase in [
-        "connect google", "link google", "setup google",
-        "connect calendar", "link calendar",
-    ]):
+
+    wants_google = signal.get("connect_integration") == "google" or any(
+        p in text_lower
+        for p in ["connect google", "link google", "connect calendar", "setup google"]
+    )
+
+    if wants_google:
         nango = _state.get("nango")
-        google = _state.get("google_integration")
         base_url = os.environ.get("MITHRA_BASE_URL", "https://assistant.mithra-app.com")
         uid = agent_request.user_id
-        household_id = _state.get("household_id", "default")
+        hid = _state.get("household_id", "default")
 
         if nango:
             from mithra.integrations.nango_client import NangoClient
-            is_connected = await nango.is_connected(NangoClient.GOOGLE_PROVIDER, uid, household_id)
-            if is_connected:
-                result_text = "✅ Your Google account is already connected."
-            else:
-                redirect_url = f"{base_url}/auth/google/success"
-                url = nango.get_connect_url(
-                    NangoClient.GOOGLE_PROVIDER, uid, household_id, redirect_url=redirect_url
+            connected = await nango.is_connected(NangoClient.GOOGLE_PROVIDER, uid, hid)
+            if connected:
+                await _send_telegram(
+                    uid, agent_request.device_id,
+                    "✅ Your Google account is already connected.",
                 )
-                result_text = (
-                    f"Tap the link to connect your Google account:\n{url}\n\n"
-                    "This gives Mithra access to your Calendar, Gmail, and Contacts."
-                )
-        elif google:
-            if google.is_connected(uid):
-                result_text = "✅ Your Google account is already connected."
             else:
                 url = f"{base_url}/auth/google?user_id={uid}"
-                result_text = (
-                    f"Tap the link to connect your Google account:\n{url}\n\n"
-                    "This gives Mithra access to your Calendar, Gmail, and Contacts."
+                await _send_telegram(
+                    uid, agent_request.device_id,
+                    f"Tap to connect your Google account:\n{url}",
                 )
-        else:
-            result_text = "Google integration is not configured."
+        return True
 
-        telegram_output = _state.get("telegram_output")
-        device_parts = (agent_request.device_id or "").split(":")
-        if telegram_output and len(device_parts) > 1:
-            from mithra.adapters.messaging import OutboundMessage
-            chat_id = int(device_parts[1])
-            telegram_output.register_chat(uid, chat_id)
-            await telegram_output.send(uid, OutboundMessage(text=result_text))
+    return False
+
+
+async def _handle_confirmation_signal(agent_request) -> bool:
+    """Handle confirm/reject signals from inline buttons. Returns True if handled."""
+    signal = agent_request.signal or {}
+    confirmation = signal.get("confirmation")
+
+    if confirmation in ("confirm", "✅ Yes"):
+        request_id = signal.get("request_id")
+        action_index = signal.get("action_index", 0)
+        engine = _state.get("engine")
+        executor = _state.get("executor")
+        if engine and executor and request_id:
+            receipt = await engine.confirm(
+                request_id, action_index, agent_request.user_id, executor
+            )
+            if receipt and len(receipt.executed) > 0:
+                await _send_telegram(agent_request.user_id, agent_request.device_id, "✅ Done!")
+            else:
+                await _send_telegram(
+                    agent_request.user_id, agent_request.device_id, "❌ Couldn't complete that."
+                )
+        return True
+
+    if confirmation in ("reject", "❌ No"):
+        request_id = signal.get("request_id")
+        action_index = signal.get("action_index", 0)
+        engine = _state.get("engine")
+        if engine and request_id:
+            await engine.reject(request_id, action_index, agent_request.user_id)
+        await _send_telegram(agent_request.user_id, agent_request.device_id, "Cancelled.")
+        return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Request lifecycle
+# ---------------------------------------------------------------------------
+
+async def _process_request(agent_request) -> None:
+    """Execute full request lifecycle for a normalised AgentRequest.
+    Clean router — no business logic."""
+    logger = logging.getLogger(__name__)
+    logger.info(
+        f"Processing request: user={agent_request.user_id} text={agent_request.text}"
+    )
+
+    # 1. Handle special signals before agent
+    if await _handle_registration_signal(agent_request):
+        return
+    if await _handle_integration_signal(agent_request):
+        return
+    if await _handle_confirmation_signal(agent_request):
         return
 
-    agent = _state.get("agent")
-    if not agent:
-        logger.error("No agent in state")
-        return
-
+    # 2. Assemble context
     domain_router = _state.get("domain_router")
     if domain_router:
         try:
@@ -671,142 +756,52 @@ async def _process_request(agent_request) -> None:
                 agent_request.domain_hint,
             )
             agent_request.context = ctx
-            logger.info(f"Context assembled: {len(ctx.priority_domains)} priority domains")
+            logger.info(
+                f"Context assembled: {len(ctx.priority_domains)} priority domains"
+            )
         except Exception as e:
             logger.error(f"Context assembly failed: {e}", exc_info=True)
 
-    # Detect confirmation responses before routing to the agent
-    text_lower = (agent_request.text or "").lower().strip()
-    confirmation_words = [
-        "yes", "confirm", "ok", "okay", "sure",
-        "yes confirm", "yes please", "go ahead",
-        "confirmed", "do it", "add it",
-    ]
-    is_confirmation = any(
-        text_lower == w or text_lower.startswith(w + " ") or text_lower.endswith(" " + w)
-        for w in confirmation_words
-    )
-
-    if is_confirmation:
-        session_mgr = _state.get("session_mgr")
-        if session_mgr:
-            history = session_mgr.load_history(
-                agent_request.session_id, agent_request.user_id
-            )
-            for turn in reversed(history[-5:]):
-                if turn.role == "assistant" and (
-                    "calendar" in (turn.text or "").lower()
-                    and "confirm" in (turn.text or "").lower()
-                ):
-                    pending_text = turn.text or ""
-                    extract_messages = [
-                        {
-                            "role": "system",
-                            "content": (
-                                "Extract calendar event from this confirmation message. "
-                                "Return JSON only, no markdown:\n"
-                                '{"summary": "title", '
-                                '"start_datetime": "ISO8601", '
-                                '"end_datetime": "ISO8601"}'
-                            ),
-                        },
-                        {"role": "user", "content": pending_text},
-                    ]
-                    try:
-                        from mithra.routing.llm_router import TaskType, _strip_fences
-                        import json as _json
-                        llm = _state.get("llm_router")
-                        extract_resp = llm.complete(
-                            TaskType.DATA_CAPTURE, "time", extract_messages
-                        )
-                        event_data = _json.loads(_strip_fences(extract_resp.content))
-
-                        executor = _state.get("executor")
-                        if executor:
-                            from mithra.agent.interface import AgentAction
-                            action = AgentAction(
-                                action_type="calendar_write",
-                                domain="time",
-                                payload=event_data,
-                                output_channel="calendar",
-                                autonomy_level=2,
-                                reversibility="full",
-                            )
-                            exec_result = await executor.execute(action)
-
-                            telegram_output = _state.get("telegram_output")
-                            device_parts = (agent_request.device_id or "").split(":")
-                            if telegram_output and len(device_parts) > 1:
-                                from mithra.adapters.messaging import OutboundMessage
-                                chat_id = int(device_parts[1])
-                                telegram_output.register_chat(agent_request.user_id, chat_id)
-                                msg = (
-                                    "✅ Added to your calendar!"
-                                    if exec_result.success
-                                    else f"❌ Couldn't add the event. Error: {exec_result.error}"
-                                )
-                                await telegram_output.send(
-                                    agent_request.user_id, OutboundMessage(text=msg)
-                                )
-                        return
-                    except Exception:
-                        pass  # Fall through to normal processing
-                    break
-
+    # 3. Run agent
+    agent = _state.get("agent")
+    if not agent:
+        logger.error("No agent in state")
+        return
     try:
         result = agent.run(agent_request)
         logger.info(
             f"Agent result: success={result.success} intent={result.intent} "
-            f"response={result.response_text[:50] if result.response_text else 'empty'}"
+            f"response={(result.response_text or '')[:50]}"
         )
     except Exception as e:
         logger.error(f"Agent.run failed: {e}", exc_info=True)
         return
 
+    # 4. Run autonomy engine
     engine = _state.get("engine")
     executor = _state.get("executor")
     receipt = None
     if engine and executor:
         try:
             receipt = await engine.process(result, agent_request.user_id, executor)
-            logger.info(f"Engine processed: executed={len(receipt.executed)} pending={len(receipt.pending)}")
+            logger.info(
+                f"Engine processed: executed={len(receipt.executed)} "
+                f"pending={len(receipt.pending)}"
+            )
         except Exception as e:
             logger.error(f"Engine.process failed: {e}", exc_info=True)
-            return
 
-    # FIX 4: Override response_text to reflect what actually happened
-    if receipt is not None:
-        if receipt.executed:
-            # ACT_TELL/ACT_SILENT — actions were executed, report outcome
-            if receipt.response_text:
-                result.response_text = receipt.response_text
-        elif receipt.rejected:
-            # NEVER-blocked — tell the user something was blocked
-            blocked = ", ".join(r.intent for r in receipt.rejected)
-            result.response_text = f"That action is not allowed: {blocked}"
-        # SURFACE (pending): keep result.response_text — it's the human-friendly confirm prompt
+    # 5. Use receipt response if available
+    if receipt and receipt.response_text:
+        result.response_text = receipt.response_text
 
-    # Send response back to Telegram
-    telegram_output = _state.get("telegram_output")
-    if telegram_output and result.response_text:
-        try:
-            from mithra.adapters.messaging import OutboundMessage
-            chat_id = agent_request.signal.get("chat_id") if agent_request.signal else None
-            if not chat_id:
-                device_id = agent_request.device_id or ""
-                if ":" in device_id:
-                    chat_id = int(device_id.split(":")[1])
-            if chat_id:
-                telegram_output.register_chat(agent_request.user_id, chat_id)
-                await telegram_output.send(
-                    agent_request.user_id,
-                    OutboundMessage(text=result.response_text),
-                )
-                logger.info(f"Reply sent to {agent_request.user_id}")
-            else:
-                logger.error(f"No chat_id found for {agent_request.user_id}")
-        except Exception as e:
-            logger.error(f"Send reply failed: {e}", exc_info=True)
+    # 6. Send response
+    if result.response_text:
+        await _send_telegram(
+            agent_request.user_id,
+            agent_request.device_id,
+            result.response_text,
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -368,9 +368,8 @@ async def test_response_text_summarises_all_outcomes(engine):
     ]
     receipt = await engine.process(_result(actions), USER, executor)
 
+    # Executed actions take priority in the single-priority response format
     assert receipt.response_text != ""
-    assert "Blocked" in receipt.response_text
-    assert "confirmation" in receipt.response_text.lower()
     assert "Done" in receipt.response_text
 
 
