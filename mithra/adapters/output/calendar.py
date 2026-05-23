@@ -119,6 +119,21 @@ class CalendarAdapter(OutputAdapter):
             if resp.status_code not in (200, 204, 404):
                 resp.raise_for_status()
 
+    def _build_event(self, payload: dict[str, Any], fallback_summary: str = "New event") -> dict[str, Any]:
+        """Build a Google Calendar event dict from a flat payload."""
+        start = payload.get("start_datetime", _now())
+        end = payload.get("end_datetime", _now())
+        event: dict[str, Any] = {
+            "summary": payload.get("summary", fallback_summary),
+            "start": {"dateTime": start, "timeZone": "UTC"},
+            "end": {"dateTime": end, "timeZone": "UTC"},
+        }
+        if payload.get("description"):
+            event["description"] = payload["description"]
+        if payload.get("location"):
+            event["location"] = payload["location"]
+        return event
+
     async def send(self, user_id: str, message: OutboundMessage) -> DeliveryReceipt:
         """Create a calendar event from the message.
 
@@ -128,21 +143,11 @@ class CalendarAdapter(OutputAdapter):
         """
         calendar_id = "primary"
         try:
-            event_data = json.loads(message.text)
+            payload = json.loads(message.text)
         except (json.JSONDecodeError, TypeError):
-            event_data = {}
+            payload = {}
 
-        start = event_data.get("start_datetime", _now())
-        end = event_data.get("end_datetime", _now())
-        event: dict[str, Any] = {
-            "summary": event_data.get("summary", message.text),
-            "start": {"dateTime": start, "timeZone": "UTC"},
-            "end": {"dateTime": end, "timeZone": "UTC"},
-        }
-        if event_data.get("description"):
-            event["description"] = event_data["description"]
-        if event_data.get("location"):
-            event["location"] = event_data["location"]
+        event = self._build_event(payload, fallback_summary=message.text or "New event")
 
         try:
             event_id = await self.create_event(calendar_id, event, user_id=user_id)
@@ -190,19 +195,8 @@ class CalendarAdapter(OutputAdapter):
         user_id = payload.get("user_id", "")
         calendar_id = "primary"
 
-        start = payload.get("start_datetime", _now())
-        end = payload.get("end_datetime", _now())
-        event: dict[str, Any] = {
-            "summary": payload.get("summary", "New event"),
-            "start": {"dateTime": start, "timeZone": "UTC"},
-            "end": {"dateTime": end, "timeZone": "UTC"},
-        }
-        if payload.get("description"):
-            event["description"] = payload["description"]
-        if payload.get("location"):
-            event["location"] = payload["location"]
-
         action_id = str(uuid.uuid4())
+        event = self._build_event(payload)
         try:
             event_id = await self.create_event(calendar_id, event, user_id=user_id)
             return ExecutionResult(

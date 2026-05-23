@@ -118,6 +118,9 @@ class AgentAction:
     # AutononomyEngine uses this to route to the correct OutputAdapter
     autonomy_level: int = 1
     reversibility: str = "full"
+    # Human-readable description set by the agent (e.g. "add 'Dentist' to your calendar").
+    # Engine uses this directly so it never needs to know individual action types.
+    description: str = ""
 
 
 @dataclass

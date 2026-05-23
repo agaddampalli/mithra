@@ -228,9 +228,11 @@ class LangGraphAdapter(AgentInterface):
             summary = event_data.get("summary", "New event")
             start = event_data.get("start_datetime", "")
             if start:
-                response_text = f"I'll add '{summary}' to your calendar starting {start}. Confirm?"
+                action_desc = f"add '{summary}' to your calendar starting {start}"
+                response_text = f"I'll {action_desc}. Confirm?"
             else:
-                response_text = f"I'll add '{summary}' to your calendar. Confirm?"
+                action_desc = f"add '{summary}' to your calendar"
+                response_text = f"I'll {action_desc}. Confirm?"
 
             return {
                 "response_text": response_text,
@@ -242,6 +244,7 @@ class LangGraphAdapter(AgentInterface):
                         "output_channel": "calendar",
                         "autonomy_level": 1,
                         "reversibility": "full",
+                        "description": action_desc,
                     }
                 ],
             }
@@ -474,6 +477,7 @@ class LangGraphAdapter(AgentInterface):
                     output_channel=pa.get("output_channel", "none"),
                     autonomy_level=pa.get("autonomy_level", 1),
                     reversibility=pa.get("reversibility", "full"),
+                    description=pa.get("description", ""),
                 )
             )
 

@@ -150,24 +150,14 @@ class DefaultAutonomyEngine(AutononomyEngine):
         return AutonomyLevel.SURFACE
 
     def _describe_action(self, action: "AgentAction") -> str:
-        """Return a human-readable description of an action for user prompts."""
-        payload = action.payload or {}
-        if action.action_type == "calendar_write":
-            summary = payload.get("summary", "event")
-            start = payload.get("start_datetime", "")
-            date_str = ""
-            if start:
-                try:
-                    from datetime import datetime as _dt
-                    dt = _dt.fromisoformat(start)
-                    date_str = dt.strftime("%A %b %-d at %-I:%M %p")
-                except Exception:
-                    date_str = start
-            return (
-                f"add '{summary}' to your calendar"
-                + (f" on {date_str}" if date_str else "")
-            )
-        return f"complete: {action.action_type}"
+        """Return a human-readable description of an action for user prompts.
+
+        Prefers action.description set by the agent (OCP — engine is closed to
+        action-type changes). Falls back to a generic label so no action is silent.
+        """
+        if action.description:
+            return action.description
+        return f"complete action: {action.action_type}"
 
     def _pending_storage_key(self, action_id: str) -> str:
         return f"pending:{action_id}"
