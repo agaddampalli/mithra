@@ -112,13 +112,22 @@ class NangoClient:
                     timeout=10,
                 )
                 exists = exists_resp.status_code == 200
-                method = "put" if exists else "post"
-                resp = await getattr(client, method)(
-                    f"{self._url}/config",
-                    headers={**self._headers, "Content-Type": "application/json"},
-                    json=body,
-                    timeout=10,
-                )
+                if exists:
+                    # PATCH /config/{key} — update fields on an existing integration
+                    resp = await client.patch(
+                        f"{self._url}/config/{provider_config_key}",
+                        headers={**self._headers, "Content-Type": "application/json"},
+                        json=body,
+                        timeout=10,
+                    )
+                else:
+                    # POST /config — create new integration
+                    resp = await client.post(
+                        f"{self._url}/config",
+                        headers={**self._headers, "Content-Type": "application/json"},
+                        json=body,
+                        timeout=10,
+                    )
                 if resp.status_code not in (200, 201, 204):
                     _log.warning(
                         "ensure_integration %s %s → %d: %s",
