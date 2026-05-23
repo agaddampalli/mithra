@@ -23,8 +23,11 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 import time
 import uuid
+
+_logger = logging.getLogger(__name__)
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -438,10 +441,14 @@ class DefaultAutonomyEngine(AutononomyEngine):
         )
         self._action_log.append(log_entry)
         receipt.executed.append(log_entry)
-        receipt.response_text = (
-            f"Done: {pending.intent}" if exec_result.success
-            else f"Failed: {pending.intent} — {exec_result.error}"
-        )
+        if exec_result.success:
+            if "calendar" in pending.action_type:
+                receipt.response_text = "✅ Added to your calendar!"
+            else:
+                receipt.response_text = "✅ Done."
+        else:
+            _logger.error("confirm() execution failed for %s: %s", pending.intent, exec_result.error)
+            receipt.response_text = f"❌ Couldn't complete that. Error: {exec_result.error}"
         return receipt
 
     async def reject(

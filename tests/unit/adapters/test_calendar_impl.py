@@ -60,7 +60,7 @@ class TestSend:
     @pytest.mark.asyncio
     async def test_send_returns_receipt_with_event_id_in_message_id(self):
         with respx.mock:
-            calendar_id = "person_a@group.calendar.google.com"
+            calendar_id = "primary"
             respx.post(f"{_BASE}/calendars/{calendar_id}/events").mock(
                 return_value=httpx.Response(200, json={"id": "evt-99"})
             )
@@ -80,7 +80,7 @@ class TestSend:
     @pytest.mark.asyncio
     async def test_send_falls_back_to_plain_text_as_summary(self):
         with respx.mock:
-            calendar_id = "person_a@group.calendar.google.com"
+            calendar_id = "primary"
             captured: list[dict] = []
 
             def capture(request, route):
@@ -99,7 +99,7 @@ class TestSend:
     @pytest.mark.asyncio
     async def test_send_returns_failure_receipt_on_api_error(self):
         with respx.mock:
-            calendar_id = "person_a@group.calendar.google.com"
+            calendar_id = "primary"
             respx.post(f"{_BASE}/calendars/{calendar_id}/events").mock(
                 return_value=httpx.Response(500, json={"error": "server error"})
             )

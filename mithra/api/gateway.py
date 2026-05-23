@@ -243,7 +243,7 @@ async def lifespan(app: FastAPI):
     if nango_key:
         from mithra.integrations.nango_client import NangoClient
         nango = NangoClient(
-            nango_url=os.environ.get("NANGO_URL", "http://nango:3003"),
+            nango_url=os.environ.get("NANGO_URL", "http://nango:8080"),
             secret_key=nango_key,
         )
         _state["nango"] = nango

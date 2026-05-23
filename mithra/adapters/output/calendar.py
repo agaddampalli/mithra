@@ -13,11 +13,14 @@ Undo strategy: delete event via event_id stored in DeliveryReceipt.undo_payload
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
 import httpx
+
+_logger = logging.getLogger(__name__)
 
 from mithra.adapters.messaging import (
     ActionButton,
@@ -123,7 +126,7 @@ class CalendarAdapter(OutputAdapter):
         end_datetime, description, location. Falls back to treating text as
         the event summary with current time as start/end.
         """
-        calendar_id = f"{user_id}@group.calendar.google.com"
+        calendar_id = "primary"
         try:
             event_data = json.loads(message.text)
         except (json.JSONDecodeError, TypeError):
@@ -185,7 +188,7 @@ class CalendarAdapter(OutputAdapter):
 
         payload = action.payload or {}
         user_id = payload.get("user_id", "")
-        calendar_id = f"{user_id}@group.calendar.google.com" if user_id else "primary"
+        calendar_id = "primary"
 
         start = payload.get("start_datetime", _now())
         end = payload.get("end_datetime", _now())
@@ -210,6 +213,7 @@ class CalendarAdapter(OutputAdapter):
                 undo_payload={"event_id": event_id, "calendar_id": calendar_id},
             )
         except Exception as exc:
+            _logger.error("CalendarAdapter.execute failed: %s", exc, exc_info=True)
             return ExecutionResult(
                 action_id=action_id,
                 action_type=action.action_type,
