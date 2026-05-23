@@ -146,6 +146,26 @@ class DefaultAutonomyEngine(AutononomyEngine):
         # Intent not found in config — safest non-blocking default
         return AutonomyLevel.SURFACE
 
+    def _describe_action(self, action: "AgentAction") -> str:
+        """Return a human-readable description of an action for user prompts."""
+        payload = action.payload or {}
+        if action.action_type == "calendar_write":
+            summary = payload.get("summary", "event")
+            start = payload.get("start_datetime", "")
+            date_str = ""
+            if start:
+                try:
+                    from datetime import datetime as _dt
+                    dt = _dt.fromisoformat(start)
+                    date_str = dt.strftime("%A %b %-d at %-I:%M %p")
+                except Exception:
+                    date_str = start
+            return (
+                f"add '{summary}' to your calendar"
+                + (f" on {date_str}" if date_str else "")
+            )
+        return f"complete: {action.action_type}"
+
     def _pending_storage_key(self, action_id: str) -> str:
         return f"pending:{action_id}"
 
@@ -256,6 +276,7 @@ class DefaultAutonomyEngine(AutononomyEngine):
                 expires_at = (
                     datetime.now(timezone.utc) + timedelta(hours=24)
                 ).isoformat()
+                description = self._describe_action(action)
                 pending = PendingAction(
                     action_id=str(uuid.uuid4()),
                     request_id=result.request_id,
@@ -267,7 +288,7 @@ class DefaultAutonomyEngine(AutononomyEngine):
                     created_at=now,
                     expires_at=expires_at,
                     intent=intent,
-                    description=f"Proposed: {action.action_type} ({action.domain})",
+                    description=description,
                 )
                 self._storage.write(StorageRecord(
                     domain="autonomy",
@@ -356,8 +377,8 @@ class DefaultAutonomyEngine(AutononomyEngine):
             else:
                 receipt.response_text = "✅ Done."
         elif receipt.pending:
-            desc = pending_descs[0] if pending_descs else "this action"
-            receipt.response_text = f"Should I {desc}?"
+            description = pending_descs[0] if pending_descs else "this action"
+            receipt.response_text = f"Should I {description}?"
         elif receipt.rejected:
             receipt.response_text = "Sorry, that action is not permitted."
         # If no actions — leave receipt.response_text empty; agent response is used

@@ -693,32 +693,57 @@ async def _handle_integration_signal(agent_request) -> bool:
 
 
 async def _handle_confirmation_signal(agent_request) -> bool:
-    """Handle confirm/reject signals from inline buttons. Returns True if handled."""
+    """Handle confirm/reject from inline buttons or confirmation words.
+    Returns True if handled. No action-type knowledge here."""
     signal = agent_request.signal or {}
-    confirmation = signal.get("confirmation")
+    text_lower = (agent_request.text or "").lower().strip()
 
-    if confirmation in ("confirm", "✅ Yes"):
-        request_id = signal.get("request_id")
-        action_index = signal.get("action_index", 0)
-        engine = _state.get("engine")
+    is_confirm = signal.get("confirmation") in ("confirm", "✅ Yes")
+    is_reject = signal.get("confirmation") in ("reject", "❌ No")
+
+    if not is_confirm and not is_reject:
+        confirm_words = {
+            "yes", "confirm", "ok", "okay", "sure",
+            "yes please", "go ahead", "do it",
+            "add it", "confirmed", "yep", "yup",
+        }
+        reject_words = {"no", "cancel", "nope", "reject", "stop", "never mind"}
+        is_confirm = text_lower in confirm_words
+        is_reject = text_lower in reject_words
+
+    if not is_confirm and not is_reject:
+        return False
+
+    engine = _state.get("engine")
+    request_id = signal.get("request_id")
+    action_index = signal.get("action_index", 0)
+
+    if not request_id and engine:
+        pending = engine.get_pending(agent_request.user_id)
+        if not pending:
+            return False
+        request_id = pending[0].request_id
+        action_index = pending[0].action_index
+
+    if not request_id:
+        return False
+
+    if is_confirm:
         executor = _state.get("executor")
-        if engine and executor and request_id:
+        if engine and executor:
             receipt = await engine.confirm(
                 request_id, action_index, agent_request.user_id, executor
             )
-            if receipt and len(receipt.executed) > 0:
-                await _send_telegram(agent_request.user_id, agent_request.device_id, "✅ Done!")
-            else:
-                await _send_telegram(
-                    agent_request.user_id, agent_request.device_id, "❌ Couldn't complete that."
-                )
+            response = (
+                receipt.response_text
+                if receipt and receipt.response_text
+                else "✅ Done."
+            )
+            await _send_telegram(agent_request.user_id, agent_request.device_id, response)
         return True
 
-    if confirmation in ("reject", "❌ No"):
-        request_id = signal.get("request_id")
-        action_index = signal.get("action_index", 0)
-        engine = _state.get("engine")
-        if engine and request_id:
+    if is_reject:
+        if engine:
             await engine.reject(request_id, action_index, agent_request.user_id)
         await _send_telegram(agent_request.user_id, agent_request.device_id, "Cancelled.")
         return True
