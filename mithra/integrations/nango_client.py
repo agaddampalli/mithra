@@ -11,14 +11,24 @@ Integration setup: Nango stores OAuth credentials and scopes per integration
 (provider_config_key). ensure_integration() must be called at startup to register
 the credentials and scopes before any user initiates OAuth — without scopes, Nango
 sends an invalid request to Google that gets rejected immediately.
+
+This Nango version (nango-server:hosted) exposes:
+  GET    /config/:key   — check if integration exists
+  POST   /config        — create new integration
+  DELETE /config/:key   — delete integration
+No PUT or PATCH update endpoint exists. ensure_integration() uses
+DELETE + POST to update an existing integration with new scopes/credentials.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 import httpx
+
+_logger = logging.getLogger(__name__)
 
 
 class NangoClient:
@@ -39,40 +49,6 @@ class NangoClient:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._secret}"}
 
-    async def ensure_integration(
-        self,
-        provider_config_key: str,
-        provider: str,
-        oauth_client_id: str,
-        oauth_client_secret: str,
-        oauth_scopes: str,
-    ) -> bool:
-        """Create or update a Nango integration with credentials and scopes.
-
-        Idempotent — safe to call on every startup. Without this, Nango sends
-        OAuth requests to Google with no scope parameter and Google rejects them.
-        Returns True on success, False if the call fails (non-fatal — Nango may
-        already have the integration from a previous startup).
-        """
-        body: dict[str, Any] = {
-            "provider_config_key": provider_config_key,
-            "provider": provider,
-            "oauth_client_id": oauth_client_id,
-            "oauth_client_secret": oauth_client_secret,
-            "oauth_scopes": oauth_scopes,
-        }
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.put(
-                    f"{self._url}/config",
-                    headers={**self._headers, "Content-Type": "application/json"},
-                    json=body,
-                    timeout=10,
-                )
-                return resp.status_code in (200, 201, 204)
-        except Exception:
-            return False
-
     # ------------------------------------------------------------------
     # Integration setup
     # ------------------------------------------------------------------
@@ -85,18 +61,16 @@ class NangoClient:
         oauth_client_secret: str,
         oauth_scopes: str,
     ) -> bool:
-        """Create or update a Nango integration with credentials and scopes.
+        """Create or replace a Nango integration with credentials and scopes.
 
         Idempotent — safe to call on every startup. Without scopes configured,
         Nango sends OAuth requests to Google with no scope parameter and Google
-        rejects them immediately with a 400 error.
+        rejects them with a 400 error.
 
-        Nango's API distinguishes create (POST) from update (PUT). PUT returns
-        404 when the integration doesn't exist yet, so we check first and pick
-        the right method.
+        This Nango version has no update endpoint (PUT/PATCH both return 404).
+        If the integration already exists it is deleted first, then recreated
+        with the correct credentials and scopes.
         """
-        import logging
-        _log = logging.getLogger(__name__)
         body: dict[str, Any] = {
             "provider_config_key": provider_config_key,
             "provider": provider,
@@ -111,33 +85,35 @@ class NangoClient:
                     headers=self._headers,
                     timeout=10,
                 )
-                exists = exists_resp.status_code == 200
-                if exists:
-                    # PATCH /config/{key} — update fields on an existing integration
-                    resp = await client.patch(
+                if exists_resp.status_code == 200:
+                    # No update endpoint — delete first, then recreate.
+                    del_resp = await client.delete(
                         f"{self._url}/config/{provider_config_key}",
-                        headers={**self._headers, "Content-Type": "application/json"},
-                        json=body,
+                        headers=self._headers,
                         timeout=10,
                     )
-                else:
-                    # POST /config — create new integration
-                    resp = await client.post(
-                        f"{self._url}/config",
-                        headers={**self._headers, "Content-Type": "application/json"},
-                        json=body,
-                        timeout=10,
-                    )
+                    if del_resp.status_code not in (200, 204):
+                        _logger.warning(
+                            "ensure_integration DELETE %s → %d: %s",
+                            provider_config_key, del_resp.status_code, del_resp.text[:200],
+                        )
+                        return False
+
+                resp = await client.post(
+                    f"{self._url}/config",
+                    headers={**self._headers, "Content-Type": "application/json"},
+                    json=body,
+                    timeout=10,
+                )
                 if resp.status_code not in (200, 201, 204):
-                    _log.warning(
-                        "ensure_integration %s %s → %d: %s",
-                        method.upper(), provider_config_key,
-                        resp.status_code, resp.text[:300],
+                    _logger.warning(
+                        "ensure_integration POST %s → %d: %s",
+                        provider_config_key, resp.status_code, resp.text[:200],
                     )
                     return False
                 return True
         except Exception as exc:
-            _log.warning("ensure_integration exception: %s", exc)
+            _logger.warning("ensure_integration exception: %s", exc)
             return False
 
     async def setup_configured_integrations(self) -> None:
@@ -145,13 +121,7 @@ class NangoClient:
 
         Called once at startup. Each provider block is independent — a missing
         credential set skips that provider without affecting others.
-        Logs outcome per provider; failures are non-fatal (Nango may already
-        have the integration from a previous startup).
         """
-        import logging
-        _log = logging.getLogger(__name__)
-
-        # Google — Calendar + Gmail scopes sufficient for all Mithra use cases.
         google_id = os.environ.get("GOOGLE_CLIENT_ID", "")
         google_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
         if google_id and google_secret:
@@ -168,7 +138,13 @@ class NangoClient:
                     "https://www.googleapis.com/auth/calendar.events",
                 ]),
             )
-            _log.info("Nango %s integration: %s", self.GOOGLE_PROVIDER, "ok" if ok else "failed")
+            _logger.info(
+                "Nango %s integration: %s", self.GOOGLE_PROVIDER, "ok" if ok else "failed"
+            )
+
+    # ------------------------------------------------------------------
+    # Connect sessions
+    # ------------------------------------------------------------------
 
     async def create_connect_session(
         self,
@@ -181,9 +157,6 @@ class NangoClient:
         """Create a Nango connect session.
 
         Returns {token, connect_link, expires_at, connection_id} or None.
-        connect_link points to app.nango.dev (configured via NANGO_UI_URL in
-        the nango service). The UI is a shell only — credentials stay in the
-        self-hosted Nango PostgreSQL.
         """
         connection_id = self.get_connection_id(user_id, household_id)
         tags: dict[str, str] = {"end_user_id": connection_id}
@@ -214,6 +187,10 @@ class NangoClient:
                 return None
         except Exception:
             return None
+
+    # ------------------------------------------------------------------
+    # Token retrieval
+    # ------------------------------------------------------------------
 
     async def get_token(
         self, provider: str, user_id: str, household_id: str
