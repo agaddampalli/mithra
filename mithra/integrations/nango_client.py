@@ -69,11 +69,12 @@ class NangoClient:
         of constructing the Nango URL and auth itself.
         """
         url = f"{self._url}/oauth/{path}"
+        # /oauth/connect/* authenticates via public_key query param — no secret header.
+        # /oauth/callback is handled internally by Nango — no auth header needed either.
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 url,
                 params=params,
-                headers=self._headers,
                 follow_redirects=False,
                 timeout=15,
             )
