@@ -300,12 +300,12 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        # Health, Telegram webhook, and Nango OAuth callback are unauthenticated.
+        # Health, Telegram webhook, and OAuth routes are unauthenticated.
         p = request.url.path
         if (
             p == "/api/v1/health"
             or p == "/api/v1/webhook/telegram"
-            or p == "/oauth/callback"
+            or p.startswith("/oauth/")
         ):
             return await call_next(request)
 
@@ -477,17 +477,18 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             ),
         }
 
-    @app.api_route("/oauth/callback", methods=["GET", "POST"])
-    async def nango_oauth_callback(request: Request):
-        """Forward Google/provider OAuth callback to Nango.
+    @app.api_route("/oauth/{path:path}", methods=["GET", "POST"])
+    async def nango_oauth_proxy(request: Request, path: str):
+        """Proxy all Nango OAuth routes through the public gateway.
 
-        NANGO_CALLBACK_URL points here. Nango needs to receive this to exchange
-        the auth code for tokens — it never touches our app logic.
+        /oauth/connect/{provider} — browser opens this, Nango redirects to provider consent.
+        /oauth/callback           — provider redirects here after consent, Nango exchanges code.
+        No auth header: these are browser-facing endpoints.
         """
         from fastapi.responses import Response
         import httpx
         nango_url = os.environ.get("NANGO_URL", "http://nango:8080")
-        url = f"{nango_url}/oauth/callback"
+        url = f"{nango_url}/oauth/{path}"
         skip = {"host", "content-length", "transfer-encoding"}
         headers = {k: v for k, v in request.headers.items() if k.lower() not in skip}
         async with httpx.AsyncClient() as client:

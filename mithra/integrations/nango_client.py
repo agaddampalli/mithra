@@ -30,6 +30,19 @@ class NangoClient:
         """Return the Nango connection ID for a user."""
         return f"{household_id}__{user_id}"
 
+    def get_connect_url(self, provider: str, user_id: str, household_id: str) -> str:
+        """Return the OAuth start URL for a user.
+
+        Routes through the gateway's /oauth/connect proxy so the user goes
+        directly to Google's consent screen — no intermediate Nango UI page.
+        """
+        import urllib.parse
+        connection_id = self.get_connection_id(user_id, household_id)
+        base = os.environ.get(
+            "MITHRA_BASE_URL", "https://assistant.mithra-app.com"
+        ).rstrip("/")
+        return f"{base}/oauth/connect/{provider}?connection_id={urllib.parse.quote(connection_id)}"
+
     @property
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._secret}"}
