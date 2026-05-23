@@ -247,6 +247,7 @@ async def lifespan(app: FastAPI):
             secret_key=nango_key,
         )
         _state["nango"] = nango
+        await nango.setup_configured_integrations()
 
     if nango_key:
         from mithra.adapters.output.calendar import CalendarAdapter

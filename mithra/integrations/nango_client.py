@@ -6,8 +6,11 @@ Mithra calls create_connect_session() to get a connect_link, sends it to the use
 and calls get_token() to fetch fresh access tokens for API calls.
 
 connection_id = f"{household_id}__{user_id}" — globally unique per household + user.
-NANGO_UI_URL=https://app.nango.dev in the nango service makes Nango generate the
-correct connect_link. Credentials stay in the self-hosted Nango PostgreSQL.
+
+Integration setup: Nango stores OAuth credentials and scopes per integration
+(provider_config_key). ensure_integration() must be called at startup to register
+the credentials and scopes before any user initiates OAuth — without scopes, Nango
+sends an invalid request to Google that gets rejected immediately.
 """
 
 from __future__ import annotations
@@ -35,6 +38,107 @@ class NangoClient:
     @property
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._secret}"}
+
+    async def ensure_integration(
+        self,
+        provider_config_key: str,
+        provider: str,
+        oauth_client_id: str,
+        oauth_client_secret: str,
+        oauth_scopes: str,
+    ) -> bool:
+        """Create or update a Nango integration with credentials and scopes.
+
+        Idempotent — safe to call on every startup. Without this, Nango sends
+        OAuth requests to Google with no scope parameter and Google rejects them.
+        Returns True on success, False if the call fails (non-fatal — Nango may
+        already have the integration from a previous startup).
+        """
+        body: dict[str, Any] = {
+            "provider_config_key": provider_config_key,
+            "provider": provider,
+            "oauth_client_id": oauth_client_id,
+            "oauth_client_secret": oauth_client_secret,
+            "oauth_scopes": oauth_scopes,
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.put(
+                    f"{self._url}/config",
+                    headers={**self._headers, "Content-Type": "application/json"},
+                    json=body,
+                    timeout=10,
+                )
+                return resp.status_code in (200, 201, 204)
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
+    # Integration setup
+    # ------------------------------------------------------------------
+
+    async def ensure_integration(
+        self,
+        provider_config_key: str,
+        provider: str,
+        oauth_client_id: str,
+        oauth_client_secret: str,
+        oauth_scopes: str,
+    ) -> bool:
+        """Create or update a Nango integration with credentials and scopes.
+
+        Idempotent — safe to call on every startup. Without scopes configured,
+        Nango sends OAuth requests to Google with no scope parameter and Google
+        rejects them immediately with a 400 error.
+        """
+        body: dict[str, Any] = {
+            "provider_config_key": provider_config_key,
+            "provider": provider,
+            "oauth_client_id": oauth_client_id,
+            "oauth_client_secret": oauth_client_secret,
+            "oauth_scopes": oauth_scopes,
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.put(
+                    f"{self._url}/config",
+                    headers={**self._headers, "Content-Type": "application/json"},
+                    json=body,
+                    timeout=10,
+                )
+                return resp.status_code in (200, 201, 204)
+        except Exception:
+            return False
+
+    async def setup_configured_integrations(self) -> None:
+        """Register all integrations whose credentials are present in env vars.
+
+        Called once at startup. Each provider block is independent — a missing
+        credential set skips that provider without affecting others.
+        Logs outcome per provider; failures are non-fatal (Nango may already
+        have the integration from a previous startup).
+        """
+        import logging
+        _log = logging.getLogger(__name__)
+
+        # Google — Calendar + Gmail scopes sufficient for all Mithra use cases.
+        google_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+        google_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+        if google_id and google_secret:
+            ok = await self.ensure_integration(
+                provider_config_key=self.GOOGLE_PROVIDER,
+                provider="google",
+                oauth_client_id=google_id,
+                oauth_client_secret=google_secret,
+                oauth_scopes=" ".join([
+                    "openid",
+                    "https://www.googleapis.com/auth/userinfo.email",
+                    "https://www.googleapis.com/auth/userinfo.profile",
+                    "https://www.googleapis.com/auth/calendar",
+                    "https://www.googleapis.com/auth/calendar.events",
+                ]),
+            )
+            _log.info("Nango %s integration: %s", self.GOOGLE_PROVIDER, "ok" if ok else "failed")
 
     async def create_connect_session(
         self,
