@@ -216,10 +216,12 @@ class TelegramSignalHandler:
                     provider=NangoClient.GOOGLE_PROVIDER,
                     display_name=uid,
                 )
-                if session and session.get("connect_link"):
+                if session and session.get("token"):
+                    base = self._base_url.rstrip("/")
+                    url = f"{base}/connect/google?token={session['token']}"
                     await self.send(
                         agent_request,
-                        f"Tap to connect your Google account:\n{session['connect_link']}",
+                        f"Tap to connect your Google account:\n{url}",
                     )
                 else:
                     await self.send(agent_request, "❌ Could not create connection. Please try again.")

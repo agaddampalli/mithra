@@ -300,11 +300,12 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        # Health, Telegram webhook, and Nango OAuth callback are unauthenticated.
+        # Health, Telegram webhook, connect page, and OAuth callback are unauthenticated.
         p = request.url.path
         if (
             p == "/api/v1/health"
             or p == "/api/v1/webhook/telegram"
+            or p.startswith("/connect/")
             or p == "/oauth/callback"
         ):
             return await call_next(request)
@@ -476,6 +477,49 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                 else None
             ),
         }
+
+    @app.get("/connect/google")
+    async def connect_google(token: str = ""):
+        """Serve the Google OAuth connect page.
+
+        User taps a Telegram link → lands here → Nango Frontend SDK immediately
+        triggers Google OAuth redirect. No Nango login, no popup, no intermediate UI.
+        """
+        from fastapi.responses import HTMLResponse
+        nango_url = os.environ.get("NANGO_URL", "http://nango:8080")
+        if not token:
+            return HTMLResponse("<p>Invalid link — missing session token.</p>", status_code=400)
+        return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connect Google — Mithra</title>
+  <style>
+    body {{ font-family: sans-serif; text-align: center; padding: 60px 20px; color: #333; }}
+    p {{ font-size: 1.1rem; }}
+  </style>
+</head>
+<body>
+  <p>Connecting your Google account&hellip;</p>
+  <script type="module">
+    import Nango from 'https://cdn.jsdelivr.net/npm/@nangohq/frontend/dist/index.js';
+    const nango = new Nango({{
+      connectSessionToken: {token!r},
+      host: {nango_url!r},
+    }});
+    nango.auth('google-calendar')
+      .then(() => {{
+        document.body.innerHTML =
+          '<h2>&#x2705; Google Connected!</h2><p>You can close this tab and return to Telegram.</p>';
+      }})
+      .catch(err => {{
+        document.body.innerHTML =
+          '<p>&#x274C; Connection failed: ' + err.message + '<br>Please try again.</p>';
+      }});
+  </script>
+</body>
+</html>""")
 
     @app.api_route("/oauth/callback", methods=["GET", "POST"])
     async def nango_oauth_callback(request: Request):
