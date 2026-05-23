@@ -31,6 +31,7 @@ services:
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - MITHRA_BASE_URL=${MITHRA_BASE_URL:-https://assistant.mithra-app.com}
       - NANGO_SECRET_KEY=${NANGO_SECRET_KEY}
+      - NANGO_PUBLIC_KEY=${NANGO_PUBLIC_KEY}
       - NANGO_URL=http://nango:8080
     volumes:
       - mithra-data:/data/mithra
@@ -124,6 +125,7 @@ services:
       - "3003:8080"
     environment:
       - NANGO_SECRET_KEY=${NANGO_SECRET_KEY}
+      - NANGO_PUBLIC_KEY=${NANGO_PUBLIC_KEY}
       - SERVER_URL=https://assistant.mithra-app.com
       - NANGO_SERVER_URL=https://assistant.mithra-app.com
       - NANGO_CALLBACK_URL=https://assistant.mithra-app.com/oauth/callback

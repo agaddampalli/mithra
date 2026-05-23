@@ -22,9 +22,10 @@ class NangoClient:
     GOOGLE_PROVIDER = "google-calendar"
     MICROSOFT_PROVIDER = "microsoft-graph"
 
-    def __init__(self, nango_url: str = "", secret_key: str = "") -> None:
+    def __init__(self, nango_url: str = "", secret_key: str = "", public_key: str = "") -> None:
         self._url = (nango_url or os.environ.get("NANGO_URL", "http://nango:8080")).rstrip("/")
         self._secret = secret_key or os.environ.get("NANGO_SECRET_KEY", "")
+        self._public_key = public_key or os.environ.get("NANGO_PUBLIC_KEY", "")
 
     def get_connection_id(self, user_id: str, household_id: str) -> str:
         """Return the Nango connection ID for a user."""
@@ -47,6 +48,8 @@ class NangoClient:
             "MITHRA_BASE_URL", "https://assistant.mithra-app.com"
         ).rstrip("/")
         url = f"{public_url}/oauth/connect/{provider}?connection_id={urllib.parse.quote(connection_id)}"
+        if self._public_key:
+            url += f"&public_key={urllib.parse.quote(self._public_key)}"
         if redirect_url:
             url += f"&redirect_url={urllib.parse.quote(redirect_url)}"
         return url
