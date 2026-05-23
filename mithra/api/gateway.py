@@ -245,6 +245,7 @@ async def lifespan(app: FastAPI):
         nango = NangoClient(
             nango_url=os.environ.get("NANGO_URL", "http://nango:8080"),
             secret_key=nango_key,
+            public_key=os.environ.get("NANGO_PUBLIC_KEY", ""),
         )
         _state["nango"] = nango
 

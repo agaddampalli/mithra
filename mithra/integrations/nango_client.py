@@ -22,9 +22,11 @@ class NangoClient:
     GOOGLE_PROVIDER = "google-calendar"
     MICROSOFT_PROVIDER = "microsoft-graph"
 
-    def __init__(self, nango_url: str = "", secret_key: str = "") -> None:
+    def __init__(self, nango_url: str = "", secret_key: str = "", public_key: str = "") -> None:
         self._url = (nango_url or os.environ.get("NANGO_URL", "http://nango:8080")).rstrip("/")
         self._secret = secret_key or os.environ.get("NANGO_SECRET_KEY", "")
+        # Public key is the client-side identifier (safe to embed in URLs, like Stripe publishable key).
+        self._public_key = public_key or os.environ.get("NANGO_PUBLIC_KEY", "")
 
     def get_connection_id(self, user_id: str, household_id: str) -> str:
         """Return the Nango connection ID for a user."""
@@ -33,15 +35,19 @@ class NangoClient:
     def get_connect_url(self, provider: str, user_id: str, household_id: str) -> str:
         """Return the OAuth start URL for a user.
 
-        Routes through the gateway's /oauth/connect proxy so the user goes
-        directly to Google's consent screen — no intermediate Nango UI page.
+        Routes through the gateway's /oauth/connect proxy — Nango redirects
+        the browser directly to the provider's consent screen.
+        public_key is Nango's client-side identifier (safe in URLs, like Stripe publishable key).
         """
         import urllib.parse
         connection_id = self.get_connection_id(user_id, household_id)
         base = os.environ.get(
             "MITHRA_BASE_URL", "https://assistant.mithra-app.com"
         ).rstrip("/")
-        return f"{base}/oauth/connect/{provider}?connection_id={urllib.parse.quote(connection_id)}"
+        url = f"{base}/oauth/connect/{provider}?connection_id={urllib.parse.quote(connection_id)}"
+        if self._public_key:
+            url += f"&public_key={urllib.parse.quote(self._public_key)}"
+        return url
 
     @property
     def _headers(self) -> dict[str, str]:
