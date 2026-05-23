@@ -314,7 +314,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             "/auth/google",
             "/auth/google/callback",
             "/auth/google/success",
-        ):
+        ) or request.url.path.startswith("/oauth/"):
             return await call_next(request)
 
         secret_key = os.environ.get("SECRET_KEY", "")
@@ -484,6 +484,39 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                 else None
             ),
         }
+
+    @app.api_route("/oauth/{path:path}", methods=["GET", "POST"])
+    async def nango_proxy(request: Request, path: str):
+        """Proxy OAuth callbacks to Nango so external OAuth flows reach it via the tunnel."""
+        import httpx as _httpx
+        nango_url = os.environ.get("NANGO_URL", "http://nango:8080").rstrip("/")
+        target = f"{nango_url}/oauth/{path}"
+        params = dict(request.query_params)
+        try:
+            async with _httpx.AsyncClient() as client:
+                resp = await client.request(
+                    method=request.method,
+                    url=target,
+                    params=params,
+                    content=await request.body(),
+                    headers={
+                        k: v for k, v in request.headers.items()
+                        if k.lower() not in ("host", "content-length")
+                    },
+                    follow_redirects=False,
+                    timeout=15,
+                )
+            from fastapi.responses import Response
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                headers={
+                    k: v for k, v in resp.headers.items()
+                    if k.lower() not in ("transfer-encoding",)
+                },
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Nango proxy error: {exc}")
 
     @app.get("/auth/google")
     async def google_auth(request: Request, user_id: str = "household"):

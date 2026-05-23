@@ -125,6 +125,8 @@ services:
     environment:
       - NANGO_SECRET_KEY=${NANGO_SECRET_KEY}
       - SERVER_URL=https://assistant.mithra-app.com
+      - NANGO_SERVER_URL=https://assistant.mithra-app.com
+      - NANGO_CALLBACK_URL=https://assistant.mithra-app.com/oauth/callback
       - NANGO_ENCRYPTION_KEY=${MITHRA_ENCRYPTION_KEY}
       - NANGO_DB_USER=nango
       - NANGO_DB_PASSWORD=${NANGO_DB_PASSWORD}

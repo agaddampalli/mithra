@@ -37,12 +37,19 @@ class NangoClient:
         household_id: str,
         redirect_url: str = "",
     ) -> str:
-        """Return a Nango Connect URL that starts the OAuth consent flow."""
+        """Return a Nango Connect URL that starts the OAuth consent flow.
+
+        Uses the public MITHRA_BASE_URL so the redirect goes through the
+        api-gateway /oauth proxy — not the internal Docker Nango address.
+        """
         connection_id = self.get_connection_id(user_id, household_id)
-        params: dict[str, str] = {"connection_id": connection_id}
+        public_url = os.environ.get(
+            "MITHRA_BASE_URL", "https://assistant.mithra-app.com"
+        ).rstrip("/")
+        url = f"{public_url}/oauth/connect/{provider}?connection_id={urllib.parse.quote(connection_id)}"
         if redirect_url:
-            params["redirect_url"] = redirect_url
-        return f"{self._url}/oauth/connect/{provider}?{urllib.parse.urlencode(params)}"
+            url += f"&redirect_url={urllib.parse.quote(redirect_url)}"
+        return url
 
     async def get_token(
         self, provider: str, user_id: str, household_id: str
