@@ -248,19 +248,6 @@ async def lifespan(app: FastAPI):
         )
         _state["nango"] = nango
 
-    google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
-    google_client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-    if google_client_id:
-        from mithra.integrations.google_oauth import GoogleIntegration
-        google_integration = GoogleIntegration(
-            client_id=google_client_id,
-            client_secret=google_client_secret,
-            redirect_uri=f"{base_url}/auth/google/callback",
-            storage_adapter=local_adapter,
-            cipher=cipher,
-        )
-        _state["google_integration"] = google_integration
-
     if nango_key:
         from mithra.adapters.output.calendar import CalendarAdapter
         calendar_adapter = CalendarAdapter(
@@ -307,28 +294,15 @@ def create_app(state_override: dict | None = None) -> FastAPI:
     if state_override is not None:
         _state.update(state_override)
 
-    # SessionMiddleware is required by Authlib to store OAuth state between
-    # the /auth/google redirect and the /auth/google/callback.
-    from starlette.middleware.sessions import SessionMiddleware
-    app.add_middleware(
-        SessionMiddleware,
-        secret_key=os.environ.get("SECRET_KEY", "dev"),
-    )
-
     # -----------------------------------------------------------------------
     # Auth middleware
     # -----------------------------------------------------------------------
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        # Health, Telegram webhook, OAuth, and auth routes are unauthenticated.
+        # Health and Telegram webhook are unauthenticated.
         p = request.url.path
-        if (
-            p == "/api/v1/health"
-            or p == "/api/v1/webhook/telegram"
-            or p.startswith("/oauth")
-            or p.startswith("/auth")
-        ):
+        if p == "/api/v1/health" or p == "/api/v1/webhook/telegram":
             return await call_next(request)
 
         secret_key = os.environ.get("SECRET_KEY", "")
@@ -498,87 +472,6 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                 else None
             ),
         }
-
-    @app.api_route("/oauth/{path:path}", methods=["GET", "POST"])
-    async def nango_proxy(request: Request, path: str):
-        """Proxy OAuth callbacks to Nango via NangoClient (auth lives there, not here)."""
-        from fastapi.responses import Response
-        nango = _state.get("nango")
-        if not nango:
-            raise HTTPException(status_code=503, detail="Nango not available")
-        try:
-            content, status, headers = await nango.proxy_oauth_request(
-                path, dict(request.query_params)
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Nango proxy error: {exc}")
-        return Response(content=content, status_code=status, headers=headers)
-
-    @app.get("/auth/google")
-    async def google_auth(request: Request, user_id: str = "household"):
-        """Redirect to OAuth consent — Nango if configured, else direct Google OAuth."""
-        from fastapi.responses import RedirectResponse
-        nango = _state.get("nango")
-        if nango:
-            from mithra.integrations.nango_client import NangoClient
-            hid = _state.get("household_id", "default")
-            base = os.environ.get("MITHRA_BASE_URL", "https://assistant.mithra-app.com")
-            redirect_url = f"{base}/auth/google/success"
-            return RedirectResponse(
-                nango.get_connect_url(NangoClient.GOOGLE_PROVIDER, user_id, hid, redirect_url=redirect_url)
-            )
-        google = _state.get("google_integration")
-        if not google:
-            raise HTTPException(503, "Google not configured")
-        return RedirectResponse(google.get_auth_url(user_id))
-
-    @app.get("/auth/google/success")
-    async def google_success(request: Request):
-        """Nango redirect target after a successful Google OAuth connection."""
-        from fastapi.responses import HTMLResponse
-        return HTMLResponse("""
-            <html><body style="font-family:sans-serif;text-align:center;padding:50px">
-              <h2>&#x2705; Google Connected!</h2>
-              <p>You can close this tab and return to Telegram.</p>
-            </body></html>
-        """)
-
-    @app.get("/auth/google/callback")
-    async def google_callback(
-        request: Request,
-        code: str,
-        state: str = "household",
-    ):
-        """Handle Google callback — save tokens, notify user via Telegram."""
-        google = _state.get("google_integration")
-        if not google:
-            raise HTTPException(503, "Google not configured")
-        user_id = state
-        try:
-            await google.exchange_code(code, user_id)
-        except Exception as exc:
-            raise HTTPException(400, f"OAuth failed: {exc}")
-
-        handler = _state.get("telegram_handler")
-        if handler:
-            await handler.notify_user(
-                user_id,
-                (
-                    "✅ Google Calendar, Gmail & Contacts connected!\n\n"
-                    "You can now:\n"
-                    "• Ask me to add/check calendar events\n"
-                    "• I'll read receipts from Gmail\n"
-                    "• I'll import your contacts"
-                ),
-            )
-
-        from fastapi.responses import HTMLResponse
-        return HTMLResponse("""
-            <html><body style="font-family:sans-serif;text-align:center;padding:50px">
-              <h2>&#x2705; Google Connected!</h2>
-              <p>You can close this tab and return to Telegram.</p>
-            </body></html>
-        """)
 
     return app
 
