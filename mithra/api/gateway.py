@@ -42,7 +42,7 @@ logging.basicConfig(
 from typing import Any
 
 import yaml
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse
 
 # ---------------------------------------------------------------------------
@@ -300,13 +300,16 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        # Health, Telegram webhook, connect page, and all OAuth routes are unauthenticated.
+        # Health, Telegram webhook, connect page, OAuth routes, and WebSocket
+        # upgrades are unauthenticated. WebSocket upgrades are browser-initiated
+        # and carry no Bearer token; Nango validates the session token itself.
         p = request.url.path
         if (
             p == "/api/v1/health"
             or p == "/api/v1/webhook/telegram"
             or p.startswith("/connect/")
             or p.startswith("/oauth/")
+            or request.headers.get("upgrade", "").lower() == "websocket"
         ):
             return await call_next(request)
 
@@ -521,6 +524,72 @@ def create_app(state_override: dict | None = None) -> FastAPI:
   </script>
 </body>
 </html>""")
+
+    async def _proxy_ws_to_nango(websocket: WebSocket, path: str) -> None:
+        """Bidirectional WebSocket proxy to the internal Nango server.
+
+        The Nango Frontend SDK opens a WebSocket to {host} before triggering the
+        OAuth popup. It uses this channel to receive the OAuth result notification.
+        {host} is the public gateway URL, so the gateway must proxy the connection
+        to ws://nango:8080 — same single-entry-point principle as the /oauth/ proxy.
+        """
+        import websockets as _ws
+        nango_url = os.environ.get("NANGO_URL", "http://nango:8080")
+        ws_base = nango_url.replace("http://", "ws://").replace("https://", "wss://").rstrip("/")
+        target = f"{ws_base}/{path.lstrip('/')}"
+        query = str(websocket.url.query)
+        if query:
+            target = f"{target}?{query}"
+        await websocket.accept()
+        try:
+            async with _ws.connect(target) as upstream:
+                async def _to_upstream() -> None:
+                    try:
+                        while True:
+                            raw = await websocket.receive()
+                            if raw.get("type") == "websocket.disconnect":
+                                break
+                            if raw.get("bytes") is not None:
+                                await upstream.send(raw["bytes"])
+                            elif raw.get("text") is not None:
+                                await upstream.send(raw["text"])
+                    except Exception:
+                        pass
+
+                async def _to_client() -> None:
+                    try:
+                        async for msg in upstream:
+                            if isinstance(msg, bytes):
+                                await websocket.send_bytes(msg)
+                            else:
+                                await websocket.send_text(msg)
+                    except Exception:
+                        pass
+
+                tasks = [
+                    asyncio.create_task(_to_upstream()),
+                    asyncio.create_task(_to_client()),
+                ]
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for t in tasks:
+                    t.cancel()
+        except Exception:
+            pass
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+    @app.websocket("/")
+    async def ws_nango_root(websocket: WebSocket):
+        """Proxy root WebSocket (Nango SDK realtime channel) to internal Nango."""
+        await _proxy_ws_to_nango(websocket, "")
+
+    @app.websocket("/{path:path}")
+    async def ws_nango_path(websocket: WebSocket, path: str):
+        """Proxy any other WebSocket path (e.g. /socket.io/) to internal Nango."""
+        await _proxy_ws_to_nango(websocket, path)
 
     @app.api_route("/oauth/{path:path}", methods=["GET", "POST"])
     async def nango_oauth_proxy(request: Request, path: str):
