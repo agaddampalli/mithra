@@ -51,6 +51,35 @@ class NangoClient:
             url += f"&redirect_url={urllib.parse.quote(redirect_url)}"
         return url
 
+    @property
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._secret}"}
+
+    async def proxy_oauth_request(
+        self,
+        path: str,
+        params: dict,
+    ) -> tuple[bytes, int, dict]:
+        """Proxy an OAuth request to Nango, injecting auth headers.
+
+        Returns (content, status_code, headers). Gateway calls this instead
+        of constructing the Nango URL and auth itself.
+        """
+        url = f"{self._url}/oauth/{path}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                url,
+                params=params,
+                headers=self._headers,
+                follow_redirects=False,
+                timeout=15,
+            )
+        filtered = {
+            k: v for k, v in resp.headers.items()
+            if k.lower() not in ("transfer-encoding",)
+        }
+        return resp.content, resp.status_code, filtered
+
     async def get_token(
         self, provider: str, user_id: str, household_id: str
     ) -> dict[str, Any] | None:
@@ -66,7 +95,7 @@ class NangoClient:
                 resp = await client.get(
                     url,
                     params={"provider_config_key": provider},
-                    headers={"Authorization": f"Bearer {self._secret}"},
+                    headers=self._headers,
                     timeout=10,
                 )
                 if resp.status_code == 404:

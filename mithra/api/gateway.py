@@ -321,14 +321,14 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        # Health, Telegram webhook, and OAuth routes are unauthenticated via Bearer.
-        if request.url.path in (
-            "/api/v1/health",
-            "/api/v1/webhook/telegram",
-            "/auth/google",
-            "/auth/google/callback",
-            "/auth/google/success",
-        ) or request.url.path.startswith("/oauth/"):
+        # Health, Telegram webhook, OAuth, and auth routes are unauthenticated.
+        p = request.url.path
+        if (
+            p == "/api/v1/health"
+            or p == "/api/v1/webhook/telegram"
+            or p.startswith("/oauth")
+            or p.startswith("/auth")
+        ):
             return await call_next(request)
 
         secret_key = os.environ.get("SECRET_KEY", "")
@@ -501,36 +501,18 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
     @app.api_route("/oauth/{path:path}", methods=["GET", "POST"])
     async def nango_proxy(request: Request, path: str):
-        """Proxy OAuth callbacks to Nango so external OAuth flows reach it via the tunnel."""
-        import httpx as _httpx
-        nango_url = os.environ.get("NANGO_URL", "http://nango:8080").rstrip("/")
-        target = f"{nango_url}/oauth/{path}"
-        params = dict(request.query_params)
+        """Proxy OAuth callbacks to Nango via NangoClient (auth lives there, not here)."""
+        from fastapi.responses import Response
+        nango = _state.get("nango")
+        if not nango:
+            raise HTTPException(status_code=503, detail="Nango not available")
         try:
-            async with _httpx.AsyncClient() as client:
-                resp = await client.request(
-                    method=request.method,
-                    url=target,
-                    params=params,
-                    content=await request.body(),
-                    headers={
-                        k: v for k, v in request.headers.items()
-                        if k.lower() not in ("host", "content-length")
-                    },
-                    follow_redirects=False,
-                    timeout=15,
-                )
-            from fastapi.responses import Response
-            return Response(
-                content=resp.content,
-                status_code=resp.status_code,
-                headers={
-                    k: v for k, v in resp.headers.items()
-                    if k.lower() not in ("transfer-encoding",)
-                },
+            content, status, headers = await nango.proxy_oauth_request(
+                path, dict(request.query_params)
             )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Nango proxy error: {exc}")
+        return Response(content=content, status_code=status, headers=headers)
 
     @app.get("/auth/google")
     async def google_auth(request: Request, user_id: str = "household"):
