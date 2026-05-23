@@ -21,7 +21,6 @@ services:
       - ONEDRIVE_CLIENT_ID=${ONEDRIVE_CLIENT_ID}
       - ONEDRIVE_CLIENT_SECRET=${ONEDRIVE_CLIENT_SECRET}
       - ONEDRIVE_TENANT_ID=${ONEDRIVE_TENANT_ID}
-      - GOOGLE_CALENDAR_CREDENTIALS=${GOOGLE_CALENDAR_CREDENTIALS}
       - MITHRA_ENCRYPTION_KEY=${MITHRA_ENCRYPTION_KEY}
       - SECRET_KEY=${SECRET_KEY}
       - HA_URL=http://homeassistant:8123
@@ -31,6 +30,8 @@ services:
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - MITHRA_BASE_URL=${MITHRA_BASE_URL:-https://assistant.mithra-app.com}
+      - NANGO_SECRET_KEY=${NANGO_SECRET_KEY}
+      - NANGO_URL=http://nango:8080
     volumes:
       - mithra-data:/data/mithra
     depends_on:
