@@ -114,112 +114,118 @@ Interface:
 ## 2. OAuth Token Management
 
 ### Decision
-Build provider-agnostic OAuth system using standard
-libraries. No managed OAuth service.
-Nango evaluated and deferred — see Alternatives Considered.
+Config-driven, provider-agnostic OAuth using Authlib.
+No provider subclasses. No provider-specific files.
+Adding a new provider = config entry only, zero code.
 
-### Why Not Nango
-- Free self-hosted lacks webhooks (by design, permanent)
-- Enterprise self-hosted requires paid license
-- No acceptable free open-source alternative exists
-- Direct implementation is ~100 lines per provider
-- StorageAdapter abstraction makes product migration clean
+### Why Config-Driven Not Subclasses
+OAuth 2.0 is a standard. Authlib handles the full flow
+generically — auth URL, code exchange, token refresh.
+Provider differences are just config values (URLs, scopes,
+auth params). A subclass per provider adds complexity
+with no benefit.
+
+### Provider Config Structure
+Stored in mithra/integrations/oauth_providers.py as a dict.
+Loaded at startup. Filtered by available env vars.
+
+    OAUTH_PROVIDERS = {
+        "google": {
+            "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
+            "token_url": "https://oauth2.googleapis.com/token",
+            "scopes": [
+                "https://www.googleapis.com/auth/calendar",
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/contacts.readonly",
+                "openid",
+                "email",
+                "profile",
+            ],
+            "auth_params": {
+                "access_type": "offline",
+                "prompt": "consent",
+            },
+            "client_id_env":     "GOOGLE_CLIENT_ID",
+            "client_secret_env": "GOOGLE_CLIENT_SECRET",
+        },
+        "microsoft": {
+            "auth_url": "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize",
+            "token_url": "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+            "scopes": [
+                "https://graph.microsoft.com/Files.ReadWrite",
+                "https://graph.microsoft.com/Calendars.ReadWrite",
+                "https://graph.microsoft.com/Contacts.ReadWrite",
+                "offline_access",
+            ],
+            "auth_params": {},
+            "client_id_env":     "ONEDRIVE_CLIENT_ID",
+            "client_secret_env": "ONEDRIVE_CLIENT_SECRET",
+            "tenant_id_env":     "ONEDRIVE_TENANT_ID",
+            "tenant_id_default": "common",
+        },
+    }
+
+### Adding a New Provider
+1. Add entry to OAUTH_PROVIDERS dict
+2. Add CLIENT_ID + CLIENT_SECRET to .env
+Done. Zero code changes anywhere else.
 
 ### Components
 
-#### OAuthProvider (abstract base) — oauth_provider.py
-Abstract interface all providers must implement:
-    provider_id (property) -> str        e.g. "google"
-    scopes (property) -> list[str]
-    auth_url (property) -> str
-    token_url (property) -> str
-    get_auth_url(state, redirect_uri) -> str
-    exchange_code(code, redirect_uri) -> dict
-    refresh(token_data) -> dict
+#### oauth_providers.py
+Provider config dict only. No logic.
+Auto-resolves URLs with tenant_id substitution for Microsoft.
 
 #### OAuthTokenStore — oauth_token_store.py
-Encrypted storage for all provider tokens.
-Storage location:
-    domain: "oauth"
-    key:    "{provider_id}:{user_id}"
-    layer:  "credentials"
+Unchanged from previous design.
+Storage schema:
+    domain:  "oauth"
+    key:     "{provider_id}:{user_id}"
+    layer:   "credentials"
 
-Token data fields stored:
-    provider           str   provider identifier
-    user_id            str   member id
-    household_id       str   household id
-    access_token       str   ENCRYPTED
-    refresh_token      str   ENCRYPTED (optional)
-    token_type         str   default "Bearer"
-    expires_at         int   Unix timestamp
-    scopes             list  granted scopes
-    connected_at       str   ISO8601
-    last_refreshed     str   ISO8601
-    provider_user_id   str   user's ID at provider
-
-Methods:
-    save(provider_id, user_id, token_data) -> None
-    load(provider_id, user_id) -> dict | None
-    delete(provider_id, user_id) -> None
-    is_connected(provider_id, user_id) -> bool
+Token data fields:
+    provider           str
+    user_id            str
+    household_id       str
+    access_token       str  ENCRYPTED
+    refresh_token      str  ENCRYPTED
+    token_type         str  default "Bearer"
+    expires_at         int  Unix timestamp
+    scopes             list
+    connected_at       str  ISO8601
+    last_refreshed     str  ISO8601
+    provider_user_id   str  user's ID at provider
 
 #### OAuthManager — oauth_manager.py
-Orchestrates the full OAuth flow.
-Auto-refreshes tokens with 5-minute buffer.
+Single generic implementation using Authlib.
+No provider-specific code inside.
 
-Methods:
-    register(provider) -> None
     get_auth_url(provider_id, user_id, redirect_uri) -> str
     handle_callback(provider_id, code, user_id, redirect_uri) -> bool
     get_token(provider_id, user_id) -> str | None
     is_connected(provider_id, user_id) -> bool
     disconnect(provider_id, user_id) -> None
-    registered_providers (property) -> list[str]
+    available_providers() -> list[str]
 
-#### Implemented Providers
-    GoogleOAuth     google_oauth.py    implement now
-                    Uses: authlib for flow
-                          google-auth-oauthlib for refresh
-                    Scopes: calendar, gmail.readonly,
-                            contacts.readonly, openid,
-                            email, profile
+All methods use Authlib AsyncOAuth2Client generically.
+Token refresh uses client.ensure_active_token() —
+works for all standard OAuth2 providers automatically.
 
-    MicrosoftOAuth  microsoft_oauth.py stub only
-                    Implement when OneDrive domain is built
-                    Uses: authlib for flow, msal for refresh
-                    Scopes: Files.ReadWrite,
-                            Calendars.ReadWrite,
-                            Contacts.ReadWrite, offline_access
-
-#### Adding a New Provider (future pattern)
-1. Create {provider}_oauth.py
-2. Subclass OAuthProvider
-3. Implement 4 abstract methods
-4. Add CLIENT_ID and CLIENT_SECRET env vars
-5. Bootstrap auto-registers if env vars present
-Result: Zero changes to gateway, manager, store, or adapters.
-
-### OAuth Routes (generic, provider-agnostic)
+### OAuth Routes (generic)
     GET /auth/{provider}           redirect to provider
     GET /auth/{provider}/callback  exchange code, store token
 
-Works for any provider. No provider-specific route code.
+Works for any configured provider.
+Returns 404 if provider not in OAUTH_PROVIDERS or not configured.
 
-### Nango — What To Do With It
-Remove Nango entirely from the stack.
-- Remove nango service from compose.yaml
-- Remove nango-db service from compose.yaml
-- Remove nango-data and nango-db-data volumes
-- Remove NANGO_* env vars from all services
-- Delete mithra/integrations/nango_client.py
-- Remove _setup_nango() from bootstrap.py
-- Remove NANGO_* from .env.example
+### Why Not Nango (unchanged)
+See Alternatives Considered section.
 
 ### Product Migration Path
 Personal: tokens in encrypted SQLite
-Product:  swap StorageAdapter backend to cloud storage
-          per tenant — CalendarAdapter unchanged.
-          One-day migration when needed.
+Product:  swap OAuthTokenStore backend to cloud storage.
+          OAuthManager interface unchanged.
+          One-day migration.
 
 ---
 
@@ -362,48 +368,31 @@ Must complete and verify before Phase B.
 ### Phase B — OAuth
 Start only after Phase A is verified.
 
-    B1. Create mithra/integrations/oauth_provider.py
-        Abstract base class. No implementation.
+    B1. Create mithra/integrations/oauth_providers.py
+        Provider config dict. No logic.
 
     B2. Create mithra/integrations/oauth_token_store.py
         Encrypted storage using StorageAdapter.
-        Domain: "oauth"
 
     B3. Create mithra/integrations/oauth_manager.py
-        Orchestration with auto-refresh logic.
+        Generic Authlib-based orchestration.
+        No provider-specific code.
 
-    B4. Create mithra/integrations/google_oauth.py
-        Full GoogleOAuth implementation.
-        Uses authlib + google-auth-oauthlib.
-
-    B5. Create mithra/integrations/microsoft_oauth.py
-        Stub only. NotImplementedError on all methods.
-        Document what needs implementing.
-
-    B6. Add OAuth routes to gateway.py
+    B4. Add OAuth routes to gateway.py
         GET /auth/{provider}
         GET /auth/{provider}/callback
-        Generic — works for any registered provider.
 
-    B7. Wire OAuthManager into bootstrap.py
-        _build_oauth_manager() helper.
-        Auto-registers providers based on env vars.
+    B5. Wire OAuthManager into bootstrap.py
+        Load provider configs, filter by env vars present.
 
-    B8. Update CalendarAdapter
-        Use OAuthManager.get_token("google", user_id).
-        Remove all Nango references.
+    B6. Update CalendarAdapter
+        OAuthManager.get_token("google", user_id)
 
-    B9. Remove Nango entirely
-        compose.yaml: remove nango, nango-db services
-        Remove nango volumes
-        Delete mithra/integrations/nango_client.py
-        Remove _setup_nango() from bootstrap.py
-        Remove NANGO_* from .env.example
+    B7. Remove Nango entirely
+        compose.yaml, nango_client.py, bootstrap.py
 
-    B10. Update Google Cloud Console
-         Authorized redirect URIs:
-         https://assistant.mithra-app.com/auth/google/callback
-         Remove all other URIs.
+    B8. Update Google Cloud Console redirect URI
+        https://assistant.mithra-app.com/auth/google/callback
 
 ### Phase C — End to End Verification
 
