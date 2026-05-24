@@ -1,18 +1,19 @@
 """
-OAuth proxy routes — browser-facing endpoints that bridge external OAuth flows
+OAuth proxy routes — browser-facing endpoints that bridge the Nango OAuth flow
 to the internal Nango container.
 
-Gateway is the single HTTP entry point, so any internal service that needs
-browser access must be proxied through here. These routes handle all traffic
-the Nango Frontend SDK requires:
+Gateway is the single HTTP entry point. These routes proxy the OAuth callback
+and the Nango SDK WebSocket channel so the browser can reach internal Nango:
 
-  GET  /connect/google           — serve connect page with Nango SDK
-  GET|POST /oauth/{path}         — HTTP proxy: OAuth connect + callback
-  WS   /                         — WebSocket proxy: SDK realtime channel
-  WS   /{path}                   — WebSocket proxy: Socket.IO fallback
+  GET|POST /oauth/{path}  — HTTP proxy: OAuth callback → internal Nango
+  WS   /                  — WebSocket proxy: Nango SDK realtime channel
+  WS   /{path}            — WebSocket proxy: Socket.IO fallback
 
 All routes are unauthenticated — the browser carries no Bearer token, and
 Nango validates the connect session token internally.
+
+Note: /connect/google was removed. Nango's create_connect_session() now returns
+a connect_link directly; users are sent that link without any intermediary page.
 """
 
 from __future__ import annotations
@@ -22,59 +23,11 @@ import logging
 import os
 
 from fastapi import APIRouter, Request, WebSocket
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import Response
 
 _logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-# ---------------------------------------------------------------------------
-# Connect page
-# ---------------------------------------------------------------------------
-
-@router.get("/connect/google")
-async def connect_google(token: str = "") -> HTMLResponse:
-    """Serve the Google OAuth connect page.
-
-    User taps a Telegram link → lands here → Nango Frontend SDK opens a popup
-    to /oauth/connect/google-calendar (proxied to Nango). host must be the
-    public gateway URL so the browser popup can reach it.
-    """
-    base_url = os.environ.get("MITHRA_BASE_URL", "https://assistant.mithra-app.com").rstrip("/")
-    if not token:
-        return HTMLResponse("<p>Invalid link — missing session token.</p>", status_code=400)
-    return HTMLResponse(f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Connect Google — Mithra</title>
-  <style>
-    body {{ font-family: sans-serif; text-align: center; padding: 60px 20px; color: #333; }}
-    p {{ font-size: 1.1rem; }}
-  </style>
-</head>
-<body>
-  <p>Connecting your Google account&hellip;</p>
-  <script type="module">
-    import Nango from 'https://cdn.jsdelivr.net/npm/@nangohq/frontend/dist/index.js';
-    const nango = new Nango({{
-      connectSessionToken: {token!r},
-      host: {base_url!r},
-    }});
-    nango.auth('google-calendar')
-      .then(() => {{
-        document.body.innerHTML =
-          '<h2>&#x2705; Google Connected!</h2><p>You can close this tab and return to Telegram.</p>';
-      }})
-      .catch(err => {{
-        document.body.innerHTML =
-          '<p>&#x274C; Connection failed: ' + err.message + '<br>Please try again.</p>';
-      }});
-  </script>
-</body>
-</html>""")
 
 
 # ---------------------------------------------------------------------------

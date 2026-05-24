@@ -55,12 +55,12 @@ class CalendarAdapter(OutputAdapter):
         http_client: httpx.AsyncClient | None = None,
         nango_client: Any | None = None,
         household_id: str = "",
-        google_integration: Any | None = None,
+        storage_adapter: Any | None = None,
     ) -> None:
         self._http_client = http_client
         self._nango = nango_client
         self._household_id = household_id
-        self._google = google_integration
+        self._storage = storage_adapter
 
     def _client(self):
         if self._http_client is not None:
@@ -68,56 +68,34 @@ class CalendarAdapter(OutputAdapter):
         return httpx.AsyncClient()
 
     async def _get_nango_token(self, user_id: str) -> str | None:
-        """Fetch an access token from Nango for this user, or None if unavailable."""
+        """Fetch a fresh access token from Nango for this user, or None."""
         if self._nango is None:
             return None
-        try:
-            token_data = await self._nango.get_token(
-                self._nango.GOOGLE_PROVIDER, user_id, self._household_id
-            )
-            if token_data:
-                return token_data.get("access_token")
-        except Exception:
-            pass
+        token_data = await self._nango.get_token(
+            self._nango.GOOGLE_PROVIDER,
+            user_id,
+            self._household_id,
+            storage_adapter=self._storage,
+        )
+        if token_data:
+            return token_data.get("access_token")
         return None
 
-    async def _headers_for(self, user_id: str) -> dict[str, str]:
+    async def _headers_for(self, user_id: str = "") -> dict[str, str]:
         """Return auth headers for the given user.
 
-        Tries Nango first, falls back to GoogleIntegration stored token.
-        Raises RuntimeError when an auth source is configured but returns no
-        token — prevents sending an unauthenticated request to Google.
-        No auth source configured (test/dev) → passes through without raising.
+        When Nango is configured but returns no token, raises immediately —
+        an unauthenticated Google API call will always 401.
+        When no Nango client is configured (unit tests / dev), passes through.
         """
-        if self._nango:
+        if user_id and self._nango:
             token = await self._get_nango_token(user_id)
             if token:
-                _logger.debug("CalendarAdapter: using Nango token for %s", user_id)
                 return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            _logger.warning(
-                "CalendarAdapter: Nango returned no token for user=%s provider=%s — "
-                "trying GoogleIntegration fallback",
-                user_id, self._nango.GOOGLE_PROVIDER,
-            )
-
-        if self._google:
-            try:
-                creds = self._google.get_credentials(user_id)
-                if creds and creds.token:
-                    _logger.debug("CalendarAdapter: using GoogleIntegration token for %s", user_id)
-                    return {"Authorization": f"Bearer {creds.token}", "Content-Type": "application/json"}
-            except Exception as exc:
-                _logger.warning("CalendarAdapter: GoogleIntegration.get_credentials failed: %s", exc)
-
-        if self._nango or self._google:
-            # At least one auth source is configured but none returned a token.
-            # Fail fast — an unauthenticated Google API call will always 401.
             raise RuntimeError(
                 f"No valid Google token for user '{user_id}'. "
-                "Ask the user to reconnect Google via Telegram: 'connect google'."
+                "Send 'connect google' in Telegram to connect."
             )
-
-        # No auth source configured at all (test / dev mode) — pass through.
         return {"Content-Type": "application/json"}
 
     async def create_event(

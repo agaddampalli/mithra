@@ -39,6 +39,7 @@ class TelegramSignalHandler:
         nango: Any | None = None,
         base_url: str = "https://assistant.mithra-app.com",
         identity_resolver: Any | None = None,
+        storage_adapter: Any | None = None,
     ) -> None:
         self._out = telegram_output
         self._engine = engine
@@ -47,6 +48,7 @@ class TelegramSignalHandler:
         self._nango = nango
         self._base_url = base_url.rstrip("/")
         self._identity_resolver = identity_resolver
+        self._storage = storage_adapter
 
     # ------------------------------------------------------------------
     # Chat-id resolution
@@ -206,7 +208,9 @@ class TelegramSignalHandler:
 
         if self._nango:
             from mithra.integrations.nango_client import NangoClient
-            connected = await self._nango.is_connected(NangoClient.GOOGLE_PROVIDER, uid, hid)
+            connected = await self._nango.is_connected(
+                NangoClient.GOOGLE_PROVIDER, uid, hid, self._storage
+            )
             if connected:
                 await self.send(agent_request, "✅ Your Google account is already connected.")
             else:
@@ -214,17 +218,14 @@ class TelegramSignalHandler:
                     user_id=uid,
                     household_id=hid,
                     provider=NangoClient.GOOGLE_PROVIDER,
-                    display_name=uid,
                 )
-                if session and session.get("token"):
-                    base = self._base_url.rstrip("/")
-                    url = f"{base}/connect/google?token={session['token']}"
+                if session and session.get("connect_link"):
                     await self.send(
                         agent_request,
-                        f"Tap to connect your Google account:\n{url}",
+                        f"Tap to connect your Google account:\n{session['connect_link']}",
                     )
                 else:
-                    await self.send(agent_request, "❌ Could not create connection. Please try again.")
+                    await self.send(agent_request, "❌ Could not start connection. Try again.")
         return True
 
     async def _handle_confirmation(self, agent_request: "AgentRequest") -> bool:

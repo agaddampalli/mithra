@@ -88,13 +88,13 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        # Health, Telegram webhook, connect page, OAuth routes, and WebSocket
-        # upgrades are unauthenticated. WebSocket upgrades are browser-initiated
-        # and carry no Bearer token; Nango validates the session token itself.
+        # Unauthenticated paths: health check, all webhooks (each has its own
+        # auth), OAuth proxy routes, and WebSocket upgrades (no Bearer token
+        # from browser; Nango validates its own session token).
         p = request.url.path
         if (
             p == "/api/v1/health"
-            or p == "/api/v1/webhook/telegram"
+            or p.startswith("/api/v1/webhook/")
             or p.startswith("/connect/")
             or p.startswith("/oauth/")
             or request.headers.get("upgrade", "").lower() == "websocket"
@@ -269,9 +269,13 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             ),
         }
 
-    # OAuth proxy — connect page, HTTP proxy, WebSocket proxy for Nango SDK.
+    # OAuth proxy — HTTP proxy and WebSocket proxy for Nango SDK.
     from mithra.api.routes.oauth_proxy import router as _oauth_router
     app.include_router(_oauth_router)
+
+    # Webhook routes — Telegram, Nango, and future inbound webhooks.
+    from mithra.api.routes.webhooks import router as _webhooks_router
+    app.include_router(_webhooks_router, prefix="/api/v1")
 
     return app
 

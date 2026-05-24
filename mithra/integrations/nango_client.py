@@ -1,131 +1,41 @@
 """
-NangoClient — thin wrapper around the Nango OAuth token management API.
+NangoClient — thin async wrapper around the Nango OAuth token management API.
 
-Nango handles the full OAuth web flow (connect sessions, token exchange, auto-refresh).
-Mithra calls create_connect_session() to get a connect_link, sends it to the user,
-and calls get_token() to fetch fresh access tokens for API calls.
+Flow:
+  1. create_connect_session() → returns connect_link, sent directly to user
+  2. User completes OAuth in browser → Nango fires webhook to /api/v1/webhook/nango
+  3. Webhook handler calls save_connection_id() with the Nango UUID
+  4. get_token() calls load_connection_id() then fetches a fresh token from Nango
 
-connection_id = f"{household_id}__{user_id}" — globally unique per household + user.
-
-Integration setup: Nango stores OAuth credentials and scopes per integration
-(provider_config_key). ensure_integration() must be called at startup to register
-the credentials and scopes before any user initiates OAuth — without scopes, Nango
-sends an invalid request to Google that gets rejected immediately.
-
-This Nango version (nango-server:hosted) exposes:
-  GET    /config/:key   — check if integration exists
-  POST   /config        — create new integration
-  DELETE /config/:key   — delete integration
-No PUT or PATCH update endpoint exists. ensure_integration() uses
-DELETE + POST to update an existing integration with new scopes/credentials.
+connection_id is the UUID Nango assigns at OAuth completion — it is NOT
+predictable, so it must be stored from the webhook rather than constructed.
 """
 
 from __future__ import annotations
 
 import logging
-import os
-from typing import Any
 
 import httpx
+
+from mithra.storage.adapter import StorageRecord
 
 _logger = logging.getLogger(__name__)
 
 
 class NangoClient:
-    """Thin async HTTP client for Nango token management."""
+    """Async HTTP client for Nango token management."""
 
     GOOGLE_PROVIDER = "google-calendar"
     MICROSOFT_PROVIDER = "microsoft-graph"
 
-    def __init__(self, nango_url: str = "", secret_key: str = "") -> None:
-        self._url = (nango_url or os.environ.get("NANGO_URL", "http://nango:8080")).rstrip("/")
-        self._secret = secret_key or os.environ.get("NANGO_SECRET_KEY", "")
-
-    def get_connection_id(self, user_id: str, household_id: str) -> str:
-        """Return the Nango connection ID for a user."""
-        return f"{household_id}__{user_id}"
-
-    @property
-    def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._secret}"}
-
-    # ------------------------------------------------------------------
-    # Integration setup
-    # ------------------------------------------------------------------
-
-    async def ensure_integration(
+    def __init__(
         self,
-        provider_config_key: str,
-        provider: str,
-        oauth_client_id: str,
-        oauth_client_secret: str,
-        oauth_scopes: str,
-    ) -> bool:
-        """Create or replace a Nango integration with credentials and scopes.
-
-        Idempotent — safe to call on every startup. Without scopes configured,
-        Nango sends OAuth requests to Google with no scope parameter and Google
-        rejects them with a 400 error.
-
-        This Nango version has no update endpoint (PUT/PATCH both return 404).
-        If the integration already exists it is deleted first, then recreated
-        with the correct credentials and scopes.
-        """
-        # Nango v0.70+ upsert endpoint: PUT /api/v1/integrations
-        # Older versions used POST /config — no longer exists in v0.70.4.
-        v1_body = {
-            "integrationId": provider_config_key,
-            "provider": provider,
-            "credentials": {
-                "client_id": oauth_client_id,
-                "client_secret": oauth_client_secret,
-            },
-            "oauth_scopes": oauth_scopes,
-        }
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.put(
-                    f"{self._url}/api/v1/integrations",
-                    headers={**self._headers, "Content-Type": "application/json"},
-                    json=v1_body,
-                    timeout=10,
-                )
-                if resp.status_code not in (200, 201, 204):
-                    _logger.warning(
-                        "ensure_integration PUT /api/v1/integrations %s → %d: %s",
-                        provider_config_key, resp.status_code, resp.text[:300],
-                    )
-                    return False
-                return True
-        except Exception as exc:
-            _logger.warning("ensure_integration exception: %s", exc)
-            return False
-
-    async def setup_configured_integrations(self) -> None:
-        """Register all integrations whose credentials are present in env vars.
-
-        Called once at startup. Each provider block is independent — a missing
-        credential set skips that provider without affecting others.
-        """
-        google_id = os.environ.get("GOOGLE_CLIENT_ID", "")
-        google_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-        if google_id and google_secret:
-            ok = await self.ensure_integration(
-                provider_config_key=self.GOOGLE_PROVIDER,
-                provider="google",
-                oauth_client_id=google_id,
-                oauth_client_secret=google_secret,
-                oauth_scopes=" ".join([
-                    "openid",
-                    "https://www.googleapis.com/auth/userinfo.email",
-                    "https://www.googleapis.com/auth/userinfo.profile",
-                    "https://www.googleapis.com/auth/calendar",
-                    "https://www.googleapis.com/auth/calendar.events",
-                ]),
-            )
-            _logger.info(
-                "Nango %s integration: %s", self.GOOGLE_PROVIDER, "ok" if ok else "failed"
-            )
+        secret_key: str,
+        base_url: str = "http://nango:8080",
+    ) -> None:
+        self._secret_key = secret_key
+        self._base_url = base_url.rstrip("/")
+        self._headers = {"Authorization": f"Bearer {secret_key}"}
 
     # ------------------------------------------------------------------
     # Connect sessions
@@ -136,27 +46,16 @@ class NangoClient:
         user_id: str,
         household_id: str,
         provider: str,
-        display_name: str = "",
-        email: str = "",
     ) -> dict | None:
-        """Create a Nango connect session.
-
-        Returns {token, connect_link, expires_at, connection_id} or None.
-        """
-        connection_id = self.get_connection_id(user_id, household_id)
-        tags: dict[str, str] = {"end_user_id": connection_id}
-        if display_name:
-            tags["display_name"] = display_name
-        if email:
-            tags["email"] = email
-        body: dict[str, Any] = {
-            "tags": tags,
+        """Create a Nango connect session. Returns {token, connect_link} or None."""
+        body = {
+            "tags": {"end_user_id": user_id},
             "allowed_integrations": [provider],
         }
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
-                    f"{self._url}/connect/sessions",
+                    f"{self._base_url}/connect/sessions",
                     headers={**self._headers, "Content-Type": "application/json"},
                     json=body,
                     timeout=10,
@@ -166,11 +65,14 @@ class NangoClient:
                     return {
                         "token": data.get("token"),
                         "connect_link": data.get("connect_link"),
-                        "expires_at": data.get("expires_at"),
-                        "connection_id": connection_id,
                     }
+                _logger.error(
+                    "create_connect_session failed: %d %s",
+                    resp.status_code, resp.text[:300],
+                )
                 return None
-        except Exception:
+        except Exception as exc:
+            _logger.error("create_connect_session error: %s", exc)
             return None
 
     # ------------------------------------------------------------------
@@ -178,44 +80,120 @@ class NangoClient:
     # ------------------------------------------------------------------
 
     async def get_token(
-        self, provider: str, user_id: str, household_id: str
-    ) -> dict[str, Any] | None:
-        """Fetch a fresh access token for the given provider and user.
+        self,
+        provider: str,
+        user_id: str,
+        household_id: str,
+        storage_adapter=None,
+    ) -> dict | None:
+        """Get a fresh access token for user from Nango.
 
-        Returns a dict with access_token, refresh_token on success,
-        or None if the connection does not exist or the request fails.
+        Looks up the stored Nango connection UUID first. Returns None (with a
+        warning) if no connection has been saved yet — user must connect first.
         """
-        connection_id = self.get_connection_id(user_id, household_id)
+        connection_id = None
+        if storage_adapter:
+            connection_id = self.load_connection_id(user_id, household_id, storage_adapter)
+        if not connection_id:
+            _logger.warning(
+                "No Nango connection_id stored for user=%s. "
+                "User must connect via Telegram first.",
+                user_id,
+            )
+            return None
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(
-                    f"{self._url}/connection/{connection_id}",
+                    f"{self._base_url}/connection/{connection_id}",
                     headers=self._headers,
-                    params={"provider_config_key": provider},
+                    params={
+                        "provider_config_key": provider,
+                        "force_refresh": "true",
+                    },
                     timeout=10,
                 )
                 if resp.status_code == 200:
-                    data = resp.json()
-                    creds = data.get("credentials", {})
-                    return {
-                        "access_token": creds.get("access_token"),
-                        "refresh_token": creds.get("refresh_token"),
-                    }
+                    creds = resp.json().get("credentials", {})
+                    return {"access_token": creds.get("access_token")}
+                _logger.error(
+                    "get_token failed: %d %s", resp.status_code, resp.text[:300]
+                )
                 return None
-        except Exception:
+        except Exception as exc:
+            _logger.error("get_token error: %s", exc)
             return None
 
+    # ------------------------------------------------------------------
+    # Connection ID persistence
+    # ------------------------------------------------------------------
+
+    def save_connection_id(
+        self,
+        user_id: str,
+        household_id: str,
+        nango_connection_id: str,
+        storage_adapter,
+    ) -> None:
+        """Persist the Nango UUID connection_id received from the OAuth webhook."""
+        from datetime import datetime, timezone
+
+        storage_adapter.write(StorageRecord(
+            domain="integrations",
+            key=f"nango_connection:{user_id}",
+            layer="state",
+            data={
+                "nango_connection_id": nango_connection_id,
+                "provider": self.GOOGLE_PROVIDER,
+            },
+            user_id=user_id,
+            household_id=household_id,
+            version=1,
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        ))
+        _logger.info(
+            "Saved connection_id=%s for user=%s", nango_connection_id, user_id
+        )
+
+    def load_connection_id(
+        self,
+        user_id: str,
+        household_id: str,
+        storage_adapter,
+    ) -> str | None:
+        """Load the stored Nango UUID connection_id for this user, or None."""
+        record = storage_adapter.read(
+            "integrations",
+            f"nango_connection:{user_id}",
+            "state",
+            user_id,
+            household_id,
+        )
+        if record:
+            return record.data.get("nango_connection_id")
+        return None
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
     async def is_connected(
-        self, provider: str, user_id: str, household_id: str
+        self,
+        provider: str,
+        user_id: str,
+        household_id: str,
+        storage_adapter=None,
     ) -> bool:
-        """Return True if Nango has a valid connection for this user."""
-        token = await self.get_token(provider, user_id, household_id)
+        """Return True if Nango holds a valid token for this user."""
+        token = await self.get_token(provider, user_id, household_id, storage_adapter)
         return token is not None and bool(token.get("access_token"))
 
     def health(self) -> dict:
-        """Return Nango client health status."""
-        return {
-            "status": "ok" if self._url and self._secret else "not_configured",
-            "url": self._url,
-            "configured": bool(self._secret),
-        }
+        """Return Nango reachability status (synchronous probe)."""
+        try:
+            resp = httpx.get(f"{self._base_url}/health", timeout=5)
+            return {
+                "status": "ok" if resp.status_code == 200 else "error",
+                "nango_reachable": resp.status_code == 200,
+            }
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}

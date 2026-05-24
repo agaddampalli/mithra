@@ -159,7 +159,7 @@ def _build_calendar(state: dict, household_id: str, executor) -> None:
     calendar_adapter = CalendarAdapter(
         nango_client=state.get("nango"),
         household_id=household_id,
-        google_integration=state.get("google_integration"),
+        storage_adapter=state.get("local_adapter"),
     )
     state["calendar_adapter"] = calendar_adapter
     executor.register("calendar_write", calendar_adapter)
@@ -169,23 +169,10 @@ async def _setup_nango(state: dict) -> None:
     from mithra.integrations.nango_client import NangoClient
 
     nango = NangoClient(
-        nango_url=os.environ.get("NANGO_URL", "http://nango:8080"),
         secret_key=os.environ.get("NANGO_SECRET_KEY", ""),
+        base_url=os.environ.get("NANGO_URL", "http://nango:8080"),
     )
     state["nango"] = nango
-    await nango.setup_configured_integrations()
-
-
-def _setup_google(state: dict, local_adapter, cipher, base_url: str) -> None:
-    from mithra.integrations.google_oauth import GoogleIntegration
-
-    state["google_integration"] = GoogleIntegration(
-        client_id=os.environ.get("GOOGLE_CLIENT_ID", ""),
-        client_secret=os.environ.get("GOOGLE_CLIENT_SECRET", ""),
-        redirect_uri=f"{base_url}/auth/google/callback",
-        storage_adapter=local_adapter,
-        cipher=cipher,
-    )
 
 
 def _build_telegram_handler(state: dict, household_config: dict, base_url: str) -> None:
@@ -199,6 +186,7 @@ def _build_telegram_handler(state: dict, household_config: dict, base_url: str) 
         nango=state.get("nango"),
         base_url=base_url,
         identity_resolver=state.get("identity_resolver"),
+        storage_adapter=state.get("local_adapter"),
     )
 
 
@@ -249,9 +237,6 @@ async def build_state(
 
     if os.environ.get("NANGO_SECRET_KEY"):
         await _setup_nango(state)
-
-    if os.environ.get("GOOGLE_CLIENT_ID") and os.environ.get("GOOGLE_CLIENT_SECRET"):
-        _setup_google(state, local_adapter, cipher, base_url)
 
     _build_calendar(state, household_id, executor)
 
