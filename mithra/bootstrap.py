@@ -258,4 +258,5 @@ async def build_state(
     if state.get("telegram_output"):
         _build_telegram_handler(state, household_config, base_url)
 
+    _logger.info("Executor registered types: %s", executor.registered_types())
     return state
