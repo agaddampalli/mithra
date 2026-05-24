@@ -103,6 +103,10 @@ class GoogleIntegration:
         """Return True if this user has a stored token."""
         return self._load_token(user_id) is not None
 
+    def get_credentials(self, user_id: str) -> Credentials | None:
+        """Return a valid Google Credentials object for this user, or None."""
+        return self._get_credentials(user_id)
+
     def _get_credentials(self, user_id: str) -> Credentials | None:
         token = self._load_token(user_id)
         if not token:

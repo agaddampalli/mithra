@@ -1,18 +1,8 @@
 """
-FastAPI gateway -- lifecycle orchestrator and single HTTP entry point for Mithra.
+FastAPI gateway — channel-agnostic lifecycle orchestrator and single HTTP entry point.
 
-Startup sequence (FastAPI lifespan):
-  1. Load HouseholdConfig from household.yaml
-  2. Build StorageRouter (LocalStorageAdapter + OneDriveAdapter +
-     EncryptedStorageAdapter wired correctly)
-  3. Build ContextCache
-  4. Build DomainMemoryRouter (DefaultDomainMemoryRouter)
-  5. Build LLMRouter (LiteLLMRouterAdapter)
-  6. Build AutononomyEngine (DefaultAutonomyEngine)
-  7. Build ActionExecutorRegistry
-  8. Build AgentInterface (LangGraphAdapter)
-  9. Build TelegramInputAdapter + TelegramOutputAdapter
- 10. Register output adapters with ActionExecutorRegistry
+Startup delegates all component wiring to mithra.bootstrap.build_state().
+Gateway owns only: auth middleware, route definitions, request lifecycle.
 
 Request lifecycle (per CLAUDE.md contract):
   1. Receive normalised AgentRequest from input adapter
@@ -33,17 +23,16 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-from typing import Any
-
-import yaml
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
 
 # ---------------------------------------------------------------------------
 # Shared app state
@@ -57,225 +46,23 @@ def get_state() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Startup helpers
-# ---------------------------------------------------------------------------
-
-def _load_household_config(path: str = "household.yaml") -> dict:
-    try:
-        with open(path) as f:
-            return yaml.safe_load(f) or {}
-    except FileNotFoundError:
-        return {}
-
-
-def _build_storage_router(household_config: dict, tmp_dir: str | None = None):
-    """Wire the full StorageRouter with local + OneDrive adapters."""
-    from mithra.storage.local import LocalStorageAdapter
-    from mithra.storage.encryption import EncryptedStorageAdapter, AESGCMCipher
-    from mithra.storage.router import StorageRouter
-
-    storage_dir = tmp_dir or os.environ.get("MITHRA_STORAGE_DIR", "/data/mithra/files")
-    db_path = os.path.join(tmp_dir or os.environ.get("MITHRA_DB_DIR", "/data/mithra"), "mithra.db")
-
-    local = LocalStorageAdapter(storage_dir, db_path)
-
-    enc_key = os.environ.get("MITHRA_ENCRYPTION_KEY", "")
-    if enc_key:
-        cipher = AESGCMCipher(enc_key)
-        encrypted_local = EncryptedStorageAdapter(local, cipher)
-    else:
-        encrypted_local = local  # dev fallback
-
-    # OneDrive adapter -- fallback to local if credentials not configured
-    onedrive_client_id = os.environ.get("ONEDRIVE_CLIENT_ID", "")
-    if onedrive_client_id:
-        from mithra.storage.onedrive import OneDriveAdapter
-        onedrive = OneDriveAdapter(
-            client_id=onedrive_client_id,
-            client_secret=os.environ.get("ONEDRIVE_CLIENT_SECRET", ""),
-            tenant_id=os.environ.get("ONEDRIVE_TENANT_ID", ""),
-        )
-        encrypted_onedrive = onedrive  # add encryption when needed
-    else:
-        onedrive = local
-        encrypted_onedrive = encrypted_local
-
-    return StorageRouter(
-        local_adapter=local,
-        onedrive_adapter=onedrive,
-        encrypted_local_adapter=encrypted_local,
-        encrypted_onedrive_adapter=encrypted_onedrive,
-    ), local, cipher if enc_key else None
-
-
-def _build_domain_router(storage_router, household_config: dict):
-    from mithra.routing.domain_router import DefaultDomainMemoryRouter
-    from mithra.memory.context_cache import ContextCache
-    from mithra.memory.structured_store import StructuredStore
-
-    db_dir = os.environ.get("MITHRA_DB_DIR", "/data/mithra")
-    cache_db_path = os.path.join(db_dir, "context_cache.db")
-    structured_db_path = os.path.join(db_dir, "structured_store.db")
-    cache = ContextCache(cache_db_path)
-    structured_store = StructuredStore(structured_db_path)
-    domain_router = DefaultDomainMemoryRouter(
-        storage_router=storage_router,
-        context_cache=cache,
-        structured_store=structured_store,
-        household_config=household_config,
-    )
-    return domain_router, cache
-
-
-def _build_llm_router(local_adapter):
-    from mithra.routing.llm_router import LiteLLMRouterAdapter
-    from mithra.storage.sanitiser import DataSanitiser
-
-    base_url = os.environ.get("LITELLM_BASE_URL", "http://llm-router:4000")
-    sanitiser = DataSanitiser()
-    return LiteLLMRouterAdapter(
-        base_url=base_url,
-        sanitiser=sanitiser,
-        storage_adapter=local_adapter,
-    )
-
-
-def _build_autonomy(storage_router, local_adapter, household_id: str = ""):
-    from mithra.autonomy.default_engine import DefaultAutonomyEngine
-    from mithra.autonomy.executor import ActionExecutorRegistry
-    from mithra.autonomy.action_log import ActionLog
-    from mithra.autonomy.dead_letter import DeadLetterQueue
-
-    action_log = ActionLog(local_adapter, household_id=household_id)
-    dead_letter_queue = DeadLetterQueue(local_adapter, household_id=household_id)
-    executor = ActionExecutorRegistry()
-    config_path = os.environ.get(
-        "AUTONOMY_CONFIG_PATH", "services/autonomy/autonomy.yaml"
-    )
-    engine = DefaultAutonomyEngine(
-        storage_adapter=local_adapter,
-        action_log=action_log,
-        config_path=config_path,
-        executor=executor,
-    )
-    return engine, executor, action_log, dead_letter_queue
-
-
-# ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    household_config = _load_household_config()
-    _state["household_config"] = household_config
-    household_id = household_config.get("household_id", "default")
-    _state["household_id"] = household_id
+    from mithra.bootstrap import build_state, load_household_config
 
-    storage_router, local_adapter, cipher = _build_storage_router(household_config)
-    _state["storage_router"] = storage_router
-    _state["local_adapter"] = local_adapter
+    household_config = load_household_config()
+    state = await build_state(household_config, on_request=_process_request)
+    _state.update(state)
 
-    domain_router, cache = _build_domain_router(storage_router, household_config)
-    _state["domain_router"] = domain_router
-    _state["context_cache"] = cache
-
-    llm_router = _build_llm_router(local_adapter)
-    _state["llm_router"] = llm_router
-
-    engine, executor, action_log, dead_letter_queue = _build_autonomy(
-        storage_router, local_adapter, household_id=household_id
-    )
-    _state["engine"] = engine
-    _state["executor"] = executor
-    _state["action_log"] = action_log
-    _state["dead_letter_queue"] = dead_letter_queue
-
-    from mithra.agent.langgraph_adapter import LangGraphAdapter
-    agent = LangGraphAdapter(
-        llm_router=llm_router,
-        storage_router=storage_router,
-    )
-    _state["agent"] = agent
-
-    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    webhook_secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
-    if bot_token:
-        from mithra.adapters.messaging.telegram_input import (
-            TelegramInputAdapter,
-            UserIdentityResolver,
-        )
-        from mithra.adapters.messaging.telegram_output import TelegramOutputAdapter
-
-        identity_resolver = UserIdentityResolver(
-            household_config,
-            storage_adapter=local_adapter,
-        )
-        _state["identity_resolver"] = identity_resolver
-        from mithra.routing.session import ConversationSessionManager
-        session_mgr = ConversationSessionManager(
-            local_adapter,
-            known_user_ids=[m["user_id"] for m in household_config.get("members", [])],
-            household_id=household_id,
-        )
-
-        telegram_input = TelegramInputAdapter(
-            bot_token=bot_token,
-            webhook_secret=webhook_secret,
-            session_manager=session_mgr,
-            identity_resolver=identity_resolver,
-            on_request=_process_request,
-        )
-        telegram_output = TelegramOutputAdapter(bot_token=bot_token)
-
-        executor.register("telegram_reply", telegram_output)
-        executor.register_notify("telegram", telegram_output)
-
-        _state["telegram_input"] = telegram_input
-        _state["telegram_output"] = telegram_output
-        _state["session_mgr"] = session_mgr
-
+    telegram_input = _state.get("telegram_input")
+    if telegram_input:
         asyncio.create_task(telegram_input.start())
-
-    base_url = os.environ.get("MITHRA_BASE_URL", "https://assistant.mithra-app.com")
-
-    nango_key = os.environ.get("NANGO_SECRET_KEY", "")
-    if nango_key:
-        from mithra.integrations.nango_client import NangoClient
-        nango = NangoClient(
-            nango_url=os.environ.get("NANGO_URL", "http://nango:8080"),
-            secret_key=nango_key,
-        )
-        _state["nango"] = nango
-        await nango.setup_configured_integrations()
-
-    if nango_key:
-        from mithra.adapters.output.calendar import CalendarAdapter
-        calendar_adapter = CalendarAdapter(
-            nango_client=_state.get("nango"),
-            household_id=household_id,
-        )
-        _state["calendar_adapter"] = calendar_adapter
-        executor.register("calendar_write", calendar_adapter)
-
-    # Wire TelegramSignalHandler after all components are ready
-    if _state.get("telegram_output"):
-        from mithra.adapters.messaging.telegram_handler import TelegramSignalHandler
-        telegram_handler = TelegramSignalHandler(
-            telegram_output=_state["telegram_output"],
-            engine=_state.get("engine"),
-            executor=_state.get("executor"),
-            household_config=household_config,
-            nango=_state.get("nango"),
-            base_url=base_url,
-            identity_resolver=_state.get("identity_resolver"),
-        )
-        _state["telegram_handler"] = telegram_handler
 
     yield
 
-    # Shutdown
-    telegram_input = _state.get("telegram_input")
     if telegram_input:
         await telegram_input.stop()
 

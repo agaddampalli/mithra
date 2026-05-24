@@ -55,10 +55,12 @@ class CalendarAdapter(OutputAdapter):
         http_client: httpx.AsyncClient | None = None,
         nango_client: Any | None = None,
         household_id: str = "",
+        google_integration: Any | None = None,
     ) -> None:
         self._http_client = http_client
         self._nango = nango_client
         self._household_id = household_id
+        self._google = google_integration
 
     def _client(self):
         if self._http_client is not None:
@@ -80,12 +82,19 @@ class CalendarAdapter(OutputAdapter):
         return None
 
     async def _headers_for(self, user_id: str = "") -> dict[str, str]:
-        """Return auth headers from Nango token, or empty dict if unavailable."""
-        if user_id:
+        """Return auth headers: Nango token first, GoogleIntegration fallback."""
+        if user_id and self._nango:
             token = await self._get_nango_token(user_id)
             if token:
                 return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        return {}
+        if user_id and self._google:
+            try:
+                creds = self._google.get_credentials(user_id)
+                if creds and creds.token:
+                    return {"Authorization": f"Bearer {creds.token}", "Content-Type": "application/json"}
+            except Exception:
+                pass
+        return {"Content-Type": "application/json"}
 
     async def create_event(
         self, calendar_id: str, event: dict[str, Any], user_id: str = ""
