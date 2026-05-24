@@ -27,14 +27,26 @@ household.yaml contains only the bootstrap anchor (household_id).
 | updated_at   | TEXT | ISO8601                        |
 
 #### members table
-| Column       | Type | Notes                          |
-|--------------|------|--------------------------------|
-| id           | TEXT | PRIMARY KEY e.g. "usr_9f2ec4d1"|
-| household_id | TEXT | FK -> households.id            |
-| display_name | TEXT | "Nikitha"                      |
-| role         | TEXT | "admin" or "member"            |
-| created_at   | TEXT | ISO8601                        |
-| updated_at   | TEXT | ISO8601                        |
+| Column       | Type | Notes                           |
+|--------------|------|---------------------------------|
+| id           | TEXT | PRIMARY KEY "usr_9f2ec4d1"      |
+| household_id | TEXT | FK -> households.id             |
+| display_name | TEXT | "Nikitha"                       |
+| role         | TEXT | "owner"/"admin"/"member"        |
+|              |      | owner: created household,       |
+|              |      |   cannot be removed             |
+|              |      | admin: approves members,        |
+|              |      |   manages integrations          |
+|              |      | member: regular access          |
+| status       | TEXT | "active"/"invited"/"suspended"  |
+|              |      | invited: approval pending       |
+|              |      | suspended: blocked, kept for    |
+|              |      |   audit                         |
+| invited_by   | TEXT | nullable, FK -> members.id      |
+|              |      | who approved this member        |
+|              |      | null for first member (owner)   |
+| created_at   | TEXT | ISO8601                         |
+| updated_at   | TEXT | ISO8601                         |
 
 #### member_channels table
 | Column       | Type    | Notes                      |
@@ -177,7 +189,7 @@ Provider config dict only. No logic.
 Auto-resolves URLs with tenant_id substitution for Microsoft.
 
 #### OAuthTokenStore — oauth_token_store.py
-Unchanged from previous design.
+Encrypted storage using StorageAdapter.
 Storage schema:
     domain:  "oauth"
     key:     "{provider_id}:{user_id}"
@@ -196,10 +208,19 @@ Token data fields:
     last_refreshed     str  ISO8601
     provider_user_id   str  user's ID at provider
 
+Methods:
+    save(provider_id, user_id, token_data) -> None
+    load(provider_id, user_id) -> dict | None
+    delete(provider_id, user_id) -> None
+    is_connected(provider_id, user_id) -> bool
+
 #### OAuthManager — oauth_manager.py
 Single generic implementation using Authlib.
 No provider-specific code inside.
+Token refresh uses client.ensure_active_token()
+which handles all standard OAuth2 providers automatically.
 
+Methods:
     get_auth_url(provider_id, user_id, redirect_uri) -> str
     handle_callback(provider_id, code, user_id, redirect_uri) -> bool
     get_token(provider_id, user_id) -> str | None
@@ -207,25 +228,28 @@ No provider-specific code inside.
     disconnect(provider_id, user_id) -> None
     available_providers() -> list[str]
 
-All methods use Authlib AsyncOAuth2Client generically.
-Token refresh uses client.ensure_active_token() —
-works for all standard OAuth2 providers automatically.
-
 ### OAuth Routes (generic)
     GET /auth/{provider}           redirect to provider
     GET /auth/{provider}/callback  exchange code, store token
 
-Works for any configured provider.
-Returns 404 if provider not in OAUTH_PROVIDERS or not configured.
+Returns 404 if provider not configured.
+Works for any entry in OAUTH_PROVIDERS.
 
-### Why Not Nango (unchanged)
-See Alternatives Considered section.
+### Nango Decision
+Remove Nango entirely from the stack:
+  - Remove nango service from compose.yaml
+  - Remove nango-db service from compose.yaml
+  - Remove nango volumes
+  - Remove NANGO_* env vars
+  - Delete mithra/integrations/nango_client.py
+  - Remove _setup_nango() from bootstrap.py
+  - Remove NANGO_* from .env.example
 
 ### Product Migration Path
 Personal: tokens in encrypted SQLite
 Product:  swap OAuthTokenStore backend to cloud storage.
           OAuthManager interface unchanged.
-          One-day migration.
+          One-day migration when needed.
 
 ---
 
@@ -369,27 +393,30 @@ Must complete and verify before Phase B.
 Start only after Phase A is verified.
 
     B1. Create mithra/integrations/oauth_providers.py
-        Provider config dict. No logic.
+        Provider config dict only. No logic.
 
     B2. Create mithra/integrations/oauth_token_store.py
         Encrypted storage using StorageAdapter.
+        Domain: "oauth"
 
     B3. Create mithra/integrations/oauth_manager.py
         Generic Authlib-based orchestration.
+        Uses ensure_active_token() for refresh.
         No provider-specific code.
 
-    B4. Add OAuth routes to gateway.py
+    B4. Add generic OAuth routes to gateway.py
         GET /auth/{provider}
         GET /auth/{provider}/callback
 
     B5. Wire OAuthManager into bootstrap.py
-        Load provider configs, filter by env vars present.
+        Load OAUTH_PROVIDERS, filter by env vars.
 
     B6. Update CalendarAdapter
         OAuthManager.get_token("google", user_id)
 
     B7. Remove Nango entirely
-        compose.yaml, nango_client.py, bootstrap.py
+        compose.yaml, nango_client.py, bootstrap.py,
+        .env.example
 
     B8. Update Google Cloud Console redirect URI
         https://assistant.mithra-app.com/auth/google/callback
@@ -466,6 +493,31 @@ Reason: These are USER authentication systems.
         of users with Google/Microsoft).
         Different problem entirely.
 
+### IAM Systems (Keycloak, Zitadel, Logto, SuperTokens)
+Decision: Rejected
+Reason:
+    These solve USER AUTHENTICATION — how users log
+    into your app via email/password/SSO/OIDC.
+    Mithra's identity comes from Telegram, not login forms.
+    Adopting an IAM system adds a full auth stack
+    (OIDC server, user store, another database)
+    to solve a 4-table member management problem.
+    The organization/team management pattern these
+    systems include is always app-specific in its
+    business rules. Every major company (GitHub, Slack,
+    Notion) builds this themselves.
+    Our member management is ~280 lines of code.
+
+### Provider Subclasses for OAuth
+Decision: Rejected
+Reason:
+    OAuth 2.0 is a standard. Authlib handles the full
+    flow generically. Provider differences are config
+    values (URLs, scopes, auth params) not code.
+    A subclass per provider adds complexity with no
+    benefit. Config-driven approach allows adding any
+    standard OAuth2 provider with zero code changes.
+
 ---
 
 ## 7. Design Principles
@@ -505,3 +557,14 @@ These apply to ALL future decisions.
    Alternatives considered must be listed.
    Future developers (including AI) must understand
    why a decision was made before changing it.
+
+7. START SIMPLE, EXTEND DELIBERATELY
+   Add owner/admin/member roles now (costs nothing).
+   Skip custom roles, RBAC, viewer roles — enterprise
+   features built when enterprise customers exist.
+   Skip groups within household — 2 people, no groups.
+   Every correct field added now prevents a migration
+   later. Every feature NOT added avoids premature
+   complexity. Validate against how industry leaders
+   (Slack, Notion, GitHub) model similar problems
+   before designing — they start simple too.
