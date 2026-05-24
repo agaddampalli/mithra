@@ -81,19 +81,43 @@ class CalendarAdapter(OutputAdapter):
             pass
         return None
 
-    async def _headers_for(self, user_id: str = "") -> dict[str, str]:
-        """Return auth headers: Nango token first, GoogleIntegration fallback."""
-        if user_id and self._nango:
+    async def _headers_for(self, user_id: str) -> dict[str, str]:
+        """Return auth headers for the given user.
+
+        Tries Nango first, falls back to GoogleIntegration stored token.
+        Raises RuntimeError when an auth source is configured but returns no
+        token — prevents sending an unauthenticated request to Google.
+        No auth source configured (test/dev) → passes through without raising.
+        """
+        if self._nango:
             token = await self._get_nango_token(user_id)
             if token:
+                _logger.debug("CalendarAdapter: using Nango token for %s", user_id)
                 return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        if user_id and self._google:
+            _logger.warning(
+                "CalendarAdapter: Nango returned no token for user=%s provider=%s — "
+                "trying GoogleIntegration fallback",
+                user_id, self._nango.GOOGLE_PROVIDER,
+            )
+
+        if self._google:
             try:
                 creds = self._google.get_credentials(user_id)
                 if creds and creds.token:
+                    _logger.debug("CalendarAdapter: using GoogleIntegration token for %s", user_id)
                     return {"Authorization": f"Bearer {creds.token}", "Content-Type": "application/json"}
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.warning("CalendarAdapter: GoogleIntegration.get_credentials failed: %s", exc)
+
+        if self._nango or self._google:
+            # At least one auth source is configured but none returned a token.
+            # Fail fast — an unauthenticated Google API call will always 401.
+            raise RuntimeError(
+                f"No valid Google token for user '{user_id}'. "
+                "Ask the user to reconnect Google via Telegram: 'connect google'."
+            )
+
+        # No auth source configured at all (test / dev mode) — pass through.
         return {"Content-Type": "application/json"}
 
     async def create_event(
