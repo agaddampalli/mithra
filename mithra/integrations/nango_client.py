@@ -25,7 +25,7 @@ _logger = logging.getLogger(__name__)
 class NangoClient:
     """Async HTTP client for Nango token management."""
 
-    GOOGLE_PROVIDER = "google-calendar"
+    GOOGLE_PROVIDER = "google"
     MICROSOFT_PROVIDER = "microsoft-graph"
 
     def __init__(
