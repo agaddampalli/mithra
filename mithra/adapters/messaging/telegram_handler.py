@@ -214,18 +214,11 @@ class TelegramSignalHandler:
             if connected:
                 await self.send(agent_request, "✅ Your Google account is already connected.")
             else:
-                session = await self._nango.create_connect_session(
-                    user_id=uid,
-                    household_id=hid,
-                    provider=NangoClient.GOOGLE_PROVIDER,
+                auth_url = f"{self._base_url}/auth/google?user_id={uid}"
+                await self.send(
+                    agent_request,
+                    f"Tap to connect your Google account:\n{auth_url}",
                 )
-                if session and session.get("connect_link"):
-                    await self.send(
-                        agent_request,
-                        f"Tap to connect your Google account:\n{session['connect_link']}",
-                    )
-                else:
-                    await self.send(agent_request, "❌ Could not start connection. Try again.")
         return True
 
     async def _handle_confirmation(self, agent_request: "AgentRequest") -> bool:

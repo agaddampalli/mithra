@@ -60,12 +60,22 @@ conn.close()
 Nango connection IDs are stored at `domain=integrations, key=nango_connection:{user_id}`
 and are written by the Nango webhook after each successful OAuth flow.
 
-## OAuth flow (after setup)
+## Google Cloud Console — Authorized redirect URIs
+
+In the Google Cloud Console OAuth 2.0 client, add:
+
+  https://assistant.mithra-app.com/auth/google/callback
+
+NOT `/oauth/callback` — that is Nango's internal callback and is not used
+in Option C. Our callback is `/auth/google/callback`.
+
+## OAuth flow (Option C — direct OAuth, token imported into Nango)
 
 1. User sends "connect google" in Telegram
-2. Bot calls `NangoClient.create_connect_session()` → gets `connect_link`
-3. Bot sends `connect_link` directly to the user
-4. User completes OAuth in browser
-5. Nango sends POST to `https://assistant.mithra-app.com/api/v1/webhook/nango`
-6. Webhook stores the Nango UUID connection_id for the user
-7. Calendar API calls use that UUID to fetch fresh tokens from Nango
+2. Bot sends link: `https://assistant.mithra-app.com/auth/google?user_id={user_id}`
+3. User taps link → browser redirects to Google consent screen
+4. User approves → Google redirects to `/auth/google/callback?code=...&state={user_id}`
+5. Callback exchanges code for tokens via Authlib
+6. Callback imports tokens into Nango via `POST /connection`
+7. Nango stores tokens and auto-refreshes from this point
+8. `connection_id` saved to SQLite — Calendar API calls use it to fetch tokens

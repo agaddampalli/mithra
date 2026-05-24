@@ -37,8 +37,69 @@ class NangoClient:
         self._base_url = base_url.rstrip("/")
         self._headers = {"Authorization": f"Bearer {secret_key}"}
 
+    def get_connection_id(self, user_id: str, household_id: str) -> str:
+        """Return the deterministic Nango connection ID for a user."""
+        return f"{household_id}__{user_id}"
+
     # ------------------------------------------------------------------
-    # Connect sessions
+    # Token import (Option C — direct OAuth, import into Nango)
+    # ------------------------------------------------------------------
+
+    async def import_token(
+        self,
+        user_id: str,
+        household_id: str,
+        provider: str,
+        access_token: str,
+        refresh_token: str,
+        expires_at: str,
+        oauth_client_id: str,
+        oauth_client_secret: str,
+        storage_adapter=None,
+    ) -> str | None:
+        """Import a token we obtained directly into Nango for storage and refresh.
+
+        Returns the connection_id on success, None on failure.
+        Saves connection_id to storage so get_token() can look it up later.
+        """
+        connection_id = self.get_connection_id(user_id, household_id)
+        body = {
+            "connection_id": connection_id,
+            "provider_config_key": provider,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": expires_at,
+            "oauth_client_id_override": oauth_client_id,
+            "oauth_client_secret_override": oauth_client_secret,
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{self._base_url}/connection",
+                    headers={**self._headers, "Content-Type": "application/json"},
+                    json=body,
+                    timeout=10,
+                )
+                if resp.status_code in (200, 201):
+                    if storage_adapter:
+                        self.save_connection_id(
+                            user_id, household_id, connection_id, storage_adapter
+                        )
+                    _logger.info(
+                        "Imported token for user=%s connection_id=%s",
+                        user_id, connection_id,
+                    )
+                    return connection_id
+                _logger.error(
+                    "import_token failed: %d %s", resp.status_code, resp.text[:300]
+                )
+                return None
+        except Exception as exc:
+            _logger.error("import_token error: %s", exc)
+            return None
+
+    # ------------------------------------------------------------------
+    # Connect sessions (Option B — Nango-hosted UI)
     # ------------------------------------------------------------------
 
     async def create_connect_session(

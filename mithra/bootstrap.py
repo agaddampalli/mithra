@@ -238,6 +238,16 @@ async def build_state(
     if os.environ.get("NANGO_SECRET_KEY"):
         await _setup_nango(state)
 
+    google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+    google_client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+    if google_client_id and google_client_secret:
+        from mithra.integrations.google_oauth import GoogleOAuth
+        state["google_oauth"] = GoogleOAuth(
+            client_id=google_client_id,
+            client_secret=google_client_secret,
+            redirect_uri=f"{base_url}/auth/google/callback",
+        )
+
     _build_calendar(state, household_id, executor)
 
     if state.get("telegram_output"):

@@ -97,6 +97,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             or p.startswith("/api/v1/webhook/")
             or p.startswith("/connect/")
             or p.startswith("/oauth/")
+            or p.startswith("/auth/")
             or request.headers.get("upgrade", "").lower() == "websocket"
         ):
             return await call_next(request)
@@ -276,6 +277,10 @@ def create_app(state_override: dict | None = None) -> FastAPI:
     # Webhook routes — Telegram, Nango, and future inbound webhooks.
     from mithra.api.routes.webhooks import router as _webhooks_router
     app.include_router(_webhooks_router, prefix="/api/v1")
+
+    # Google OAuth redirect + callback (Option C — direct OAuth, import into Nango).
+    from mithra.api.routes.auth import router as _auth_router
+    app.include_router(_auth_router)
 
     return app
 
