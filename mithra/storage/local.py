@@ -38,6 +38,55 @@ CREATE TABLE IF NOT EXISTS records (
 CREATE INDEX IF NOT EXISTS idx_records_scope ON records (domain, layer, user_id);
 """
 
+_IDENTITY_DDL = """
+CREATE TABLE IF NOT EXISTS households (
+    id           TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    timezone     TEXT NOT NULL DEFAULT 'UTC',
+    locale       TEXT NOT NULL DEFAULT 'en-US',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS members (
+    id           TEXT PRIMARY KEY,
+    household_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    role         TEXT NOT NULL DEFAULT 'member',
+    status       TEXT NOT NULL DEFAULT 'active',
+    invited_by   TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS member_channels (
+    user_id      TEXT NOT NULL,
+    household_id TEXT NOT NULL,
+    channel      TEXT NOT NULL,
+    channel_id   TEXT NOT NULL,
+    verified     INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL,
+    PRIMARY KEY (user_id, channel)
+);
+
+CREATE TABLE IF NOT EXISTS member_preferences (
+    user_id      TEXT NOT NULL,
+    household_id TEXT NOT NULL,
+    key          TEXT NOT NULL,
+    value        TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (user_id, key)
+);
+
+CREATE TABLE IF NOT EXISTS household_config (
+    household_id TEXT NOT NULL,
+    key          TEXT NOT NULL,
+    value        TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (household_id, key)
+);
+"""
+
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """Add household_id column and update PRIMARY KEY if missing (handles existing databases)."""
@@ -103,6 +152,8 @@ class LocalStorageAdapter(StorageAdapter):
         self._conn.executescript(_DDL)
         self._conn.commit()
         _migrate(self._conn)
+        self._conn.executescript(_IDENTITY_DDL)
+        self._conn.commit()
 
     def read(
         self, domain: str, key: str, layer: str, user_id: str, household_id: str = ""
