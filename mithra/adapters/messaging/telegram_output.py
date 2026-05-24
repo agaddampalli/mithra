@@ -159,6 +159,24 @@ class TelegramOutputAdapter(OutputAdapter):
                 error=str(exc),
             )
 
+    @staticmethod
+    def _build_callback_data(action: str, payload: dict) -> str:
+        """Build callback_data within Telegram's 64-byte hard limit.
+
+        Tries the full flat payload first. If it exceeds 60 bytes, falls back
+        to a compact form that stores only action, an 8-char request_id prefix,
+        and action index (key "ai"). TelegramSignalHandler resolves the prefix
+        back to the full UUID from the pending-actions store.
+        """
+        full = json.dumps({"action": action, **payload})
+        if len(full.encode()) <= 60:
+            return full
+        return json.dumps({
+            "action": action,
+            "request_id": payload.get("request_id", "")[:8],
+            "ai": payload.get("action_index", 0),
+        })
+
     async def send_with_actions(
         self,
         user_id: str,
@@ -173,10 +191,8 @@ class TelegramOutputAdapter(OutputAdapter):
                 [
                     {
                         "text": a.label,
-                        # Flat structure so normalise() can read top-level keys directly.
-                        # Telegram enforces a 64-byte limit on callback_data.
-                        "callback_data": json.dumps(
-                            {"action": a.action, **(a.payload or {})}
+                        "callback_data": self._build_callback_data(
+                            a.action, a.payload or {}
                         ),
                     }
                     for a in actions

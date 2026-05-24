@@ -250,6 +250,17 @@ class TelegramSignalHandler:
         request_id = signal.get("request_id")
         action_index = signal.get("action_index", 0)
 
+        # Compact callback_data sends only the first 8 chars of the UUID.
+        # Resolve back to the full request_id by matching against pending actions.
+        if request_id and len(request_id) == 8 and self._engine:
+            pending = self._engine.get_pending(agent_request.user_id)
+            full_id = next(
+                (p.request_id for p in pending if p.request_id.startswith(request_id)),
+                None,
+            )
+            if full_id:
+                request_id = full_id
+
         if not request_id and self._engine:
             pending = self._engine.get_pending(agent_request.user_id)
             if not pending:

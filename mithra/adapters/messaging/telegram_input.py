@@ -391,7 +391,9 @@ class TelegramInputAdapter(InputAdapter):
                 signal={
                     "confirmation": action,
                     "request_id": cb_data.get("request_id"),
-                    "action_index": cb_data.get("action_index"),
+                    # "ai" is the compact key emitted by _build_callback_data()
+                    # when the full payload would exceed Telegram's 64-byte limit.
+                    "action_index": cb_data.get("action_index", cb_data.get("ai", 0)),
                 },
                 request_id=str(uuid.uuid4()),
                 session_id=f"tg:{chat_id}",
