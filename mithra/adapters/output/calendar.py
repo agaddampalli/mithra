@@ -55,11 +55,13 @@ class CalendarAdapter(OutputAdapter):
         http_client: httpx.AsyncClient | None = None,
         oauth_manager: Any | None = None,
         household_id: str = "",
+        household_timezone: str = "UTC",
         storage_adapter: Any | None = None,
     ) -> None:
         self._http_client = http_client
         self._oauth_manager = oauth_manager
         self._household_id = household_id
+        self._household_tz = household_timezone
         self._storage = storage_adapter
 
     def _client(self):
@@ -122,8 +124,8 @@ class CalendarAdapter(OutputAdapter):
         end = payload.get("end_datetime", _now())
         event: dict[str, Any] = {
             "summary": payload.get("summary", fallback_summary),
-            "start": {"dateTime": start, "timeZone": "UTC"},
-            "end": {"dateTime": end, "timeZone": "UTC"},
+            "start": {"dateTime": start, "timeZone": self._household_tz},
+            "end": {"dateTime": end, "timeZone": self._household_tz},
         }
         if payload.get("description"):
             event["description"] = payload["description"]

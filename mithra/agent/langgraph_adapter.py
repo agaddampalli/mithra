@@ -20,6 +20,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Generator, TypedDict
 
+import pytz
+
 from langgraph.graph import END, StateGraph
 
 from mithra.agent.interface import (
@@ -64,10 +66,12 @@ class LangGraphAdapter(AgentInterface):
         llm_router: LLMRouter,
         storage_router: StorageRouter | None = None,
         context_cache: Any | None = None,
+        household_timezone: str = "UTC",
     ) -> None:
         self._llm_router = llm_router
         self._storage_router = storage_router
         self._context_cache = context_cache
+        self._household_tz = household_timezone
         self._tools: dict[str, MCPTool] = {}
         self._graph = self._build_graph()
 
@@ -185,18 +189,30 @@ class LangGraphAdapter(AgentInterface):
         )
 
         if is_calendar_intent:
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
+            # Per-user preference overrides household timezone when available.
+            user_tz_str = (
+                (request.context.preferences or {}).get("timezone")
+                if request.context
+                else None
+            ) or self._household_tz
+            tz = pytz.timezone(user_tz_str)
+            now_local = datetime.now(tz)
+            today = now_local.strftime("%Y-%m-%d")
+            tomorrow = (now_local + timedelta(days=1)).strftime("%Y-%m-%d")
             extract_messages = [
                 {
                     "role": "system",
                     "content": (
+                        f"Timezone: {user_tz_str}. "
+                        f"All times are in {user_tz_str}. "
                         f"Today is {today}. Tomorrow is {tomorrow}. "
+                        f"Current local time is {now_local.strftime('%H:%M')}. "
                         "Extract calendar event details from the user's message. "
                         "Return ONLY a JSON object with these fields: "
                         "summary (string, required), "
-                        "start_datetime (ISO 8601 string, required), "
-                        "end_datetime (ISO 8601 string, required), "
+                        "start_datetime (ISO 8601 string with timezone offset, required, "
+                        f"e.g. {today}T15:00:00{now_local.strftime('%z')[:3]}:{now_local.strftime('%z')[3:]}), "
+                        "end_datetime (ISO 8601 string with timezone offset, required), "
                         "description (string, optional), "
                         "location (string, optional). "
                         "If duration is unspecified, default to 1 hour. "

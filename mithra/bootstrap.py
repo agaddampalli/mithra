@@ -176,6 +176,7 @@ def _build_calendar(state: dict, household_id: str, executor) -> None:
     calendar_adapter = CalendarAdapter(
         oauth_manager=state.get("oauth_manager"),
         household_id=household_id,
+        household_timezone=state.get("household_timezone", "UTC"),
         storage_adapter=state.get("local_adapter"),
     )
     state["calendar_adapter"] = calendar_adapter
@@ -220,6 +221,15 @@ async def build_state(
     member_registry = MemberRegistry(local_adapter.db_path, household_id)
     state["member_registry"] = member_registry
 
+    import sqlite3 as _sqlite3
+    with _sqlite3.connect(local_adapter.db_path) as _conn:
+        _row = _conn.execute(
+            "SELECT value FROM household_config WHERE household_id=? AND key=?",
+            (household_id, "timezone"),
+        ).fetchone()
+    household_tz = _row[0] if _row else "UTC"
+    state["household_timezone"] = household_tz
+
     domain_router, cache = _build_domain_router(storage_router, household_config)
     state["domain_router"] = domain_router
     state["context_cache"] = cache
@@ -236,7 +246,11 @@ async def build_state(
     state["dead_letter_queue"] = dead_letter_queue
 
     from mithra.agent.langgraph_adapter import LangGraphAdapter
-    state["agent"] = LangGraphAdapter(llm_router=llm_router, storage_router=storage_router)
+    state["agent"] = LangGraphAdapter(
+        llm_router=llm_router,
+        storage_router=storage_router,
+        household_timezone=state.get("household_timezone", "UTC"),
+    )
 
     base_url = os.environ.get("MITHRA_BASE_URL", "https://assistant.mithra-app.com")
     state["base_url"] = base_url
