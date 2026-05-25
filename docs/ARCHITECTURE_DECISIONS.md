@@ -755,7 +755,114 @@ who already have documents in cloud storage.
 
 ---
 
-## 5. Storage Architecture
+## 5. Document Processing Libraries
+
+### Decision
+Use Docling for all document extraction and chunking.
+No separate document processing Docker service.
+
+### Why Docling
+- Open source (MIT), Linux Foundation AI & Data
+- Handles: PDF, DOCX, PPTX, HTML, images with OCR
+- Hierarchical chunking built in for RAG pipelines
+- Integrates directly with ChromaDB
+- Python library — no Docker service needed
+- 42,000 GitHub stars, 1.5M monthly PyPI downloads
+- Weekly releases, active community
+
+### Usage Modes
+    FAST MODE (default for Mithra)
+      No ML model downloads
+      Basic text extraction, structure preservation
+      Appropriate for: text PDFs, DOCX, PPTX
+      Low memory, fast processing
+
+    FULL MODE (enabled per document type)
+      Downloads ML models (~1-2GB, one time)
+      Table reconstruction, layout analysis
+      OCR for scanned documents
+      Appropriate for: scanned receipts, complex PDFs
+      Enable via config per domain
+
+### Document Processing Pipeline
+
+    File received (Telegram, OneDrive, Gmail)
+         ↓
+    Docling extracts text + structure
+      fast_mode=True by default
+      full_mode=True for health.* and scanned images
+         ↓
+    Docling chunks into segments (~500 tokens)
+    with hierarchy metadata preserved
+         ↓
+    DocumentIndexer embeds chunks
+      health domain → local model only (phi3:mini)
+      all other domains → LLM router (cloud ok)
+         ↓
+    Chunks stored in ChromaDB
+    Metadata stored in SQLite files table
+    Raw file stored in FileStorageAdapter
+
+### Supported Formats (via Docling)
+    PDF       text + scanned (OCR in full mode)
+    DOCX      Word documents
+    PPTX      PowerPoint presentations
+    XLSX      Excel (basic text extraction)
+    HTML      web pages, email HTML bodies
+    Images    JPEG, PNG → OCR in full mode
+    MD        Markdown files
+
+### Web Crawling (Phase 2, not now)
+    Not needed for Phase 1.
+    Household documents live in OneDrive/Google Drive.
+    When research domain is built in Phase 2:
+      Use crawl4ai (open source, async, LLM-friendly)
+      Clean markdown output from web pages
+      Self-hostable, no managed service needed
+
+### Alternatives Considered
+
+#### PyMuPDF (fitz)
+    Rejected as primary: fast simple text extraction
+    but no chunking, no structure preservation,
+    no table reconstruction, no OCR.
+    May use internally if Docling unavailable.
+
+#### RAGFlow
+    Rejected: full RAG engine requiring Docker service.
+    Adds significant infrastructure complexity.
+    Overkill for household document volumes.
+
+#### Chunkr
+    Rejected: newer, less mature than Docling.
+    Requires separate service. Docling covers all
+    same use cases as Python library.
+
+#### pdfminer.six
+    Rejected as primary: complex API, no chunking,
+    less actively maintained. Docling uses better
+    underlying technology.
+
+### Dependencies to Add
+    docling              document extraction + chunking
+    docling[ocr]         OCR support (full mode only)
+    pytesseract          OCR fallback for images
+
+### Privacy Rules for Document Processing
+    Health domain documents:
+      Extract using Docling locally (no network calls)
+      Embed using local model ONLY (phi3:mini or similar)
+      Never send content to cloud embedding APIs
+      Docling runs entirely offline — safe for health data
+
+    All other domains:
+      Docling extraction is local (no network calls)
+      Embedding may use cloud LLM router
+      DataSanitiser runs before any cloud call
+
+---
+
+## 6. Storage Architecture
 
 ### Decision
 StorageAdapter abstraction with primary key:
@@ -782,7 +889,7 @@ across households. Zero schema changes for product.
 
 ---
 
-## 6. Migration Plan (Current -> Target)
+## 7. Migration Plan (Current -> Target)
 
 ### Current State
     household.yaml -> has members list with person_a, person_b
@@ -854,7 +961,7 @@ across households. Zero schema changes for product.
 
 ---
 
-## 7. Implementation Order
+## 8. Implementation Order
 
 ### Phase A — Identity Foundation
 Must complete and verify before Phase B.
@@ -959,7 +1066,7 @@ Start only after Phase A is verified.
 
 ---
 
-## 8. Alternatives Considered
+## 9. Alternatives Considered
 
 ### Nango Self-Hosted (Free) v0.70.4
 Decision: Removed
@@ -1022,7 +1129,7 @@ Reason:
 
 ---
 
-## 9. Design Principles
+## 10. Design Principles
 
 These apply to ALL future decisions.
 
