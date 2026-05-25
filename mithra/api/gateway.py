@@ -280,7 +280,8 @@ def create_app(state_override: dict | None = None) -> FastAPI:
         oauth_manager = _state.get("oauth_manager")
         if not oauth_manager or provider not in oauth_manager.available_providers():
             raise HTTPException(status_code=404, detail=f"OAuth provider '{provider}' not configured")
-        redirect_uri = str(request.base_url).rstrip("/") + f"/auth/{provider}/callback"
+        base_url = os.environ.get("MITHRA_BASE_URL", "https://assistant.mithra-app.com")
+        redirect_uri = f"{base_url}/auth/{provider}/callback"
         url = oauth_manager.get_auth_url(provider, user_id, redirect_uri)
         return RedirectResponse(url)
 
@@ -292,7 +293,8 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"OAuth provider '{provider}' not configured")
 
         user_id = state  # state param carries user_id set in get_auth_url
-        redirect_uri = str(request.base_url).rstrip("/") + f"/auth/{provider}/callback"
+        base_url = os.environ.get("MITHRA_BASE_URL", "https://assistant.mithra-app.com")
+        redirect_uri = f"{base_url}/auth/{provider}/callback"
         success = await oauth_manager.handle_callback(provider, code, user_id, redirect_uri)
 
         if success:
