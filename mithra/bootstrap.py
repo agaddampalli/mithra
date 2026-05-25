@@ -117,27 +117,27 @@ def _build_autonomy(local_adapter, household_id: str = ""):
 
 
 def _build_telegram(
-    household_config: dict,
+    member_registry,
     local_adapter,
     household_id: str,
     executor,
     on_request: Callable[..., Coroutine[Any, Any, None]],
 ) -> dict:
-    from mithra.adapters.messaging.telegram_input import TelegramInputAdapter, UserIdentityResolver
+    from mithra.adapters.messaging.telegram_input import TelegramInputAdapter
     from mithra.adapters.messaging.telegram_output import TelegramOutputAdapter
     from mithra.routing.session import ConversationSessionManager
 
-    identity_resolver = UserIdentityResolver(household_config, storage_adapter=local_adapter)
+    known_user_ids = [m.id for m in member_registry.get_members()] if member_registry else []
     session_mgr = ConversationSessionManager(
         local_adapter,
-        known_user_ids=[m["user_id"] for m in household_config.get("members", [])],
+        known_user_ids=known_user_ids,
         household_id=household_id,
     )
     telegram_input = TelegramInputAdapter(
         bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         webhook_secret=os.environ.get("TELEGRAM_WEBHOOK_SECRET"),
         session_manager=session_mgr,
-        identity_resolver=identity_resolver,
+        member_registry=member_registry,
         on_request=on_request,
     )
     telegram_output = TelegramOutputAdapter(
@@ -146,7 +146,7 @@ def _build_telegram(
     executor.register("telegram_reply", telegram_output)
     executor.register_notify("telegram", telegram_output)
     return {
-        "identity_resolver": identity_resolver,
+        "member_registry": member_registry,
         "session_mgr": session_mgr,
         "telegram_input": telegram_input,
         "telegram_output": telegram_output,
@@ -185,7 +185,7 @@ def _build_telegram_handler(state: dict, household_config: dict, base_url: str) 
         household_config=household_config,
         nango=state.get("nango"),
         base_url=base_url,
-        identity_resolver=state.get("identity_resolver"),
+        member_registry=state.get("member_registry"),
         storage_adapter=state.get("local_adapter"),
     )
 
@@ -208,6 +208,10 @@ async def build_state(
     storage_router, local_adapter, cipher = _build_storage_router(household_config)
     state["storage_router"] = storage_router
     state["local_adapter"] = local_adapter
+
+    from mithra.identity.member_registry import MemberRegistry
+    member_registry = MemberRegistry(local_adapter.db_path, household_id)
+    state["member_registry"] = member_registry
 
     domain_router, cache = _build_domain_router(storage_router, household_config)
     state["domain_router"] = domain_router
@@ -232,7 +236,7 @@ async def build_state(
 
     if os.environ.get("TELEGRAM_BOT_TOKEN"):
         state.update(
-            _build_telegram(household_config, local_adapter, household_id, executor, on_request)
+            _build_telegram(member_registry, local_adapter, household_id, executor, on_request)
         )
 
     if os.environ.get("NANGO_SECRET_KEY"):

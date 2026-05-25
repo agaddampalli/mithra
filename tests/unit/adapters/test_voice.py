@@ -74,24 +74,42 @@ class TestWyomingAdapterBehaviour:
         request = adapter.normalise("person_a", "esp32_main", "hello")
         assert request.session_id == "voice:esp32_main"
 
-    def test_normalise_unknown_device_falls_back_to_household(self):
-        from mithra.adapters.messaging.telegram_input import UserIdentityResolver
-        resolver = UserIdentityResolver({"members": [], "shared_devices": []})
-        adapter = WyomingAdapter(identity_resolver=resolver)
+    def test_normalise_unknown_device_falls_back_to_household(self, tmp_path):
+        import sqlite3
+        from datetime import datetime, timezone
+        from mithra.storage.local import LocalStorageAdapter
+        from mithra.identity.member_registry import MemberRegistry
+
+        db_path = str(tmp_path / "db.sqlite")
+        LocalStorageAdapter(str(tmp_path / "files"), db_path)
+        registry = MemberRegistry(db_path, "hh_test")
+        # Empty registry: no devices registered → resolve returns None → "household"
+        adapter = WyomingAdapter(member_registry=registry)
         request = adapter.normalise("household", "unknown_device", "test")
         assert request.user_id == "household"
 
-    def test_normalise_maps_known_device_to_user(self):
-        from mithra.adapters.messaging.telegram_input import UserIdentityResolver
-        config = {
-            "members": [
-                {"user_id": "person_a", "device_ids": ["phone_nikitha"], "telegram_ids": []}
-            ],
-            "shared_devices": [],
-        }
-        resolver = UserIdentityResolver(config)
-        device_user = resolver.resolve_device("phone_nikitha")
-        assert device_user == "person_a"
+    def test_normalise_maps_known_device_to_user(self, tmp_path):
+        import sqlite3
+        from datetime import datetime, timezone
+        from mithra.storage.local import LocalStorageAdapter
+        from mithra.identity.member_registry import MemberRegistry
+
+        db_path = str(tmp_path / "db.sqlite")
+        LocalStorageAdapter(str(tmp_path / "files"), db_path)
+        now = datetime.now(timezone.utc).isoformat()
+        conn = sqlite3.connect(db_path)
+        conn.execute("INSERT OR IGNORE INTO households (id, display_name, timezone, locale, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                     ("hh_test", "Test", "UTC", "en-US", now, now))
+        conn.execute("INSERT OR IGNORE INTO members (id, household_id, display_name, role, status, invited_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                     ("person_a", "hh_test", "Alice", "member", "active", None, now, now))
+        conn.execute("INSERT OR IGNORE INTO member_channels (user_id, household_id, channel, channel_id, verified, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                     ("person_a", "hh_test", "device", "phone_nikitha", 1, now))
+        conn.commit()
+        conn.close()
+        registry = MemberRegistry(db_path, "hh_test")
+        member = registry.resolve_channel("device", "phone_nikitha")
+        assert member is not None
+        assert member.id == "person_a"
 
 
 class _FakeWriter:
@@ -123,15 +141,18 @@ class TestWyomingHandleConnection:
         assert received[0].text == "play music"
 
     @pytest.mark.asyncio
-    async def test_handle_connection_unknown_device_maps_to_household(self):
+    async def test_handle_connection_unknown_device_maps_to_household(self, tmp_path):
         received: list = []
 
         async def on_request(req):
             received.append(req)
 
-        from mithra.adapters.messaging.telegram_input import UserIdentityResolver
-        resolver = UserIdentityResolver({"members": [], "shared_devices": []})
-        adapter = WyomingAdapter(on_request=on_request, identity_resolver=resolver)
+        from mithra.storage.local import LocalStorageAdapter
+        from mithra.identity.member_registry import MemberRegistry
+        db_path = str(tmp_path / "db.sqlite")
+        LocalStorageAdapter(str(tmp_path / "files"), db_path)
+        registry = MemberRegistry(db_path, "hh_test")
+        adapter = WyomingAdapter(on_request=on_request, member_registry=registry)
 
         event = {"type": "transcript", "device_id": "unknown_xyz", "text": "hello", "session_id": ""}
         await adapter._handle_connection(_make_reader(event), _FakeWriter())

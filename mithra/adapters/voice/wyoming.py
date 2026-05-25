@@ -34,13 +34,13 @@ class WyomingAdapter(InputAdapter):
         port: int = 10300,
         on_request: Callable[[AgentRequest], Coroutine] | None = None,
         tts_adapter: Any | None = None,
-        identity_resolver: Any | None = None,
+        member_registry: Any | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self._on_request = on_request
         self._tts = tts_adapter
-        self._identity_resolver = identity_resolver
+        self._member_registry = member_registry
         self._server: asyncio.AbstractServer | None = None
         self._running = False
 
@@ -78,9 +78,10 @@ class WyomingAdapter(InputAdapter):
                     transcript = event.get("text", "")
                     session_id = event.get("session_id", "")
 
-                    # Resolve user_id via identity_resolver if available
-                    if self._identity_resolver is not None:
-                        user_id = self._identity_resolver.resolve_device(device_id)
+                    # Resolve user_id via member_registry if available
+                    if self._member_registry is not None:
+                        member = self._member_registry.resolve_channel("device", device_id)
+                        user_id = member.id if member else "household"
                     else:
                         user_id = event.get("user_id", "household")
 

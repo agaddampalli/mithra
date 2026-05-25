@@ -64,10 +64,11 @@ async def nango_webhook(request: Request):
             storage_adapter=local_adapter,
         )
 
-        identity = _state.get("identity_resolver")
+        member_registry = _state.get("member_registry")
         telegram_output = _state.get("telegram_output")
-        if telegram_output and identity:
-            chat_id = identity.get_chat_id_for_user(end_user_id)
+        if telegram_output and member_registry:
+            chat_id_str = member_registry.get_channel_id(end_user_id, "telegram")
+            chat_id = int(chat_id_str) if chat_id_str else None
             if chat_id:
                 from mithra.adapters.messaging import OutboundMessage
                 telegram_output.register_chat(end_user_id, chat_id)

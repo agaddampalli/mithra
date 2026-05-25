@@ -38,7 +38,7 @@ class TelegramSignalHandler:
         household_config: dict | None = None,
         nango: Any | None = None,
         base_url: str = "https://assistant.mithra-app.com",
-        identity_resolver: Any | None = None,
+        member_registry: Any | None = None,
         storage_adapter: Any | None = None,
     ) -> None:
         self._out = telegram_output
@@ -47,7 +47,7 @@ class TelegramSignalHandler:
         self._household_config = household_config or {}
         self._nango = nango
         self._base_url = base_url.rstrip("/")
-        self._identity_resolver = identity_resolver
+        self._member_registry = member_registry
         self._storage = storage_adapter
 
     # ------------------------------------------------------------------
@@ -107,8 +107,13 @@ class TelegramSignalHandler:
     async def notify_user(self, user_id: str, text: str) -> None:
         """Send a notification to a user looked up by their Mithra user_id."""
         chat_id: int | None = None
-        if self._identity_resolver:
-            chat_id = self._identity_resolver.get_chat_id_for_user(user_id)
+        if self._member_registry:
+            chat_id_str = self._member_registry.get_channel_id(user_id, "telegram")
+            if chat_id_str:
+                try:
+                    chat_id = int(chat_id_str)
+                except (ValueError, TypeError):
+                    pass
         if not chat_id:
             _logger.warning("notify_user: no chat_id for user_id=%r", user_id)
             return
@@ -168,12 +173,12 @@ class TelegramSignalHandler:
         signal = agent_request.signal or {}
 
         if signal.get("registration"):
-            members = self._household_config.get("members", [])
+            members = self._member_registry.get_members() if self._member_registry else []
             actions = [
                 ActionButton(
-                    label=m["display_name"],
+                    label=m.display_name,
                     action="register",
-                    payload={"user_id": m["user_id"], "action": "register"},
+                    payload={"user_id": m.id, "action": "register"},
                 )
                 for m in members
             ]
@@ -284,11 +289,11 @@ class TelegramSignalHandler:
         admin_id_str = os.environ.get("MITHRA_ADMIN_TELEGRAM_ID", "")
         if not admin_id_str:
             return
-        member_name = next(
-            (m["display_name"] for m in self._household_config.get("members", [])
-             if m["user_id"] == user_id),
-            user_id,
-        )
+        if self._member_registry:
+            member = self._member_registry.get_member(user_id)
+            member_name = member.display_name if member else user_id
+        else:
+            member_name = user_id
         try:
             self._out.register_chat("admin", int(admin_id_str))
             await self._out.send(

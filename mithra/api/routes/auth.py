@@ -92,9 +92,10 @@ async def google_callback(
 
     if connection_id:
         telegram_output = _state.get("telegram_output")
-        identity = _state.get("identity_resolver")
-        if telegram_output and identity:
-            chat_id = identity.get_chat_id_for_user(user_id)
+        member_registry = _state.get("member_registry")
+        if telegram_output and member_registry:
+            chat_id_str = member_registry.get_channel_id(user_id, "telegram")
+            chat_id = int(chat_id_str) if chat_id_str else None
             if chat_id:
                 telegram_output.register_chat(user_id, chat_id)
                 try:

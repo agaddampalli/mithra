@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+import sqlite3
+from datetime import datetime, timezone
 
 import httpx
 import pytest
 import respx
 
-from mithra.adapters.messaging import ActionButton, DeliveryReceipt, MessageFormat, OutboundMessage
-from mithra.adapters.messaging.telegram_input import TelegramInputAdapter, UserIdentityResolver
+from mithra.adapters.messaging import ActionButton, DeliveryReceipt, OutboundMessage
+from mithra.adapters.messaging.telegram_input import TelegramInputAdapter
 from mithra.adapters.messaging.telegram_output import TelegramOutputAdapter
 from mithra.agent.interface import AgentRequest, InputChannel
+from mithra.identity.member_registry import MemberRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +73,51 @@ def _voice_update(chat_id: int = 111) -> dict:
     }
 
 
+def _start_update(chat_id: int = 111, first_name: str = "Alice", username: str = "") -> dict:
+    from_data: dict = {"id": chat_id, "first_name": first_name}
+    if username:
+        from_data["username"] = username
+    return {
+        "update_id": 10,
+        "message": {
+            "message_id": 50,
+            "chat": {"id": chat_id, "type": "private"},
+            "from": from_data,
+            "text": "/start",
+        },
+    }
+
+
+def _admin_approve_callback(
+    admin_chat_id: int = 999, target_id: int = 555, uid: str = "person_a"
+) -> dict:
+    return {
+        "update_id": 20,
+        "callback_query": {
+            "id": "cq-admin",
+            "message": {"chat": {"id": admin_chat_id}, "message_id": 100},
+            "data": json.dumps(
+                {"action": "admin_approve", "id": target_id, "uid": uid},
+                separators=(',', ':'),
+            ),
+        },
+    }
+
+
+def _admin_deny_callback(admin_chat_id: int = 999, target_id: int = 555) -> dict:
+    return {
+        "update_id": 21,
+        "callback_query": {
+            "id": "cq-admin-deny",
+            "message": {"chat": {"id": admin_chat_id}, "message_id": 101},
+            "data": json.dumps(
+                {"action": "admin_deny", "id": target_id},
+                separators=(',', ':'),
+            ),
+        },
+    }
+
+
 def _make_input_adapter(**kwargs) -> TelegramInputAdapter:
     return TelegramInputAdapter(bot_token="test-token", **kwargs)
 
@@ -81,54 +128,291 @@ def _make_output_adapter(http_client=None) -> TelegramOutputAdapter:
     return adapter
 
 
-# ---------------------------------------------------------------------------
-# UserIdentityResolver
-# ---------------------------------------------------------------------------
+def _make_registry(
+    tmp_path,
+    members=None,
+    channels=None,
+    blocked=None,
+    household_id: str = "hh_test",
+) -> MemberRegistry:
+    """Create a MemberRegistry backed by a temp SQLite DB with seeded test data."""
+    from mithra.storage.local import LocalStorageAdapter
 
-class TestUserIdentityResolver:
-    def test_known_telegram_id_returns_correct_user_id(self):
-        config = {
-            "members": [
-                {"user_id": "person_a", "telegram_ids": [111]},
-                {"user_id": "person_b", "telegram_ids": [222]},
-            ]
-        }
-        resolver = UserIdentityResolver(config)
-        assert resolver.resolve_telegram(111) == "person_a"
-        assert resolver.resolve_telegram(222) == "person_b"
+    db_path = str(tmp_path / "db.sqlite")
+    # LocalStorageAdapter runs all DDL including identity tables
+    LocalStorageAdapter(str(tmp_path / "files"), db_path)
+    registry = MemberRegistry(db_path, household_id)
 
-    def test_unknown_telegram_id_returns_household(self):
-        config = {"members": [{"user_id": "person_a", "telegram_ids": [111]}]}
-        resolver = UserIdentityResolver(config)
-        assert resolver.resolve_telegram(999) == "household"
-
-    def test_empty_config_returns_household(self):
-        resolver = UserIdentityResolver({})
-        assert resolver.resolve_telegram(42) == "household"
-
-    def test_telegram_ids_as_list(self):
-        config = {"members": [{"user_id": "person_a", "telegram_ids": [123456789]}]}
-        resolver = UserIdentityResolver(config)
-        assert resolver.resolve_telegram(123456789) == "person_a"
-
-    def test_telegram_ids_as_bare_int(self):
-        config = {"members": [{"user_id": "person_a", "telegram_ids": 123456789}]}
-        resolver = UserIdentityResolver(config)
-        assert resolver.resolve_telegram(123456789) == "person_a"
-
-    def test_telegram_ids_as_empty_list(self):
-        config = {"members": [{"user_id": "person_a", "telegram_ids": []}]}
-        resolver = UserIdentityResolver(config)
-        assert resolver.resolve_telegram(123456789) == "household"
-
-    def test_telegram_ids_as_none(self):
-        config = {"members": [{"user_id": "person_a", "telegram_ids": None}]}
-        resolver = UserIdentityResolver(config)
-        assert resolver.resolve_telegram(123456789) == "household"
+    now = datetime.now(timezone.utc).isoformat()
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT OR IGNORE INTO households (id, display_name, timezone, locale, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (household_id, "Test Household", "UTC", "en-US", now, now),
+    )
+    for m in (members or []):
+        conn.execute(
+            "INSERT OR IGNORE INTO members (id, household_id, display_name, role, status, invited_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (m["id"], household_id, m.get("display_name", m["id"]),
+             m.get("role", "member"), m.get("status", "active"), None, now, now),
+        )
+    for c in (channels or []):
+        conn.execute(
+            "INSERT OR IGNORE INTO member_channels (user_id, household_id, channel, channel_id, verified, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (c["user_id"], household_id, c["channel"], str(c["channel_id"]), 1, now),
+        )
+    for b in (blocked or []):
+        block_uid = f"__blocked__{b['channel_id']}"
+        conn.execute(
+            "INSERT OR IGNORE INTO member_channels (user_id, household_id, channel, channel_id, verified, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (block_uid, household_id, b["channel"], str(b["channel_id"]), 0, now),
+        )
+    conn.commit()
+    conn.close()
+    return registry
 
 
 # ---------------------------------------------------------------------------
-# TelegramInputAdapter.normalise()
+# MemberRegistry — channel resolution
+# ---------------------------------------------------------------------------
+
+class TestMemberRegistry:
+    def test_known_telegram_channel_returns_correct_member(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[
+                {"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"},
+                {"id": "person_b", "display_name": "Bob", "role": "member", "status": "active"},
+            ],
+            channels=[
+                {"user_id": "person_a", "channel": "telegram", "channel_id": "111"},
+                {"user_id": "person_b", "channel": "telegram", "channel_id": "222"},
+            ],
+        )
+        assert registry.resolve_channel("telegram", "111").id == "person_a"
+        assert registry.resolve_channel("telegram", "222").id == "person_b"
+
+    def test_unknown_channel_returns_none(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"}],
+            channels=[{"user_id": "person_a", "channel": "telegram", "channel_id": "111"}],
+        )
+        assert registry.resolve_channel("telegram", "999") is None
+
+    def test_empty_registry_returns_none(self, tmp_path):
+        registry = _make_registry(tmp_path)
+        assert registry.resolve_channel("telegram", "42") is None
+
+    def test_get_channel_id_returns_string(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"}],
+            channels=[{"user_id": "person_a", "channel": "telegram", "channel_id": "111"}],
+        )
+        assert registry.get_channel_id("person_a", "telegram") == "111"
+
+    def test_get_channel_id_unknown_returns_none(self, tmp_path):
+        registry = _make_registry(tmp_path)
+        assert registry.get_channel_id("person_a", "telegram") is None
+
+
+# ---------------------------------------------------------------------------
+# MemberRegistry — registration
+# ---------------------------------------------------------------------------
+
+class TestMemberRegistryRegistration:
+    def test_register_channel_authorizes_member(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"}],
+        )
+        assert registry.is_authorized("telegram", "555") is False
+        registry.register_channel("person_a", "telegram", "555")
+        assert registry.is_authorized("telegram", "555") is True
+
+    def test_register_channel_overwrites_existing(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[
+                {"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"},
+                {"id": "person_b", "display_name": "Bob", "role": "member", "status": "active"},
+            ],
+            channels=[{"user_id": "person_a", "channel": "telegram", "channel_id": "111"}],
+        )
+        registry.register_channel("person_b", "telegram", "111")
+        assert registry.resolve_channel("telegram", "111").id == "person_b"
+
+    def test_register_channel_persists_across_instances(self, tmp_path):
+        registry1 = _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"}],
+        )
+        registry1.register_channel("person_a", "telegram", "789")
+        registry2 = MemberRegistry(str(tmp_path / "db.sqlite"), "hh_test")
+        assert registry2.resolve_channel("telegram", "789").id == "person_a"
+
+    def test_get_members_returns_active_members(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[
+                {"id": "person_a", "display_name": "Alice", "role": "owner", "status": "active"},
+                {"id": "person_b", "display_name": "Bob", "role": "member", "status": "active"},
+            ],
+        )
+        members = registry.get_members()
+        assert len(members) == 2
+        ids = {m.id for m in members}
+        assert ids == {"person_a", "person_b"}
+
+    def test_get_members_excludes_invited(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[
+                {"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"},
+                {"id": "person_b", "display_name": "Bob", "role": "member", "status": "invited"},
+            ],
+        )
+        members = registry.get_members()
+        assert len(members) == 1
+        assert members[0].id == "person_a"
+
+
+# ---------------------------------------------------------------------------
+# MemberRegistry — authorization
+# ---------------------------------------------------------------------------
+
+class TestMemberRegistryAuthorized:
+    def test_registered_channel_is_authorized(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"}],
+            channels=[{"user_id": "person_a", "channel": "telegram", "channel_id": "111"}],
+        )
+        assert registry.is_authorized("telegram", "111") is True
+
+    def test_unknown_channel_is_not_authorized(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"}],
+            channels=[{"user_id": "person_a", "channel": "telegram", "channel_id": "111"}],
+        )
+        assert registry.is_authorized("telegram", "999") is False
+
+    def test_empty_registry_is_not_authorized(self, tmp_path):
+        registry = _make_registry(tmp_path)
+        assert registry.is_authorized("telegram", "111") is False
+
+    def test_registered_id_becomes_authorized(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[{"id": "person_b", "display_name": "Bob", "role": "member", "status": "active"}],
+        )
+        assert registry.is_authorized("telegram", "555") is False
+        registry.register_channel("person_b", "telegram", "555")
+        assert registry.is_authorized("telegram", "555") is True
+
+    def test_admin_seed_channel_becomes_authorized(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MITHRA_ADMIN_TELEGRAM_ID", "12345")
+        registry = _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Admin", "role": "owner", "status": "active"}],
+        )
+        adapter = _make_input_adapter(member_registry=registry)
+        adapter._seed_admin_channel()
+        assert registry.is_authorized("telegram", "12345") is True
+
+    def test_admin_seed_maps_to_owner_member(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MITHRA_ADMIN_TELEGRAM_ID", "99999")
+        registry = _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Admin", "role": "owner", "status": "active"}],
+        )
+        adapter = _make_input_adapter(member_registry=registry)
+        adapter._seed_admin_channel()
+        member = registry.resolve_channel("telegram", "99999")
+        assert member is not None
+        assert member.id == "person_a"
+
+    def test_invalid_admin_env_does_not_crash(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MITHRA_ADMIN_TELEGRAM_ID", "not-a-number")
+        registry = _make_registry(tmp_path)
+        adapter = _make_input_adapter(member_registry=registry)
+        adapter._seed_admin_channel()  # must not raise
+        assert registry.is_authorized("telegram", "0") is False
+
+    def test_missing_admin_env_has_no_effect(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MITHRA_ADMIN_TELEGRAM_ID", raising=False)
+        registry = _make_registry(tmp_path)
+        adapter = _make_input_adapter(member_registry=registry)
+        adapter._seed_admin_channel()
+        assert registry.is_authorized("telegram", "12345") is False
+
+
+# ---------------------------------------------------------------------------
+# MemberRegistry — blocking
+# ---------------------------------------------------------------------------
+
+class TestBlockedChannels:
+    def test_block_prevents_authorization(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"}],
+            channels=[{"user_id": "person_a", "channel": "telegram", "channel_id": "111"}],
+        )
+        assert registry.is_authorized("telegram", "111") is True
+        registry.block_channel("telegram", "111")
+        assert registry.is_authorized("telegram", "111") is False
+
+    def test_block_unknown_id_also_rejected(self, tmp_path):
+        registry = _make_registry(tmp_path)
+        registry.block_channel("telegram", "999")
+        assert registry.is_authorized("telegram", "999") is False
+
+    def test_pre_seeded_blocked_channel_is_blocked(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            blocked=[{"channel": "telegram", "channel_id": "777"}],
+        )
+        assert registry.is_blocked("telegram", "777") is True
+        assert registry.is_authorized("telegram", "777") is False
+
+    def test_block_persists_across_instances(self, tmp_path):
+        registry1 = _make_registry(tmp_path)
+        registry1.block_channel("telegram", "888")
+        registry2 = MemberRegistry(str(tmp_path / "db.sqlite"), "hh_test")
+        assert registry2.is_authorized("telegram", "888") is False
+
+    def test_blocked_user_rejected_in_normalise(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"}],
+            channels=[{"user_id": "person_a", "channel": "telegram", "channel_id": "111"}],
+        )
+        registry.block_channel("telegram", "111")
+        adapter = _make_input_adapter(member_registry=registry)
+        result = adapter.normalise(_text_update(chat_id=111), "telegram")
+        assert result is None
+
+    def test_non_blocked_member_still_passes(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[
+                {"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"},
+                {"id": "person_b", "display_name": "Bob", "role": "member", "status": "active"},
+            ],
+            channels=[
+                {"user_id": "person_a", "channel": "telegram", "channel_id": "111"},
+                {"user_id": "person_b", "channel": "telegram", "channel_id": "222"},
+            ],
+        )
+        registry.block_channel("telegram", "111")
+        adapter = _make_input_adapter(member_registry=registry)
+        result = adapter.normalise(_text_update(chat_id=222), "telegram")
+        assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# TelegramInputAdapter.normalise() — text messages
 # ---------------------------------------------------------------------------
 
 class TestNormaliseText:
@@ -148,10 +432,13 @@ class TestNormaliseText:
         result = adapter.normalise(_text_update(chat_id=555), "telegram")
         assert result.session_id == "tg:555"
 
-    def test_text_message_resolves_user_id(self):
-        config = {"members": [{"user_id": "person_a", "telegram_ids": [111]}]}
-        resolver = UserIdentityResolver(config)
-        adapter = _make_input_adapter(identity_resolver=resolver)
+    def test_text_message_resolves_user_id(self, tmp_path):
+        registry = _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"}],
+            channels=[{"user_id": "person_a", "channel": "telegram", "channel_id": "111"}],
+        )
+        adapter = _make_input_adapter(member_registry=registry)
         result = adapter.normalise(_text_update(chat_id=111), "telegram")
         assert result.user_id == "person_a"
 
@@ -160,6 +447,10 @@ class TestNormaliseText:
         result = adapter.normalise(_text_update(chat_id=9999), "telegram")
         assert result.user_id == "household"
 
+
+# ---------------------------------------------------------------------------
+# TelegramInputAdapter.normalise() — callbacks
+# ---------------------------------------------------------------------------
 
 class TestNormaliseCallback:
     def test_callback_query_returns_agent_request(self):
@@ -190,6 +481,10 @@ class TestNormaliseCallback:
         result = adapter.normalise(_callback_update(), "telegram")
         assert result.text is None
 
+
+# ---------------------------------------------------------------------------
+# TelegramInputAdapter.normalise() — documents and voice
+# ---------------------------------------------------------------------------
 
 class TestNormaliseDocument:
     def test_document_returns_none(self):
@@ -302,127 +597,57 @@ class TestSend:
 
 
 # ---------------------------------------------------------------------------
-# UserIdentityResolver — registration
+# normalise() — /start handling
 # ---------------------------------------------------------------------------
-
-class TestUserIdentityResolverRegistration:
-    def test_register_updates_in_memory_map(self):
-        resolver = UserIdentityResolver({})
-        resolver.register(555, "person_a")
-        assert resolver.resolve_telegram(555) == "person_a"
-
-    def test_register_overwrites_existing_mapping(self):
-        config = {"members": [{"user_id": "person_a", "telegram_ids": [111]}]}
-        resolver = UserIdentityResolver(config)
-        resolver.register(111, "person_b")
-        assert resolver.resolve_telegram(111) == "person_b"
-
-    def test_register_persists_to_storage(self, tmp_path):
-        from mithra.storage.local import LocalStorageAdapter
-        storage = LocalStorageAdapter(str(tmp_path / "files"), str(tmp_path / "db.sqlite"))
-        resolver = UserIdentityResolver({}, storage_adapter=storage)
-        resolver.register(789, "person_a")
-        records = storage.list("identity", "state", "household")
-        mapping = next((r for r in records if r.data.get("telegram_id") == 789), None)
-        assert mapping is not None
-        assert mapping.data["user_id"] == "person_a"
-
-    def test_load_from_storage_on_init(self, tmp_path):
-        from mithra.storage.local import LocalStorageAdapter
-        storage = LocalStorageAdapter(str(tmp_path / "files"), str(tmp_path / "db.sqlite"))
-        # Persist a mapping via one resolver instance
-        r1 = UserIdentityResolver({}, storage_adapter=storage)
-        r1.register(321, "person_b")
-        # New instance should load it automatically
-        r2 = UserIdentityResolver({}, storage_adapter=storage)
-        assert r2.resolve_telegram(321) == "person_b"
-
-    def test_get_members_returns_member_list(self):
-        config = {"members": [
-            {"user_id": "person_a", "display_name": "Alice"},
-            {"user_id": "person_b", "display_name": "Bob"},
-        ]}
-        resolver = UserIdentityResolver(config)
-        assert resolver.get_members() == config["members"]
-
-    def test_get_members_empty_when_no_config(self):
-        resolver = UserIdentityResolver({})
-        assert resolver.get_members() == []
-
-    def test_storage_failure_does_not_crash_init(self):
-        class BrokenStorage:
-            def list(self, *a, **kw):
-                raise RuntimeError("db exploded")
-        resolver = UserIdentityResolver({}, storage_adapter=BrokenStorage())
-        assert resolver.resolve_telegram(1) == "household"
-
-
-# ---------------------------------------------------------------------------
-# normalise() — /start and registration callback
-# ---------------------------------------------------------------------------
-
-def _start_update(chat_id: int = 111, first_name: str = "Alice", username: str = "") -> dict:
-    from_data: dict = {"id": chat_id, "first_name": first_name}
-    if username:
-        from_data["username"] = username
-    return {
-        "update_id": 10,
-        "message": {
-            "message_id": 50,
-            "chat": {"id": chat_id, "type": "private"},
-            "from": from_data,
-            "text": "/start",
-        },
-    }
-
 
 class TestNormaliseStart:
     """Option B: /start returns None for unknown users, AgentRequest("hi") for known users."""
 
-    def _known_resolver(self, chat_id: int = 111) -> UserIdentityResolver:
-        return UserIdentityResolver({"members": [
-            {"user_id": "person_a", "telegram_ids": [chat_id], "display_name": "Alice"},
-        ]})
+    def _known_registry(self, tmp_path, chat_id: int = 111) -> MemberRegistry:
+        return _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"}],
+            channels=[{"user_id": "person_a", "channel": "telegram", "channel_id": str(chat_id)}],
+        )
 
-    def _unknown_resolver(self) -> UserIdentityResolver:
-        return UserIdentityResolver({})
+    def _unknown_registry(self, tmp_path) -> MemberRegistry:
+        return _make_registry(tmp_path)
 
-    def test_start_by_unknown_user_returns_none(self):
-        adapter = _make_input_adapter(identity_resolver=self._unknown_resolver())
+    def test_start_by_unknown_user_returns_none(self, tmp_path):
+        adapter = _make_input_adapter(member_registry=self._unknown_registry(tmp_path))
         result = adapter.normalise(_start_update(chat_id=777), "telegram")
         assert result is None
 
-    def test_start_by_unknown_user_records_attempt(self):
-        adapter = _make_input_adapter(identity_resolver=self._unknown_resolver())
+    def test_start_by_unknown_user_records_attempt(self, tmp_path):
+        adapter = _make_input_adapter(member_registry=self._unknown_registry(tmp_path))
         adapter.normalise(_start_update(chat_id=777), "telegram")
         assert len(adapter._start_attempts.get(777, [])) == 1
 
-    def test_start_by_authorized_user_returns_agent_request(self):
-        adapter = _make_input_adapter(identity_resolver=self._known_resolver(111))
+    def test_start_by_authorized_user_returns_agent_request(self, tmp_path):
+        adapter = _make_input_adapter(member_registry=self._known_registry(tmp_path, 111))
         result = adapter.normalise(_start_update(chat_id=111), "telegram")
         assert isinstance(result, AgentRequest)
         assert result.text == "hi"
 
-    def test_start_by_authorized_user_sets_user_id(self):
-        adapter = _make_input_adapter(identity_resolver=self._known_resolver(111))
+    def test_start_by_authorized_user_sets_user_id(self, tmp_path):
+        adapter = _make_input_adapter(member_registry=self._known_registry(tmp_path, 111))
         result = adapter.normalise(_start_update(chat_id=111), "telegram")
         assert result.user_id == "person_a"
 
-    def test_start_by_authorized_user_sets_device_id(self):
-        adapter = _make_input_adapter(identity_resolver=self._known_resolver(111))
+    def test_start_by_authorized_user_sets_device_id(self, tmp_path):
+        adapter = _make_input_adapter(member_registry=self._known_registry(tmp_path, 111))
         result = adapter.normalise(_start_update(chat_id=111), "telegram")
         assert result.device_id == "telegram:111"
 
-    def test_start_by_authorized_user_not_rate_limited(self):
-        adapter = _make_input_adapter(identity_resolver=self._known_resolver(111))
+    def test_start_by_authorized_user_not_rate_limited(self, tmp_path):
+        adapter = _make_input_adapter(member_registry=self._known_registry(tmp_path, 111))
         for _ in range(5):
             result = adapter.normalise(_start_update(chat_id=111), "telegram")
             assert result is not None and result.text == "hi"
-        # No rate-limit tracking for authorized users
         assert len(adapter._start_attempts.get(111, [])) == 0
 
-    def test_start_with_no_resolver_returns_none(self):
-        # No resolver: cannot confirm authorized → treated as unknown → None
+    def test_start_with_no_registry_returns_none(self):
+        # No registry: /start for unknown → treated as unknown → None
         adapter = _make_input_adapter()
         result = adapter.normalise(_start_update(chat_id=111), "telegram")
         assert result is None
@@ -434,97 +659,50 @@ class TestNormaliseStart:
 
 
 # ---------------------------------------------------------------------------
-# UserIdentityResolver — is_authorized
-# ---------------------------------------------------------------------------
-
-class TestIsAuthorized:
-    def test_known_id_is_authorized(self):
-        config = {"members": [{"user_id": "person_a", "telegram_ids": [111]}]}
-        resolver = UserIdentityResolver(config)
-        assert resolver.is_authorized(111) is True
-
-    def test_unknown_id_is_not_authorized(self):
-        config = {"members": [{"user_id": "person_a", "telegram_ids": [111]}]}
-        resolver = UserIdentityResolver(config)
-        assert resolver.is_authorized(999) is False
-
-    def test_empty_map_is_not_authorized(self):
-        resolver = UserIdentityResolver({})
-        assert resolver.is_authorized(111) is False
-
-    def test_registered_id_becomes_authorized(self):
-        resolver = UserIdentityResolver({})
-        assert resolver.is_authorized(555) is False
-        resolver.register(555, "person_b")
-        assert resolver.is_authorized(555) is True
-
-    def test_admin_id_from_env_is_authorized(self, monkeypatch):
-        monkeypatch.setenv("MITHRA_ADMIN_TELEGRAM_ID", "12345")
-        resolver = UserIdentityResolver({})
-        assert resolver.is_authorized(12345) is True
-
-    def test_admin_id_from_env_maps_to_person_a(self, monkeypatch):
-        monkeypatch.setenv("MITHRA_ADMIN_TELEGRAM_ID", "99999")
-        resolver = UserIdentityResolver({})
-        assert resolver.resolve_telegram(99999) == "person_a"
-
-    def test_invalid_admin_id_does_not_crash(self, monkeypatch):
-        monkeypatch.setenv("MITHRA_ADMIN_TELEGRAM_ID", "not-a-number")
-        resolver = UserIdentityResolver({})  # must not raise
-        assert resolver.is_authorized(0) is False
-
-    def test_missing_admin_env_var_has_no_effect(self, monkeypatch):
-        monkeypatch.delenv("MITHRA_ADMIN_TELEGRAM_ID", raising=False)
-        resolver = UserIdentityResolver({})
-        assert resolver.is_authorized(12345) is False
-
-
-# ---------------------------------------------------------------------------
 # Authorization gate in normalise()
 # ---------------------------------------------------------------------------
 
 class TestAuthorization:
-    def _resolver_with_member(self, chat_id: int = 111) -> UserIdentityResolver:
-        config = {"members": [{"user_id": "person_a", "telegram_ids": [chat_id]}]}
-        return UserIdentityResolver(config)
+    def _registry_with_member(self, tmp_path, chat_id: int = 111) -> MemberRegistry:
+        return _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"}],
+            channels=[{"user_id": "person_a", "channel": "telegram", "channel_id": str(chat_id)}],
+        )
 
-    def test_unknown_user_text_message_rejected(self):
-        resolver = self._resolver_with_member(chat_id=111)
-        adapter = _make_input_adapter(identity_resolver=resolver)
-        # chat_id=999 is not in the resolver
+    def test_unknown_user_text_message_rejected(self, tmp_path):
+        registry = self._registry_with_member(tmp_path, chat_id=111)
+        adapter = _make_input_adapter(member_registry=registry)
         result = adapter.normalise(_text_update(chat_id=999), "telegram")
         assert result is None
 
-    def test_unknown_user_callback_rejected(self):
-        resolver = self._resolver_with_member(chat_id=111)
-        adapter = _make_input_adapter(identity_resolver=resolver)
+    def test_unknown_user_callback_rejected(self, tmp_path):
+        registry = self._registry_with_member(tmp_path, chat_id=111)
+        adapter = _make_input_adapter(member_registry=registry)
         result = adapter.normalise(_callback_update(chat_id=999), "telegram")
         assert result is None
 
-    def test_unknown_user_voice_rejected(self):
-        resolver = self._resolver_with_member(chat_id=111)
-        adapter = _make_input_adapter(identity_resolver=resolver)
+    def test_unknown_user_voice_rejected(self, tmp_path):
+        registry = self._registry_with_member(tmp_path, chat_id=111)
+        adapter = _make_input_adapter(member_registry=registry)
         result = adapter.normalise(_voice_update(chat_id=999), "telegram")
         assert result is None
 
-    def test_known_user_text_message_passes(self):
-        resolver = self._resolver_with_member(chat_id=111)
-        adapter = _make_input_adapter(identity_resolver=resolver)
+    def test_known_user_text_message_passes(self, tmp_path):
+        registry = self._registry_with_member(tmp_path, chat_id=111)
+        adapter = _make_input_adapter(member_registry=registry)
         result = adapter.normalise(_text_update(chat_id=111), "telegram")
         assert result is not None
         assert result.text == "Hello Mithra"
 
-    def test_start_bypasses_auth_gate_for_unknown_user(self):
-        resolver = self._resolver_with_member(chat_id=111)
-        adapter = _make_input_adapter(identity_resolver=resolver)
-        # chat_id=999 is unknown but /start must bypass the auth gate (Option B)
-        # It returns None (holding message sent async) — NOT rejected by auth gate
+    def test_start_bypasses_auth_gate_for_unknown_user(self, tmp_path):
+        registry = self._registry_with_member(tmp_path, chat_id=111)
+        adapter = _make_input_adapter(member_registry=registry)
+        # chat_id=999 is unknown but /start must bypass the auth gate
         adapter.normalise(_start_update(chat_id=999), "telegram")
-        # Rate-limit tracking proves the holding-message path was reached, not auth rejection
         assert len(adapter._start_attempts.get(999, [])) == 1
 
-    def test_no_resolver_allows_all_users(self):
-        # No resolver attached — auth check is skipped entirely
+    def test_no_registry_allows_all_users(self):
         adapter = _make_input_adapter()
         result = adapter.normalise(_text_update(chat_id=9999), "telegram")
         assert result is not None
@@ -535,52 +713,48 @@ class TestAuthorization:
 # ---------------------------------------------------------------------------
 
 class TestStartRateLimit:
-    """Rate limit only applies to unknown users (to prevent admin notification spam)."""
+    def _unknown_registry(self, tmp_path) -> MemberRegistry:
+        return _make_registry(tmp_path)
 
-    def _resolver_unknown(self) -> UserIdentityResolver:
-        return UserIdentityResolver({})
+    def _known_registry(self, tmp_path, chat_id: int = 111) -> MemberRegistry:
+        return _make_registry(
+            tmp_path,
+            members=[{"id": "person_a", "display_name": "Alice", "role": "member", "status": "active"}],
+            channels=[{"user_id": "person_a", "channel": "telegram", "channel_id": str(chat_id)}],
+        )
 
-    def _resolver_known(self, chat_id: int = 111) -> UserIdentityResolver:
-        return UserIdentityResolver({"members": [
-            {"user_id": "person_a", "telegram_ids": [chat_id], "display_name": "Alice"},
-        ]})
-
-    def test_three_start_attempts_recorded_for_unknown_user(self):
-        adapter = _make_input_adapter(identity_resolver=self._resolver_unknown())
+    def test_three_start_attempts_recorded_for_unknown_user(self, tmp_path):
+        adapter = _make_input_adapter(member_registry=self._unknown_registry(tmp_path))
         for _ in range(3):
             adapter.normalise(_start_update(chat_id=111), "telegram")
         assert len(adapter._start_attempts.get(111, [])) == 3
 
-    def test_fourth_start_silently_dropped(self):
-        adapter = _make_input_adapter(identity_resolver=self._resolver_unknown())
+    def test_fourth_start_silently_dropped(self, tmp_path):
+        adapter = _make_input_adapter(member_registry=self._unknown_registry(tmp_path))
         for _ in range(3):
             adapter.normalise(_start_update(chat_id=111), "telegram")
-        # 4th: returns None without adding to attempts (silent drop)
         result = adapter.normalise(_start_update(chat_id=111), "telegram")
         assert result is None
         assert len(adapter._start_attempts.get(111, [])) == 3
 
-    def test_rate_limit_is_per_chat_id(self):
-        adapter = _make_input_adapter(identity_resolver=self._resolver_unknown())
+    def test_rate_limit_is_per_chat_id(self, tmp_path):
+        adapter = _make_input_adapter(member_registry=self._unknown_registry(tmp_path))
         for _ in range(3):
             adapter.normalise(_start_update(chat_id=111), "telegram")
-        # chat 222 gets its own attempt counter
         adapter.normalise(_start_update(chat_id=222), "telegram")
         assert len(adapter._start_attempts.get(222, [])) == 1
 
-    def test_rate_limit_resets_after_window(self):
+    def test_rate_limit_resets_after_window(self, tmp_path):
         import time as _time
-        adapter = _make_input_adapter(identity_resolver=self._resolver_unknown())
+        adapter = _make_input_adapter(member_registry=self._unknown_registry(tmp_path))
         for _ in range(3):
             adapter.normalise(_start_update(chat_id=111), "telegram")
-        # Age the timestamps past the window
         adapter._start_attempts[111] = [_time.time() - 3601] * 3
-        # Next attempt clears stale entries and records fresh one
         adapter.normalise(_start_update(chat_id=111), "telegram")
         assert len(adapter._start_attempts.get(111, [])) == 1
 
-    def test_authorized_user_start_never_rate_limited(self):
-        adapter = _make_input_adapter(identity_resolver=self._resolver_known(111))
+    def test_authorized_user_start_never_rate_limited(self, tmp_path):
+        adapter = _make_input_adapter(member_registry=self._known_registry(tmp_path, 111))
         for _ in range(5):
             result = adapter.normalise(_start_update(chat_id=111), "telegram")
             assert result is not None and result.text == "hi"
@@ -588,164 +762,82 @@ class TestStartRateLimit:
 
 
 # ---------------------------------------------------------------------------
-# UserIdentityResolver — block()
-# ---------------------------------------------------------------------------
-
-class TestBlockedUsers:
-    def test_block_prevents_authorization(self):
-        config = {"members": [{"user_id": "person_a", "telegram_ids": [111]}]}
-        resolver = UserIdentityResolver(config)
-        assert resolver.is_authorized(111) is True
-        resolver.block(111)
-        assert resolver.is_authorized(111) is False
-
-    def test_block_unknown_id_also_rejected(self):
-        resolver = UserIdentityResolver({})
-        resolver.block(999)
-        assert resolver.is_authorized(999) is False
-
-    def test_block_persists_to_storage(self, tmp_path):
-        from mithra.storage.local import LocalStorageAdapter
-        storage = LocalStorageAdapter(str(tmp_path / "files"), str(tmp_path / "db.sqlite"))
-        resolver = UserIdentityResolver({}, storage_adapter=storage)
-        resolver.block(777)
-        records = storage.list("identity", "state", "household")
-        blocked = next((r for r in records if r.data.get("telegram_id") == 777), None)
-        assert blocked is not None
-        assert blocked.data["type"] == "blocked"
-
-    def test_blocked_ids_loaded_from_storage_on_init(self, tmp_path):
-        from mithra.storage.local import LocalStorageAdapter
-        storage = LocalStorageAdapter(str(tmp_path / "files"), str(tmp_path / "db.sqlite"))
-        r1 = UserIdentityResolver({}, storage_adapter=storage)
-        r1.block(888)
-        r2 = UserIdentityResolver({}, storage_adapter=storage)
-        assert r2.is_authorized(888) is False
-
-    def test_blocked_user_rejected_in_normalise(self):
-        config = {"members": [{"user_id": "person_a", "telegram_ids": [111]}]}
-        resolver = UserIdentityResolver(config)
-        resolver.block(111)
-        adapter = _make_input_adapter(identity_resolver=resolver)
-        result = adapter.normalise(_text_update(chat_id=111), "telegram")
-        assert result is None
-
-    def test_non_blocked_member_still_passes(self):
-        config = {"members": [
-            {"user_id": "person_a", "telegram_ids": [111]},
-            {"user_id": "person_b", "telegram_ids": [222]},
-        ]}
-        resolver = UserIdentityResolver(config)
-        resolver.block(111)
-        adapter = _make_input_adapter(identity_resolver=resolver)
-        result = adapter.normalise(_text_update(chat_id=222), "telegram")
-        assert result is not None
-
-
-# ---------------------------------------------------------------------------
 # Admin approve / block callbacks
 # ---------------------------------------------------------------------------
 
-def _admin_approve_callback(
-    admin_chat_id: int = 999, target_id: int = 555, uid: str = "person_a"
-) -> dict:
-    return {
-        "update_id": 20,
-        "callback_query": {
-            "id": "cq-admin",
-            "message": {"chat": {"id": admin_chat_id}, "message_id": 100},
-            "data": json.dumps(
-                {"action": "admin_approve", "id": target_id, "uid": uid},
-                separators=(',', ':'),
-            ),
-        },
-    }
-
-
-def _admin_deny_callback(admin_chat_id: int = 999, target_id: int = 555) -> dict:
-    return {
-        "update_id": 21,
-        "callback_query": {
-            "id": "cq-admin-deny",
-            "message": {"chat": {"id": admin_chat_id}, "message_id": 101},
-            "data": json.dumps(
-                {"action": "admin_deny", "id": target_id},
-                separators=(',', ':'),
-            ),
-        },
-    }
-
-
 class TestAdminApprove:
-    def _resolver_with_admin(self) -> UserIdentityResolver:
-        # Admin (999) is pre-authorized — mirrors MITHRA_ADMIN_TELEGRAM_ID in prod
-        config = {"members": [
-            {"user_id": "person_a", "telegram_ids": [999], "display_name": "Abhiram"},
-            {"user_id": "person_b", "telegram_ids": [], "display_name": "Wife"},
-        ]}
-        return UserIdentityResolver(config)
+    def _registry_with_admin(self, tmp_path) -> MemberRegistry:
+        return _make_registry(
+            tmp_path,
+            members=[
+                {"id": "person_a", "display_name": "Abhiram", "role": "owner", "status": "active"},
+                {"id": "person_b", "display_name": "Wife", "role": "member", "status": "active"},
+            ],
+            channels=[{"user_id": "person_a", "channel": "telegram", "channel_id": "999"}],
+        )
 
-    def test_admin_approve_registers_as_specified_user_id(self):
-        resolver = self._resolver_with_admin()
-        adapter = _make_input_adapter(identity_resolver=resolver)
+    def test_admin_approve_registers_as_specified_user_id(self, tmp_path):
+        registry = self._registry_with_admin(tmp_path)
+        adapter = _make_input_adapter(member_registry=registry)
         adapter.normalise(_admin_approve_callback(admin_chat_id=999, target_id=555, uid="person_b"), "telegram")
-        assert resolver.is_authorized(555) is True
-        assert resolver.resolve_telegram(555) == "person_b"
+        assert registry.is_authorized("telegram", "555") is True
+        member = registry.resolve_channel("telegram", "555")
+        assert member is not None and member.id == "person_b"
 
-    def test_admin_approve_returns_none(self):
-        resolver = self._resolver_with_admin()
-        adapter = _make_input_adapter(identity_resolver=resolver)
+    def test_admin_approve_returns_none(self, tmp_path):
+        registry = self._registry_with_admin(tmp_path)
+        adapter = _make_input_adapter(member_registry=registry)
         result = adapter.normalise(_admin_approve_callback(admin_chat_id=999), "telegram")
         assert result is None
 
-    def test_admin_approve_no_resolver_does_not_crash(self):
+    def test_admin_approve_no_registry_does_not_crash(self):
         adapter = _make_input_adapter()
         result = adapter.normalise(_admin_approve_callback(), "telegram")
         assert result is None
 
-    def test_admin_deny_blocks_user(self):
-        resolver = self._resolver_with_admin()
-        adapter = _make_input_adapter(identity_resolver=resolver)
+    def test_admin_deny_blocks_user(self, tmp_path):
+        registry = self._registry_with_admin(tmp_path)
+        adapter = _make_input_adapter(member_registry=registry)
         adapter.normalise(_admin_deny_callback(admin_chat_id=999, target_id=666), "telegram")
-        assert resolver.is_authorized(666) is False
-        # Confirm it's actually blocked, not just unknown
-        resolver.register(666, "person_a")
-        assert resolver.is_authorized(666) is False
+        assert registry.is_authorized("telegram", "666") is False
+        # Confirm it's blocked, not just unknown — register shouldn't override a block
+        registry.register_channel("person_a", "telegram", "666")
+        assert registry.is_authorized("telegram", "666") is False
 
-    def test_admin_deny_returns_none(self):
-        resolver = self._resolver_with_admin()
-        adapter = _make_input_adapter(identity_resolver=resolver)
+    def test_admin_deny_returns_none(self, tmp_path):
+        registry = self._registry_with_admin(tmp_path)
+        adapter = _make_input_adapter(member_registry=registry)
         result = adapter.normalise(_admin_deny_callback(admin_chat_id=999), "telegram")
         assert result is None
 
-    def test_admin_deny_no_resolver_does_not_crash(self):
+    def test_admin_deny_no_registry_does_not_crash(self):
         adapter = _make_input_adapter()
         result = adapter.normalise(_admin_deny_callback(), "telegram")
         assert result is None
 
-    def test_approved_user_can_send_messages(self):
-        resolver = self._resolver_with_admin()
-        adapter = _make_input_adapter(identity_resolver=resolver)
-        adapter.normalise(_admin_approve_callback(admin_chat_id=999, target_id=555), "telegram")
+    def test_approved_user_can_send_messages(self, tmp_path):
+        registry = self._registry_with_admin(tmp_path)
+        adapter = _make_input_adapter(member_registry=registry)
+        adapter.normalise(_admin_approve_callback(admin_chat_id=999, target_id=555, uid="person_b"), "telegram")
         result = adapter.normalise(_text_update(chat_id=555), "telegram")
         assert result is not None
 
-    def test_denied_user_blocked_even_after_explicit_register(self):
-        resolver = self._resolver_with_admin()
-        adapter = _make_input_adapter(identity_resolver=resolver)
+    def test_denied_user_blocked_even_after_explicit_register(self, tmp_path):
+        registry = self._registry_with_admin(tmp_path)
+        adapter = _make_input_adapter(member_registry=registry)
         adapter.normalise(_admin_deny_callback(admin_chat_id=999, target_id=666), "telegram")
-        resolver.register(666, "person_a")
+        registry.register_channel("person_a", "telegram", "666")
         result = adapter.normalise(_text_update(chat_id=666), "telegram")
         assert result is None
 
 
 # ---------------------------------------------------------------------------
-# _notify_admin_of_unknown_user — async (respx)
+# _request_admin_approval — async (respx)
 # ---------------------------------------------------------------------------
 
 class TestAdminNotification:
     @pytest.mark.asyncio
-    async def test_request_admin_approval_sends_member_buttons(self, monkeypatch):
+    async def test_request_admin_approval_sends_member_buttons(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MITHRA_ADMIN_TELEGRAM_ID", "999")
         captured: list[dict] = []
 
@@ -753,17 +845,19 @@ class TestAdminNotification:
             captured.append(json.loads(request.content))
             return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
 
-        config = {"members": [
-            {"user_id": "person_a", "telegram_ids": [], "display_name": "Abhiram"},
-            {"user_id": "person_b", "telegram_ids": [], "display_name": "Wife"},
-        ]}
-        resolver = UserIdentityResolver(config)
+        registry = _make_registry(
+            tmp_path,
+            members=[
+                {"id": "person_a", "display_name": "Abhiram", "role": "owner", "status": "active"},
+                {"id": "person_b", "display_name": "Wife", "role": "member", "status": "active"},
+            ],
+        )
 
         with respx.mock:
             respx.post("https://api.telegram.org/bottest-token/sendMessage").mock(
                 side_effect=capture
             )
-            adapter = _make_input_adapter(identity_resolver=resolver)
+            adapter = _make_input_adapter(member_registry=registry)
             await adapter._request_admin_approval(
                 chat_id=555, first_name="Alice", username="alice99"
             )
@@ -774,10 +868,8 @@ class TestAdminNotification:
         assert "555" in body["text"]
         assert "Alice" in body["text"]
 
-        # Flatten rows to get all buttons
         all_buttons = [btn for row in body["reply_markup"]["inline_keyboard"] for btn in row]
 
-        # All callback_data within Telegram's 64-byte limit
         for btn in all_buttons:
             assert len(btn["callback_data"].encode()) <= 64, (
                 f"callback_data too long: {btn['callback_data']!r}"
@@ -787,10 +879,9 @@ class TestAdminNotification:
         assert "admin_approve" in actions
         assert "admin_deny" in actions
 
-        # 2 approve buttons (one per member) + 1 deny
+        # 2 approve buttons (one per active member) + 1 deny
         assert len(all_buttons) == 3
 
-        # Each approve button carries uid and id
         approve_btns = [b for b in all_buttons if json.loads(b["callback_data"])["action"] == "admin_approve"]
         uids = {json.loads(b["callback_data"])["uid"] for b in approve_btns}
         assert uids == {"person_a", "person_b"}
