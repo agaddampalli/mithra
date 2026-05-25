@@ -102,6 +102,23 @@ Personal: household_id from household.yaml at startup
 Product:  household_id from JWT token per request
 Zero code changes below the gateway layer.
 
+### Config Migrated to household_config Table
+The following household.yaml fields are removed
+and will be stored in household_config table
+when the relevant domains are implemented:
+
+  voice.wake_word              → when Wyoming voice is built
+  voice.stt_model              → when Wyoming voice is built
+  voice.tts_voice              → when Wyoming voice is built
+  calendar.default_calendar_id → when Time domain is built
+  shared_devices               → when Hardware domain is built
+  registration.require_admin_approval → now in MemberRegistry
+  registration.max_members            → now in MemberRegistry
+
+Current household_config seeds on first run:
+  timezone: America/Chicago
+  locale: en-US
+
 ### MemberRegistry Component
 Single source of truth for all identity operations.
 Replaces UserIdentityResolver entirely.
