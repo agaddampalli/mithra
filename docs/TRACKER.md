@@ -15,10 +15,18 @@ Stack running on Windows laptop.
 Webhook mode active — instant Telegram delivery.
 Both household members registered with admin approval flow.
 Claude Sonnet responding end to end.
-Next: Google OAuth (OA-03 to OA-07)
+Identity migration complete — household.yaml reduced to single line, all identity
+data in SQLite. MemberRegistry live; UserIdentityResolver fully removed.
+
+**Permanent IDs (never regenerate):**
+| Entity | ID |
+|---|---|
+| Household | `hh_b76fef08` |
+| Abhiram | `usr_ba6d9199` |
+| Wife | `usr_4d03f6ea` |
 
 ## Current Focus
-**OA-03 — Google Cloud project** (Group J)
+**Phase B: OAuth**
 
 ---
 
@@ -97,7 +105,7 @@ Next: Google OAuth (OA-03 to OA-07)
 ### Group F — Messaging & Output Adapters
 
 - [x] P0-23 adapters/messaging/__init__ — base types, 24 tests passing
-- [x] P0-24 TelegramInputAdapter — UserIdentityResolver, 4 message types, session history, 8 tests
+- [x] P0-24 TelegramInputAdapter — MemberRegistry (replaced UserIdentityResolver), 4 message types, session history, admin approval flow, _seed_admin_channel bootstrap
 - [x] P0-25 TelegramOutputAdapter — rate limiting, inline keyboard, register_chat, undo, 7 tests
 - [x] P0-26 WhatsAppAdapter — Baileys bridge via HTTP, register_phone, numbered actions, 12 tests
   - whatsapp-bridge/index.js created — scan QR on first start
@@ -105,12 +113,21 @@ Next: Google OAuth (OA-03 to OA-07)
 - [x] P0-28 TTSAdapter — Piper via HA + VoiceConfirmationSession, speak/stream/send_with_actions, 28 tests
 - [x] P0-29 PushAdapter — Web Push VAPID, lazy pywebpush import, graceful degradation, 10 tests
 - [x] P0-30 RetryableOutputAdapter — 3 attempts + exponential backoff + dead letter on exhaustion, 9 tests
-- [x] P0-31 WyomingAdapter — Wyoming protocol, identity_resolver, confirmation resolution, 18 tests
+- [x] P0-31 WyomingAdapter — Wyoming protocol, member_registry (device channel resolution), confirmation resolution, 18 tests
 
 ### Group G — API Gateway
 
 - [x] P0-32 FastAPI gateway — lifespan startup, /api/v1/health + /agent + /webhook/telegram, auth middleware, 20 tests (P0-33/34/36 complete)
 - [ ] P0-35 Route /api/v1/domains — domain status and management
+
+### Group A-Ident — Identity Migration (Phase A)
+
+- [x] A1 — New SQLite identity tables created (households, members, member_channels, member_preferences, household_config)
+- [x] A1 — Migration script ran successfully (scripts/migrate_identity.py)
+- [x] A2 — MemberRegistry implemented (mithra/identity/member_registry.py)
+- [x] A3 — UserIdentityResolver removed; all callers migrated to MemberRegistry
+- [x] A3 — Telegram verified end to end with new IDs — user=usr_ba6d9199 confirmed in logs
+- [x] A3 — household.yaml reduced to single line: `household_id: hh_b76fef08`
 
 ### Group H — Home Assistant Setup
 
@@ -348,4 +365,6 @@ Next: Google OAuth (OA-03 to OA-07)
 | memory/test_context_cache.py | 33 | ✅ passing |
 | routing/test_domain_memory_router.py | 57 | ✅ passing |
 | routing/test_session.py | 23 | ✅ passing |
-| **Total** | **444** | **✅ all passing** |
+| adapters/test_telegram_impl.py | ~130 | ✅ passing (MemberRegistry) |
+| identity/test_member_registry.py | — | covered in test_telegram_impl |
+| **Total** | **699** | **✅ all passing** |
