@@ -45,6 +45,11 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── LiteLLM proxy ───────────────────────────────────────
   # Core service — always runs. When local-llm profile is active,
@@ -69,6 +74,11 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── ChromaDB (vector store) ─────────────────────────────
   vector-store:
@@ -88,6 +98,11 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── Cloudflare tunnel ───────────────────────────────────
   cloudflared:
@@ -100,14 +115,35 @@ services:
     restart: unless-stopped
     depends_on:
       - api-gateway
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # ── Watchtower (auto-updates) ───────────────────────────
-  watchtower:
-    image: containrrr/watchtower
+  # Watchtower removed — old app watchtower handles updates
+  # Re-add when ai-home-assistant stack is retired
+
+  # ── Health monitor ──────────────────────────────────────
+  healthmonitor:
+    image: python:3.12-slim
+    command: python /scripts/healthcheck.py
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: --interval 3600 --label-enable
+      - ./scripts:/scripts:ro
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - MITHRA_ADMIN_TELEGRAM_ID=${MITHRA_ADMIN_TELEGRAM_ID}
+      - CHECK_INTERVAL_SECONDS=300
+    networks:
+      - mithra-net
     restart: unless-stopped
+    depends_on:
+      - api-gateway
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ════════════════════════════════════════════════════════
   # Profile: local-llm

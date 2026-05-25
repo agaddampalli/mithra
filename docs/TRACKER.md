@@ -10,6 +10,12 @@
 - `[ ]` Todo
 - `[!]` Blocked (note reason)
 
+## Stability Run — Started 2026-05-25
+Target: 7 days continuous operation
+Monitor: healthmonitor container sends Telegram alerts
+Daily check: send "hi" to bot, verify response
+Weekly: check logs for errors
+
 ## Current Status — May 2026
 Stack running on Windows laptop.
 Webhook mode active — instant Telegram delivery.
@@ -19,6 +25,8 @@ Identity migration complete — household.yaml reduced to single line, all ident
 data in SQLite. MemberRegistry live; UserIdentityResolver fully removed.
 OAuth token management complete — Nango removed, OAuthManager (Authlib) handles
 Google + Microsoft via generic config-driven routes.
+Health monitoring active — healthmonitor container alerts admin via Telegram on
+service down/recovery. Log rotation enabled (10MB × 3 per service).
 
 **Permanent IDs (never regenerate):**
 | Entity | ID |
@@ -27,8 +35,19 @@ Google + Microsoft via generic config-driven routes.
 | Abhiram | `usr_ba6d9199` |
 | Wife | `usr_4d03f6ea` |
 
+**Phase A — Identity migration complete**
+- household_id: hh_b76fef08
+- Abhiram: usr_ba6d9199
+- Wife: usr_4d03f6ea
+
+**Phase B — OAuth complete**
+- Google OAuth working end to end
+- Calendar write verified
+- Nango removed
+
 ## Current Focus
-**Phase C: End-to-End OAuth Verification** — connect Google Calendar, verify token stored, test calendar write
+**7-day stability run** — monitor healthmonitor alerts, daily bot check
+Then → Phase 1: Documents domain foundation
 
 ---
 
@@ -230,7 +249,7 @@ Google + Microsoft via generic config-driven routes.
 - [x] DP-04 Create .env on Windows with all credentials
 - [x] DP-05 First docker-compose up — all containers start
 - [x] DP-06 Watchtower — add to compose.yaml, auto-update on push
-- [ ] DP-07 Windows sleep settings — never sleep
+- [x] DP-07 Windows sleep prevention (system set to never sleep, lid close keeps running)
 - [ ] DP-08 Startup on boot — Docker Desktop + compose stack
 - [x] DP-09 Health check — curl assistant.mithra-app.com/api/v1/health from Mac
 - [x] DP-10 Full smoke test on laptop — Telegram round-trip
