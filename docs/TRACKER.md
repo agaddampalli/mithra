@@ -17,6 +17,8 @@ Both household members registered with admin approval flow.
 Claude Sonnet responding end to end.
 Identity migration complete — household.yaml reduced to single line, all identity
 data in SQLite. MemberRegistry live; UserIdentityResolver fully removed.
+OAuth token management complete — Nango removed, OAuthManager (Authlib) handles
+Google + Microsoft via generic config-driven routes.
 
 **Permanent IDs (never regenerate):**
 | Entity | ID |
@@ -26,7 +28,7 @@ data in SQLite. MemberRegistry live; UserIdentityResolver fully removed.
 | Wife | `usr_4d03f6ea` |
 
 ## Current Focus
-**Phase B: OAuth**
+**Phase C: End-to-End OAuth Verification** — connect Google Calendar, verify token stored, test calendar write
 
 ---
 
@@ -128,6 +130,19 @@ data in SQLite. MemberRegistry live; UserIdentityResolver fully removed.
 - [x] A3 — UserIdentityResolver removed; all callers migrated to MemberRegistry
 - [x] A3 — Telegram verified end to end with new IDs — user=usr_ba6d9199 confirmed in logs
 - [x] A3 — household.yaml reduced to single line: `household_id: hh_b76fef08`
+
+### Group B-OAuth — Config-Driven OAuth (Phase B)
+
+- [x] B1 — oauth_providers.py: OAUTH_PROVIDERS dict + _resolve_url() + get_configured_providers()
+- [x] B2 — oauth_token_store.py: encrypted token storage via StorageAdapter (domain="oauth")
+- [x] B3 — oauth_manager.py: generic Authlib OAuth2 orchestration, token refresh with 5-min buffer
+- [x] B4 — gateway.py: generic GET /auth/{provider} + GET /auth/{provider}/callback routes
+- [x] B5 — bootstrap.py: _build_oauth_manager() wired after storage, before calendar
+- [x] B6 — calendar.py: oauth_manager.get_token("google", user_id) replaces Nango
+- [x] B7 — telegram_handler.py: oauth_manager.is_connected() replaces Nango in _handle_integration
+- [x] B8 — Nango removed: nango_client.py, google_oauth.py, oauth_proxy.py, auth.py deleted; compose.yaml cleaned
+- [x] B9 — Redirect URI comment: https://assistant.mithra-app.com/auth/google/callback
+- [x] B-tests — 54 new unit tests (providers, token_store, oauth_manager); 753 total passing
 
 ### Group H — Home Assistant Setup
 
