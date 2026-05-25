@@ -270,7 +270,247 @@ Product:  swap OAuthTokenStore backend to cloud storage.
 
 ---
 
-## 3. Storage Architecture
+## 3. File Storage and Document RAG
+
+### Decision
+Two-tier storage model:
+  SQLite + StorageAdapter → structured records (existing)
+  FileStorageAdapter      → unstructured files (new)
+
+ChromaDB (already running) extended to index document
+content for semantic search. Tiered retrieval strategy
+to minimize cost and respect privacy constraints.
+
+### Why Two Separate Storage Systems
+Structured records (calendar events, preferences, tokens)
+have known schemas and are queried by exact keys.
+Unstructured files (PDFs, receipts, documents) require
+content extraction, chunking, and semantic search.
+Mixing them in one system produces a poor fit for both.
+
+### File Storage Architecture
+
+#### FileStorageAdapter (abstract interface)
+One-way door: all file operations go through this interface.
+Swapping backends requires zero domain code changes.
+
+    async def save_file(
+        path: str,          "receipts/2026/05/costco.pdf"
+        content: bytes,
+        metadata: dict,     name, mime_type, domain, user_id
+    ) -> str               returns file_id
+
+    async def get_file(
+        file_id: str,
+    ) -> tuple[bytes, dict] content + metadata
+
+    async def delete_file(file_id: str) -> None
+
+    async def list_files(
+        prefix: str = "",   "receipts/2026/"
+        user_id: str = "",
+    ) -> list[dict]         metadata list only, not content
+
+#### Implementations
+    LocalFileAdapter    /data/mithra/files/
+                        Always works, no cloud needed
+                        Primary for health domain (never cloud)
+
+    OneDriveFileAdapter /Mithra/{household_id}/
+                        Via MicrosoftGraphClient
+                        Requires "connect microsoft"
+
+#### FileStorageRouter
+Same pattern as StorageRouter:
+  health domain → LocalFileAdapter ONLY (never cloud)
+  all other domains → OneDriveFileAdapter primary,
+                      LocalFileAdapter fallback
+
+#### OneDrive Folder Structure
+    OneDrive/
+      Mithra/
+        {household_id}/
+          receipts/
+            {year}/{month}/
+          documents/
+            insurance/
+            warranty/
+            medical/
+          exports/
+            calendar_backup.ics
+            contacts_backup.vcf
+          [NO health/ folder — health stays local always]
+
+### Files Metadata Table (SQLite)
+Indexed locally for fast search without cloud round-trips.
+
+    CREATE TABLE files (
+        id           TEXT PRIMARY KEY,   "file_abc123"
+        household_id TEXT NOT NULL,
+        user_id      TEXT NOT NULL,
+        domain       TEXT NOT NULL,      "money"|"documents"
+        name         TEXT NOT NULL,      "costco_receipt.pdf"
+        path         TEXT NOT NULL,      storage path
+        storage      TEXT NOT NULL,      "local"|"onedrive"
+        size_bytes   INTEGER,
+        mime_type    TEXT,
+        uploaded_at  TEXT NOT NULL,      ISO8601
+        metadata     TEXT               JSON, domain-specific
+    );
+
+    CREATE INDEX idx_files_household ON files(household_id);
+    CREATE INDEX idx_files_domain ON files(domain, household_id);
+    CREATE INDEX idx_files_user ON files(user_id, household_id);
+
+### Document RAG Architecture
+
+#### Why Tiered Not Uniform
+Not every query needs RAG. SQL is faster and free.
+Health content must never be embedded via cloud APIs.
+Embedding everything is expensive and unnecessary.
+
+#### Three-Tier Retrieval
+    Tier 1 — SQLite metadata search (always first)
+      Fast, free, no LLM involved
+      Queries: files table + FTS5 full-text on metadata
+      Handles: "find files named insurance"
+               "receipts from May 2026"
+               "documents in health folder"
+
+    Tier 2 — ChromaDB semantic search (when Tier 1 insufficient)
+      Semantic understanding of content
+      Handles: "what does my insurance cover for dental"
+               "find receipts mentioning prescription"
+      Cost: embedding API calls (minimize usage)
+
+    Tier 3 — Full document load (targeted, expensive)
+      Load specific file, extract content, pass to LLM
+      Handles: "summarize this specific document"
+               "what are the terms of my lease"
+      Cost: LLM context tokens (use sparingly)
+
+#### DocumentIndexer
+Runs when a file is saved. Extracts text, chunks,
+embeds, stores in ChromaDB.
+
+    index(file_id, content, metadata) -> None
+      1. Extract text (PDF, DOCX, image OCR)
+      2. Chunk into segments (~500 tokens each)
+      3. Embed via LLM router (local model preferred)
+      4. Store chunks in ChromaDB with metadata:
+           file_id, chunk_index, domain, user_id,
+           household_id, source (local|onedrive)
+      5. Store chunk_ids back in files table
+
+    Health domain exception:
+      Embed using LOCAL model only (phi3:mini or similar)
+      Never send health content to cloud embedding API
+      Store in ChromaDB with health=True flag
+      Retrieval restricted to same user_id only
+
+#### ChromaDB Collections
+    "documents_{household_id}"   general document chunks
+    "health_{household_id}"      health content, local only
+                                 separate collection for
+                                 access control enforcement
+
+#### FileSearchService
+Orchestrates tiered retrieval. Called by domain agents.
+
+    async def search(
+        query: str,
+        domain: str = "",
+        user_id: str = "",
+        tier: int = 0,          0 = auto (try Tier 1 first)
+    ) -> list[SearchResult]
+
+    SearchResult:
+        file_id:    str
+        file_name:  str
+        relevance:  float
+        excerpt:    str         relevant text snippet
+        tier_used:  int         which tier found it
+
+### MicrosoftGraphClient
+Thin wrapper around Microsoft Graph API.
+Uses OAuthManager for token management (same as Google).
+No separate auth, no separate Docker service.
+
+    _headers(user_id) -> dict   gets token via OAuthManager
+    upload_file(user_id, path, content) -> dict
+    download_file(user_id, path) -> bytes
+    list_folder(user_id, path) -> list[dict]
+    delete_file(user_id, path) -> None
+    create_folder(user_id, path) -> None
+
+### Privacy Rules (one-way doors, never change)
+    1. Health domain files → LocalFileAdapter ONLY
+       Never uploaded to OneDrive or any cloud storage
+       Embedded using local model only
+       Never sent to cloud embedding APIs
+
+    2. File content → never stored in structured records
+       Files table contains metadata only (path, name, size)
+       Content lives in FileStorageAdapter backends
+
+    3. CloudRAG for health → permanently disabled
+       health_collection in ChromaDB is local-only
+       Any code path that would send health content
+       to a cloud API must raise a hard error
+
+### Implementation Order
+    Phase 1 — Foundation (implement now):
+      P1-01  Add files table to SQLite (LocalStorageAdapter)
+      P1-02  FileStorageAdapter abstract interface
+      P1-03  LocalFileAdapter (/data/mithra/files/)
+      P1-04  MicrosoftGraphClient (Graph API wrapper)
+      P1-05  OneDriveFileAdapter
+      P1-06  FileStorageRouter (local + OneDrive)
+      P1-07  DocumentIndexer (basic text extraction + embed)
+      P1-08  FileSearchService (tiered retrieval)
+      P1-09  Wire into bootstrap
+
+    Per domain (when building each domain):
+      Money domain    → auto-index receipts on save
+      Documents domain → index PDFs on upload
+      Health domain   → local embedding only
+
+    Phase 2:
+      OCR for receipt images
+      Voice note transcription + indexing
+      Cross-domain search ("find everything about my car")
+
+### Alternatives Considered
+
+#### External MCP Servers for OneDrive
+    elyxlz/microsoft-mcp:
+      Rejected: 4 critical security vulnerabilities found
+                in independent security audit
+    MrFixit96/onedrive-mcp-server:
+      Rejected: handles auth separately from OAuthManager,
+                adds Docker container, designed for Claude
+                Desktop not embedded agent use
+    Microsoft Remote MCP (agent365.svc.cloud.microsoft):
+      Rejected: remote server, tokens leave infrastructure,
+                violates privacy-first principle
+
+    Decision: Build MicrosoftGraphClient ourselves (~150 lines)
+              Uses our OAuthManager, no extra containers,
+              full control over data model and folder structure
+
+#### Single RAG Layer (index everything in ChromaDB)
+    Rejected: expensive, health content would need cloud
+              embedding, SQL is faster for structured queries,
+              over-engineering for current use case
+
+#### SQLite FTS Only (no ChromaDB for documents)
+    Rejected: FTS5 handles keyword search but not semantic
+              "find documents about dental coverage" fails
+              without embedding-based search
+
+---
+
+## 4. Storage Architecture
 
 ### Decision
 StorageAdapter abstraction with primary key:
@@ -297,7 +537,7 @@ across households. Zero schema changes for product.
 
 ---
 
-## 4. Migration Plan (Current -> Target)
+## 5. Migration Plan (Current -> Target)
 
 ### Current State
     household.yaml -> has members list with person_a, person_b
@@ -369,7 +609,7 @@ across households. Zero schema changes for product.
 
 ---
 
-## 5. Implementation Order
+## 6. Implementation Order
 
 ### Phase A — Identity Foundation
 Must complete and verify before Phase B.
@@ -474,7 +714,7 @@ Start only after Phase A is verified.
 
 ---
 
-## 6. Alternatives Considered
+## 7. Alternatives Considered
 
 ### Nango Self-Hosted (Free) v0.70.4
 Decision: Removed
@@ -537,7 +777,7 @@ Reason:
 
 ---
 
-## 7. Design Principles
+## 8. Design Principles
 
 These apply to ALL future decisions.
 
