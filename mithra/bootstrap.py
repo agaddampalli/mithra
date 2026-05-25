@@ -153,26 +153,33 @@ def _build_telegram(
     }
 
 
+def _build_oauth_manager(state: dict) -> None:
+    from mithra.integrations.oauth_providers import get_configured_providers
+    from mithra.integrations.oauth_token_store import OAuthTokenStore
+    from mithra.integrations.oauth_manager import OAuthManager
+
+    providers = get_configured_providers()
+    if not providers:
+        _logger.info("No OAuth providers configured — skipping OAuthManager")
+        return
+    token_store = OAuthTokenStore(
+        storage_adapter=state["local_adapter"],
+        household_id=state["household_id"],
+    )
+    state["oauth_manager"] = OAuthManager(providers=providers, token_store=token_store)
+    _logger.info("OAuthManager configured with providers: %s", list(providers.keys()))
+
+
 def _build_calendar(state: dict, household_id: str, executor) -> None:
     from mithra.adapters.output.calendar import CalendarAdapter
 
     calendar_adapter = CalendarAdapter(
-        nango_client=state.get("nango"),
+        oauth_manager=state.get("oauth_manager"),
         household_id=household_id,
         storage_adapter=state.get("local_adapter"),
     )
     state["calendar_adapter"] = calendar_adapter
     executor.register("calendar_write", calendar_adapter)
-
-
-async def _setup_nango(state: dict) -> None:
-    from mithra.integrations.nango_client import NangoClient
-
-    nango = NangoClient(
-        secret_key=os.environ.get("NANGO_SECRET_KEY", ""),
-        base_url=os.environ.get("NANGO_URL", "http://nango:8080"),
-    )
-    state["nango"] = nango
 
 
 def _build_telegram_handler(state: dict, household_config: dict, base_url: str) -> None:
@@ -183,7 +190,7 @@ def _build_telegram_handler(state: dict, household_config: dict, base_url: str) 
         engine=state.get("engine"),
         executor=state.get("executor"),
         household_config=household_config,
-        nango=state.get("nango"),
+        oauth_manager=state.get("oauth_manager"),
         base_url=base_url,
         member_registry=state.get("member_registry"),
         storage_adapter=state.get("local_adapter"),
@@ -239,19 +246,7 @@ async def build_state(
             _build_telegram(member_registry, local_adapter, household_id, executor, on_request)
         )
 
-    if os.environ.get("NANGO_SECRET_KEY"):
-        await _setup_nango(state)
-
-    google_client_id = os.environ.get("GOOGLE_CLIENT_ID", "")
-    google_client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-    if google_client_id and google_client_secret:
-        from mithra.integrations.google_oauth import GoogleOAuth
-        state["google_oauth"] = GoogleOAuth(
-            client_id=google_client_id,
-            client_secret=google_client_secret,
-            redirect_uri=f"{base_url}/auth/google/callback",
-        )
-
+    _build_oauth_manager(state)
     _build_calendar(state, household_id, executor)
 
     if state.get("telegram_output"):

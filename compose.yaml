@@ -30,14 +30,11 @@ services:
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - MITHRA_BASE_URL=${MITHRA_BASE_URL:-https://assistant.mithra-app.com}
-      - NANGO_SECRET_KEY=${NANGO_SECRET_KEY}
-      - NANGO_URL=http://nango:8080
     volumes:
       - mithra-data:/data/mithra
     depends_on:
       - llm-router
       - vector-store
-      - nango
     networks:
       - mithra-net
     restart: unless-stopped
@@ -103,57 +100,6 @@ services:
     restart: unless-stopped
     depends_on:
       - api-gateway
-
-  # ── Nango PostgreSQL database ───────────────────────────
-  nango-db:
-    image: postgres:16-alpine
-    environment:
-      - POSTGRES_DB=nango
-      - POSTGRES_USER=nango
-      - POSTGRES_PASSWORD=${NANGO_DB_PASSWORD}
-    volumes:
-      - nango-db-data:/var/lib/postgresql/data
-    networks:
-      - mithra-net
-    restart: unless-stopped
-
-  # ── Nango (OAuth token management) ─────────────────────
-  nango:
-    image: nangohq/nango-server:hosted
-    ports:
-      - "3003:8080"
-    environment:
-      - NANGO_SECRET_KEY=${NANGO_SECRET_KEY}
-      - SERVER_URL=http://localhost:3003
-      - NANGO_SERVER_URL=http://localhost:3003
-      - NANGO_CALLBACK_URL=https://assistant.mithra-app.com/oauth/callback
-      - NANGO_WEBHOOK_URLS=https://assistant.mithra-app.com/api/v1/webhook/nango
-      - NANGO_ENCRYPTION_KEY=${MITHRA_ENCRYPTION_KEY}
-      - NANGO_DB_USER=nango
-      - NANGO_DB_PASSWORD=${NANGO_DB_PASSWORD}
-      - NANGO_DB_HOST=nango-db
-      - NANGO_DB_PORT=5432
-      - NANGO_DB_NAME=nango
-      - NANGO_DB_SSL=false
-      - RECORDS_DATABASE_URL=postgresql://nango:${NANGO_DB_PASSWORD}@nango-db:5432/nango
-      - NODE_ENV=production
-      - NANGO_EMAIL_VALIDATION_DISABLED=true
-      - NANGO_SIGNUP_DISABLED=false
-      - MAILGUN_API_KEY=
-      - SENDGRID_API_KEY=
-    volumes:
-      - nango-data:/usr/nango/data
-    networks:
-      - mithra-net
-    restart: unless-stopped
-    depends_on:
-      - nango-db
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
 
   # ── Watchtower (auto-updates) ───────────────────────────
   watchtower:
@@ -297,8 +243,6 @@ volumes:
   whisper-models:
   piper-voices:
   whatsapp-sessions:
-  nango-data:
-  nango-db-data:
 
 networks:
   mithra-net:

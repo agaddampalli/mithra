@@ -16,7 +16,7 @@ _BASE = "https://www.googleapis.com/calendar/v3"
 
 
 def _make_adapter() -> CalendarAdapter:
-    """Create an adapter with no Nango client (token auth skipped in unit tests)."""
+    """Create an adapter with no OAuthManager (token auth skipped in unit tests)."""
     return CalendarAdapter()
 
 
@@ -170,4 +170,4 @@ class TestHealth:
         adapter = _make_adapter()
         h = adapter.health()
         assert h["status"] == "ok"
-        assert "nango_configured" in h
+        assert "oauth_configured" in h

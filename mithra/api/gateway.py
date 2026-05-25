@@ -89,8 +89,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
         # Unauthenticated paths: health check, all webhooks (each has its own
-        # auth), OAuth proxy routes, and WebSocket upgrades (no Bearer token
-        # from browser; Nango validates its own session token).
+        # auth), OAuth routes (/auth/*), and WebSocket upgrades.
         p = request.url.path
         if (
             p == "/api/v1/health"
@@ -270,17 +269,46 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             ),
         }
 
-    # OAuth proxy — HTTP proxy and WebSocket proxy for Nango SDK.
-    from mithra.api.routes.oauth_proxy import router as _oauth_router
-    app.include_router(_oauth_router)
+    # Generic OAuth routes — works for any configured provider in OAUTH_PROVIDERS.
+    # Google Cloud Console must have this redirect URI:
+    # https://assistant.mithra-app.com/auth/google/callback
 
-    # Webhook routes — Telegram, Nango, and future inbound webhooks.
+    @app.get("/auth/{provider}")
+    async def oauth_redirect(provider: str, request: Request, user_id: str = "household"):
+        from fastapi.responses import RedirectResponse
+
+        oauth_manager = _state.get("oauth_manager")
+        if not oauth_manager or provider not in oauth_manager.available_providers():
+            raise HTTPException(status_code=404, detail=f"OAuth provider '{provider}' not configured")
+        redirect_uri = str(request.base_url).rstrip("/") + f"/auth/{provider}/callback"
+        url = oauth_manager.get_auth_url(provider, user_id, redirect_uri)
+        return RedirectResponse(url)
+
+    @app.get("/auth/{provider}/callback")
+    async def oauth_callback(provider: str, request: Request, code: str = "", state: str = "household"):
+        _log = logging.getLogger(__name__)
+        oauth_manager = _state.get("oauth_manager")
+        if not oauth_manager or provider not in oauth_manager.available_providers():
+            raise HTTPException(status_code=404, detail=f"OAuth provider '{provider}' not configured")
+
+        user_id = state  # state param carries user_id set in get_auth_url
+        redirect_uri = str(request.base_url).rstrip("/") + f"/auth/{provider}/callback"
+        success = await oauth_manager.handle_callback(provider, code, user_id, redirect_uri)
+
+        if success:
+            handler = _state.get("telegram_handler")
+            if handler:
+                try:
+                    await handler.notify_user(user_id, f"✅ {provider.title()} connected! You're all set.")
+                except Exception as exc:
+                    _log.warning("OAuth callback: Telegram notify failed: %s", exc)
+            return {"ok": True, "provider": provider, "user_id": user_id}
+
+        raise HTTPException(status_code=400, detail="OAuth code exchange failed")
+
+    # Webhook routes — Telegram and future inbound webhooks.
     from mithra.api.routes.webhooks import router as _webhooks_router
     app.include_router(_webhooks_router, prefix="/api/v1")
-
-    # Google OAuth redirect + callback (Option C — direct OAuth, import into Nango).
-    from mithra.api.routes.auth import router as _auth_router
-    app.include_router(_auth_router)
 
     return app
 

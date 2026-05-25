@@ -3,7 +3,7 @@ Google Calendar output adapter.
 
 Implements OutputAdapter. Writes events to Google Calendar via the v3 API.
 
-Tokens are sourced exclusively from NangoClient (per-user OAuth).
+Tokens are sourced from OAuthManager (per-user OAuth via Authlib).
 Constructor accepts an optional http_client for test injection.
 
 Undo strategy: delete event via event_id stored in DeliveryReceipt.undo_payload
@@ -53,12 +53,12 @@ class CalendarAdapter(OutputAdapter):
     def __init__(
         self,
         http_client: httpx.AsyncClient | None = None,
-        nango_client: Any | None = None,
+        oauth_manager: Any | None = None,
         household_id: str = "",
         storage_adapter: Any | None = None,
     ) -> None:
         self._http_client = http_client
-        self._nango = nango_client
+        self._oauth_manager = oauth_manager
         self._household_id = household_id
         self._storage = storage_adapter
 
@@ -67,29 +67,15 @@ class CalendarAdapter(OutputAdapter):
             return _NullContext(self._http_client)
         return httpx.AsyncClient()
 
-    async def _get_nango_token(self, user_id: str) -> str | None:
-        """Fetch a fresh access token from Nango for this user, or None."""
-        if self._nango is None:
-            return None
-        token_data = await self._nango.get_token(
-            self._nango.GOOGLE_PROVIDER,
-            user_id,
-            self._household_id,
-            storage_adapter=self._storage,
-        )
-        if token_data:
-            return token_data.get("access_token")
-        return None
-
     async def _headers_for(self, user_id: str = "") -> dict[str, str]:
         """Return auth headers for the given user.
 
-        When Nango is configured but returns no token, raises immediately —
+        When OAuthManager is configured but returns no token, raises immediately —
         an unauthenticated Google API call will always 401.
-        When no Nango client is configured (unit tests / dev), passes through.
+        When no OAuthManager is configured (unit tests / dev), passes through.
         """
-        if user_id and self._nango:
-            token = await self._get_nango_token(user_id)
+        if user_id and self._oauth_manager:
+            token = await self._oauth_manager.get_token("google", user_id)
             if token:
                 return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             raise RuntimeError(
@@ -244,5 +230,5 @@ class CalendarAdapter(OutputAdapter):
         """Return adapter health."""
         return {
             "status": "ok",
-            "nango_configured": self._nango is not None,
+            "oauth_configured": self._oauth_manager is not None,
         }

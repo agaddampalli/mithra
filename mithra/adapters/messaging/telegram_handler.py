@@ -36,7 +36,7 @@ class TelegramSignalHandler:
         engine: Any | None = None,
         executor: Any | None = None,
         household_config: dict | None = None,
-        nango: Any | None = None,
+        oauth_manager: Any | None = None,
         base_url: str = "https://assistant.mithra-app.com",
         member_registry: Any | None = None,
         storage_adapter: Any | None = None,
@@ -45,7 +45,7 @@ class TelegramSignalHandler:
         self._engine = engine
         self._executor = executor
         self._household_config = household_config or {}
-        self._nango = nango
+        self._oauth_manager = oauth_manager
         self._base_url = base_url.rstrip("/")
         self._member_registry = member_registry
         self._storage = storage_adapter
@@ -209,14 +209,9 @@ class TelegramSignalHandler:
             return False
 
         uid = agent_request.user_id
-        hid = self._household_config.get("household_id", "default")
 
-        if self._nango:
-            from mithra.integrations.nango_client import NangoClient
-            connected = await self._nango.is_connected(
-                NangoClient.GOOGLE_PROVIDER, uid, hid, self._storage
-            )
-            if connected:
+        if self._oauth_manager and "google" in self._oauth_manager.available_providers():
+            if self._oauth_manager.is_connected("google", uid):
                 await self.send(agent_request, "✅ Your Google account is already connected.")
             else:
                 auth_url = f"{self._base_url}/auth/google?user_id={uid}"
@@ -224,6 +219,8 @@ class TelegramSignalHandler:
                     agent_request,
                     f"Tap to connect your Google account:\n{auth_url}",
                 )
+        else:
+            await self.send(agent_request, "Google integration is not configured on this instance.")
         return True
 
     async def _handle_confirmation(self, agent_request: "AgentRequest") -> bool:
