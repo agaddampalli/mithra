@@ -510,7 +510,252 @@ No separate auth, no separate Docker service.
 
 ---
 
-## 4. Storage Architecture
+## 4. Document Interaction UX
+
+### Design Constraints
+Primary interface is Telegram text chat.
+No file browser, no visual UI (Fire tablet is Phase 2).
+All document interactions must work via text + buttons.
+Telegram file size limit: 20MB per file.
+
+### File Ingestion Triggers
+
+#### Trigger 1 — User sends file via Telegram
+Handles files under 20MB directly.
+For larger files, user sends OneDrive/Google Drive link.
+
+    User sends PDF/photo/doc to @MithraHouseBot
+      → Mithra detects file type
+      → Asks domain classification if unclear:
+          "What is this?
+           [Receipt] [Insurance] [Warranty] [Medical] [Other]"
+      → User taps category
+      → Mithra stores + indexes automatically
+      → Confirms: "✅ Saved [filename] to [domain]"
+
+    User sends large file link (OneDrive/Google Drive):
+      → Mithra downloads via API
+      → Same classification + storage flow
+      → No 20MB limit
+
+#### Trigger 2 — Proactive capture from connected services
+Gmail/Outlook integration reads incoming emails.
+Extracts receipts, booking confirmations, appointments,
+flight itineraries, package tracking automatically.
+
+    Email arrives with receipt/booking/flight:
+      → Mithra detects type via LLM classification
+      → Auto-stores based on domain autonomy level
+      → Notifies user:
+          "📧 Captured: Costco receipt $234 from email"
+          "✈️ Found flight confirmation: Austin→NYC May 30"
+          "📦 Package from Amazon: delivery June 2"
+
+    Autonomy levels for proactive capture:
+      money.receipts      level 3 (auto-store, notify)
+      time.appointments   level 3 (auto-store, notify)
+      time.flights        level 3 (auto-store, notify)
+      health.records      level 1 (always ask first)
+      documents.legal     level 1 (always ask first)
+
+#### Trigger 3 — Initial seed from cloud storage
+One-time bulk import from existing OneDrive or
+Google Drive folder. Mithra crawls iteratively.
+
+    User: "Import my documents from OneDrive"
+    OR:   "Seed from https://onedrive.live.com/..."
+    OR:   "Import my Google Drive Documents folder"
+
+    Mithra crawls folder iteratively:
+      1. List all files in folder (paginated)
+      2. For each file:
+         a. Check if already indexed (by name + size)
+         b. If new: classify domain automatically
+         c. Download and index content
+         d. Store metadata in files table
+      3. Progress updates every 10 files:
+         "Indexed 10/47 files... (receipts: 8, docs: 2)"
+      4. Summary when complete:
+         "✅ Import complete: 47 files indexed
+          Receipts: 23 | Documents: 15 | Other: 9
+          [View by category]"
+
+    Iterative approach (not batch):
+      Process one file at a time
+      Can be interrupted and resumed
+      Progress tracked in household_config:
+        key: "seed_progress_{folder_id}"
+        value: {last_processed, total, status}
+      User can continue later: "continue import"
+
+### Document Access Patterns
+
+#### Pattern 1 — Summary (default)
+LLM reads relevant content, answers in natural language.
+User never sees raw file unless requested.
+
+    User: "What's my dental coverage limit?"
+    Mithra: "Your dental coverage is $1,500/year
+             for in-network providers (State Farm,
+             policy section 4.2, effective Jan 2026)"
+
+#### Pattern 2 — Download link (on request)
+Temporary signed URL from OneDrive.
+Valid 1 hour. Generated on demand only.
+
+    User: "Send me the actual insurance PDF"
+    Mithra: "Here's your insurance document (expires in 1hr):
+             [View/Download]
+             https://onedrive.live.com/..."
+
+#### Pattern 3 — List and browse
+SQL query against files table metadata.
+No content loaded unless user drills in.
+
+    User: "Show my receipts from last month"
+    Mithra: "April 2026 receipts (4 items, total $479):
+             • Costco $234 — Apr 3
+             • HEB $156 — Apr 12
+             • Amazon $89 — Apr 18
+             Total: $479
+             [Ask about any] [Export summary]"
+
+### Confirmation Behavior
+
+Based on domain autonomy level. Configured per domain.
+User preference remembered after first interaction.
+
+    Level 1 (SURFACE — always confirm):
+      health.*, documents.legal, documents.financial
+      "Found medical receipt from CVS. Store it? [Yes] [No]"
+
+    Level 2 (ACT_TELL — store then notify):
+      documents.general, documents.warranty
+      Stores immediately, notifies:
+      "📄 Stored warranty for Samsung TV"
+
+    Level 3 (ACT_SILENT — store silently):
+      money.receipts, time.appointments, time.flights
+      Stores without notification unless explicitly asked
+      User can review: "what did you capture today?"
+
+### File Size Handling
+
+    Under 20MB → accept directly via Telegram
+    Over 20MB  → user sends cloud link
+                 (OneDrive share link or Google Drive link)
+
+    Mithra detects link type and downloads:
+      OneDrive share link → MicrosoftGraphClient
+      Google Drive link   → GoogleDriveClient (future)
+      Direct URL          → httpx download
+
+### Telegram UX Patterns
+
+#### File type detection
+When file received:
+  PDF → extract text, classify domain
+  Image (photo) → OCR if receipt-like, otherwise prompt
+  DOCX/XLSX → extract text, classify domain
+  Unknown → ask user: "What type of document is this?"
+
+#### Inline buttons for classification
+Max 4 buttons per row (Telegram limit):
+  [Receipt] [Insurance] [Warranty] [Other]
+
+#### Progress for long operations
+Seed import or large PDF processing:
+  Send initial message with job ID
+  Edit message every 10 items with progress
+  Final edit when complete
+
+#### Error handling
+File too large:
+  "This file is 45MB — too large for Telegram.
+   Share it via OneDrive link instead."
+Unsupported type:
+  "I can't read .zip files yet.
+   Supported: PDF, Word, Excel, images."
+Cloud storage not connected:
+  "Connect OneDrive first to store files there.
+   [Connect OneDrive]"
+  Falls back to local storage if user declines.
+
+### Initial Seed Flow (detailed)
+
+This is the most important interaction for new users
+who already have documents in cloud storage.
+
+    Step 1 — User initiates
+      "Import my OneDrive documents"
+      OR user sends a share link
+      OR Mithra proactively asks on first connection:
+        "You connected OneDrive. Want me to index
+         your existing documents? This helps me
+         answer questions about them.
+         [Yes, import] [No thanks] [Ask me later]"
+
+    Step 2 — Scope selection
+      "Which folder should I import?
+       [My Documents] [Desktop] [All of OneDrive] [Choose folder]"
+
+    Step 3 — Preview before import
+      Mithra lists top-level contents:
+      "Found in My Documents:
+       • 23 PDFs
+       • 12 Word documents
+       • 8 Excel files
+       • 4 images
+       Total: 47 files
+       [Import all] [Choose types] [Cancel]"
+
+    Step 4 — Iterative processing
+      Progress updates every 10 files
+      Runs in background (user can do other things)
+      Resumes automatically if interrupted
+
+    Step 5 — Completion summary
+      "✅ Import complete!
+       Indexed 47 files:
+       • Receipts: 23 (Total value: ~$4,200)
+       • Insurance docs: 3
+       • Warranties: 8
+       • Other: 13
+       Ask me anything about your documents."
+
+### Privacy Rules for Document UX
+
+    Health documents:
+      Never uploaded to OneDrive from Mithra
+      Never summarized via cloud LLM
+      Always processed locally
+      User explicitly warned: "This is a health document.
+      It will be stored locally only and never sent to cloud."
+
+    Financial documents:
+      DataSanitiser strips account numbers before LLM calls
+      Original file stored intact, sanitised version used for RAG
+
+    Shared documents:
+      Documents tagged with user_id of uploader
+      Other household members can access shared category
+      Private category: only uploader can access
+      Default: shared (household-level)
+
+### Product Considerations
+
+    Per-user storage quotas (product):
+      household_config: "storage_limit_gb" = 5
+      FileStorageRouter enforces quota before save
+
+    Storage billing (product):
+      Local storage: free (user's hardware)
+      OneDrive: user's own Microsoft account (no Mithra cost)
+      No Mithra-hosted storage → no storage costs ever
+
+---
+
+## 5. Storage Architecture
 
 ### Decision
 StorageAdapter abstraction with primary key:
@@ -537,7 +782,7 @@ across households. Zero schema changes for product.
 
 ---
 
-## 5. Migration Plan (Current -> Target)
+## 6. Migration Plan (Current -> Target)
 
 ### Current State
     household.yaml -> has members list with person_a, person_b
@@ -609,7 +854,7 @@ across households. Zero schema changes for product.
 
 ---
 
-## 6. Implementation Order
+## 7. Implementation Order
 
 ### Phase A — Identity Foundation
 Must complete and verify before Phase B.
@@ -714,7 +959,7 @@ Start only after Phase A is verified.
 
 ---
 
-## 7. Alternatives Considered
+## 8. Alternatives Considered
 
 ### Nango Self-Hosted (Free) v0.70.4
 Decision: Removed
@@ -777,7 +1022,7 @@ Reason:
 
 ---
 
-## 8. Design Principles
+## 9. Design Principles
 
 These apply to ALL future decisions.
 
