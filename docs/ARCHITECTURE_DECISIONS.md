@@ -862,7 +862,314 @@ No separate document processing Docker service.
 
 ---
 
-## 6. Storage Architecture
+## 6. Phase 1 Storage Infrastructure
+
+### Decision Summary
+Two separate storage systems, each doing what it does best:
+
+  StorageAdapter (SQLite)     → structured records
+                                 tokens, sessions, domain facts
+                                 always local, always fast
+
+  FileStorageAdapter (new)    → unstructured files
+                                 PDFs, images, receipts, docs
+                                 local primary, OneDrive cloud
+
+  SQLite weekly backup        → disaster recovery only
+                                 compressed dump to OneDrive
+                                 not sync, not live mirror
+
+### Why Not OneDrive for Structured Records
+OneDrive via Graph API has latency (100-500ms per call).
+SQLite reads are <1ms. For a household assistant that
+assembles context on every message, SQLite must stay
+primary. OneDrive adds no value for structured records
+when SQLite is already backed up weekly.
+
+### 6a. FileStorageAdapter Interface
+
+Abstract base. All file operations go through this.
+Swap backends without changing domain code.
+
+    class FileStorageAdapter(ABC):
+
+        async def save_file(
+            self,
+            content: bytes,
+            filename: str,
+            domain: str,
+            user_id: str,
+            metadata: dict = {},
+        ) -> str:
+            """Store file. Returns file_id."""
+
+        async def get_file(
+            self,
+            file_id: str,
+        ) -> tuple[bytes, dict]:
+            """Returns (content, metadata)."""
+
+        async def delete_file(
+            self,
+            file_id: str,
+        ) -> None: ...
+
+        async def list_files(
+            self,
+            domain: str = "",
+            user_id: str = "",
+            prefix: str = "",
+        ) -> list[dict]:
+            """Returns metadata list only, not content."""
+
+        async def file_exists(
+            self,
+            file_id: str,
+        ) -> bool: ...
+
+        def health(self) -> dict: ...
+
+### 6b. LocalFileAdapter
+
+Stores files at /data/mithra/files/{domain}/{user_id}/
+File IDs are UUIDs. Metadata stored in SQLite files table.
+Always works. No network calls. Used for health domain always.
+
+    Path structure:
+      /data/mithra/files/
+        money/
+          usr_ba6d9199/
+            file_abc123.pdf
+            file_def456.jpg
+        documents/
+          usr_ba6d9199/
+            file_ghi789.pdf
+        health/             ← local only, never OneDrive
+          usr_ba6d9199/
+            file_jkl012.pdf
+
+### 6c. OneDriveFileAdapter
+
+Stores files in user's own OneDrive via Microsoft Graph API.
+Uses OAuthManager.get_token("microsoft", user_id) for auth.
+No Mithra-hosted storage — files live in user's account.
+
+    OneDrive path structure:
+      /Mithra/
+        hh_b76fef08/        ← household_id
+          money/
+            receipts/
+              2026/05/
+          documents/
+            insurance/
+            warranty/
+          [NO health/ — enforced by FileStorageRouter]
+
+    Requires: ONEDRIVE_CLIENT_ID + ONEDRIVE_CLIENT_SECRET
+    Set up: user sends "connect microsoft" to Telegram
+    Falls back to LocalFileAdapter if not connected
+
+### 6d. FileStorageRouter
+
+Same pattern as StorageRouter.
+Routes by domain. Health domain never goes to cloud.
+
+    Routing rules:
+      health   → LocalFileAdapter ONLY (hard rule, never changes)
+      all else → OneDriveFileAdapter primary
+                 LocalFileAdapter fallback if not connected
+
+    Bootstrap behavior:
+      Always build LocalFileAdapter (no credentials needed)
+      Build OneDriveFileAdapter only if Microsoft connected
+      FileStorageRouter decides at runtime per request
+
+### 6e. files Table (SQLite)
+
+Metadata index for fast search without cloud round-trips.
+Raw content lives in FileStorageAdapter backends.
+
+    CREATE TABLE files (
+        id           TEXT PRIMARY KEY,
+        household_id TEXT NOT NULL,
+        user_id      TEXT NOT NULL,
+        domain       TEXT NOT NULL,
+        filename     TEXT NOT NULL,
+        storage      TEXT NOT NULL,
+        path         TEXT NOT NULL,
+        size_bytes   INTEGER,
+        mime_type    TEXT,
+        uploaded_at  TEXT NOT NULL,
+        metadata     TEXT,
+        chunk_ids    TEXT,
+        INDEX idx_files_household (household_id),
+        INDEX idx_files_domain (domain, household_id),
+        INDEX idx_files_user (user_id, household_id)
+    );
+
+    metadata column: JSON, domain-specific tags
+      money:     {"merchant": "Costco", "amount": 234.50,
+                  "date": "2026-05-03"}
+      documents: {"category": "insurance",
+                  "expiry": "2027-01-01"}
+      health:    {"type": "receipt", "provider": "CVS"}
+
+    chunk_ids column: JSON array of ChromaDB chunk IDs
+      Set after DocumentIndexer processes the file
+      Used to retrieve relevant chunks for RAG
+
+### 6f. DocumentIndexer
+
+Processes files after storage. Extracts text,
+chunks, embeds, stores in ChromaDB.
+Uses Docling for extraction (MIT license, Python library,
+handles PDF/DOCX/PPTX/images with OCR).
+
+    Pipeline:
+      1. Receive file_id after save_file()
+      2. Load content from FileStorageAdapter
+      3. Docling extracts structured text + tables
+         fast_mode=True by default
+         full_mode=True for scanned images (OCR)
+      4. Chunk into ~500 token segments
+         preserve document hierarchy (headings, sections)
+      5. Embed chunks:
+         health domain → local model ONLY (phi3:mini)
+         all others    → LLM router (cloud ok)
+      6. Store chunks in ChromaDB
+         collection: "documents_{household_id}"
+         health:     "health_{household_id}" (separate)
+      7. Update files.chunk_ids in SQLite
+
+    Runs async after file save — non-blocking.
+    User gets confirmation immediately, indexing happens
+    in background.
+
+### 6g. FileSearchService
+
+Tiered retrieval. Called by domain agents.
+
+    Tier 1 — SQLite metadata (always first, free)
+      Query files table by domain, user_id, metadata
+      Full-text search on filename + metadata JSON
+      Returns: list of file metadata dicts
+
+    Tier 2 — ChromaDB semantic search (when Tier 1 insufficient)
+      Embed query, search relevant collection
+      Returns: chunk text + file_id references
+      Cost: embedding API call
+
+    Tier 3 — Full file load (targeted, expensive)
+      Load specific file, extract full text
+      Pass to LLM for summarization/QA
+      Cost: LLM context tokens
+
+    Interface:
+      async def search(
+          query: str,
+          domain: str = "",
+          user_id: str = "",
+          tier: int = 0,    # 0=auto, 1/2/3=force tier
+      ) -> list[SearchResult]
+
+      SearchResult:
+          file_id: str
+          filename: str
+          relevance: float
+          excerpt: str
+          tier_used: int
+          metadata: dict
+
+### 6h. MicrosoftGraphClient
+
+Thin wrapper around Microsoft Graph API.
+Uses OAuthManager for token — no separate auth.
+
+    BASE_URL = "https://graph.microsoft.com/v1.0"
+
+    async def _headers(user_id) -> dict
+        # calls OAuthManager.get_token("microsoft", user_id)
+
+    # OneDrive operations
+    async def upload_file(user_id, path, content) -> dict
+    async def download_file(user_id, path) -> bytes
+    async def list_folder(user_id, path) -> list[dict]
+    async def delete_file(user_id, path) -> None
+    async def create_folder(user_id, path) -> None
+    async def get_share_link(user_id, path,
+                             expires_hours=1) -> str
+
+    # Future (not now)
+    # calendar, contacts, mail — add when domains need them
+
+### 6i. SQLite Weekly Backup
+
+Disaster recovery. Not sync. SQLite is source of truth.
+
+    Schedule: Sunday 2am (cron in healthmonitor container)
+
+    Process:
+      1. VACUUM mithra.db (compact)
+      2. gzip compress → mithra_backup_YYYY-MM-DD.db.gz
+      3. Upload to OneDrive:
+         /Mithra/{household_id}/backups/
+      4. Keep last 4 backups (delete older)
+      5. Send Telegram confirmation to admin:
+         "✅ Weekly backup complete: mithra_backup_2026-05-24.db.gz
+          Size: 2.3MB | OneDrive: /Mithra/.../backups/"
+
+    Requires: Microsoft connected (OneDrive token)
+    If not connected: backup to local /data/mithra/backups/
+                      notify admin to connect Microsoft
+
+    Restore procedure:
+      1. Download backup from OneDrive
+      2. docker compose stop api-gateway
+      3. gunzip backup → /data/mithra/mithra.db
+      4. docker compose start api-gateway
+      Done.
+
+### 6j. Implementation Order (Phase 1)
+
+    P1-01  Add files table to LocalStorageAdapter.__init__
+    P1-02  FileStorageAdapter abstract base
+           mithra/storage/file_adapter.py
+    P1-03  LocalFileAdapter
+           mithra/storage/local_file.py
+    P1-04  MicrosoftGraphClient
+           mithra/integrations/microsoft_graph.py
+    P1-05  OneDriveFileAdapter
+           mithra/storage/onedrive_file.py
+    P1-06  FileStorageRouter
+           mithra/storage/file_router.py
+    P1-07  DocumentIndexer
+           mithra/storage/document_indexer.py
+    P1-08  FileSearchService
+           mithra/storage/file_search.py
+    P1-09  Wire into bootstrap
+           _build_file_storage() in bootstrap.py
+    P1-10  SQLite backup job
+           Add to scripts/healthcheck.py or separate
+           scripts/backup.py
+
+### 6k. Alternatives Considered
+
+#### OneDrive as structured storage (original design)
+  Rejected for Phase 1:
+    Graph API latency (100-500ms) vs SQLite (<1ms)
+    Complex sync logic needed
+    SQLite + weekly backup achieves resilience simply
+  Revisit: if household grows beyond single laptop,
+           or if multi-device real-time sync is needed
+
+#### Dedicated backup service (Velero, Restic)
+  Rejected: heavyweight for single SQLite file
+            weekly gzip + OneDrive upload is 20 lines
+            no new Docker service needed
+
+---
+
+## 7. Storage Architecture
 
 ### Decision
 StorageAdapter abstraction with primary key:
@@ -889,7 +1196,7 @@ across households. Zero schema changes for product.
 
 ---
 
-## 7. Migration Plan (Current -> Target)
+## 8. Migration Plan (Current -> Target)
 
 ### Current State
     household.yaml -> has members list with person_a, person_b
@@ -961,7 +1268,7 @@ across households. Zero schema changes for product.
 
 ---
 
-## 8. Implementation Order
+## 9. Implementation Order
 
 ### Phase A — Identity Foundation
 Must complete and verify before Phase B.
@@ -1066,7 +1373,7 @@ Start only after Phase A is verified.
 
 ---
 
-## 9. Alternatives Considered
+## 10. Alternatives Considered
 
 ### Nango Self-Hosted (Free) v0.70.4
 Decision: Removed
@@ -1129,7 +1436,7 @@ Reason:
 
 ---
 
-## 10. Design Principles
+## 11. Design Principles
 
 These apply to ALL future decisions.
 
