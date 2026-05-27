@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_ID = os.environ.get("MITHRA_ADMIN_TELEGRAM_ID", "")
 INTERVAL = int(os.environ.get("CHECK_INTERVAL_SECONDS", "300"))
+LITELLM_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
+MITHRA_DB_PATH = os.environ.get("MITHRA_DB_PATH", "/data/mithra/mithra.db")
 
 SERVICES = {
     "api-gateway": "http://api-gateway:8000/api/v1/health",
@@ -32,8 +34,12 @@ def send_telegram(text: str) -> None:
         pass
 
 def check_service(name: str, url: str) -> bool:
+    headers = {}
+    if "llm-router" in url and LITELLM_KEY:
+        headers["Authorization"] = f"Bearer {LITELLM_KEY}"
     try:
-        urllib.request.urlopen(url, timeout=5)
+        req = urllib.request.Request(url, headers=headers)
+        urllib.request.urlopen(req, timeout=5)
         return True
     except Exception:
         return False
@@ -50,7 +56,6 @@ def _run_backup() -> None:
     backup_script = os.path.join(script_dir, "backup.py")
     if not os.path.exists(backup_script):
         return
-    # Import and run directly (same process, same env)
     import importlib.util
     spec = importlib.util.spec_from_file_location("backup", backup_script)
     mod = importlib.util.module_from_spec(spec)

@@ -41,12 +41,12 @@ services:
       - mithra-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      test: ["CMD", "curl", "-f",
+             "http://localhost:8000/api/v1/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 60s
     logging:
       driver: "json-file"
       options:
@@ -72,10 +72,13 @@ services:
       - mithra-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf -H 'Authorization: Bearer ${SECRET_KEY}' http://localhost:4000/health || exit 1"]
+      test: ["CMD", "curl", "-f",
+             "http://localhost:4000/health",
+             "-H", "Authorization: Bearer ${LITELLM_MASTER_KEY}"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 60s
     logging:
       driver: "json-file"
       options:
@@ -136,6 +139,8 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - MITHRA_ADMIN_TELEGRAM_ID=${MITHRA_ADMIN_TELEGRAM_ID}
       - CHECK_INTERVAL_SECONDS=300
+      - LITELLM_MASTER_KEY=${SECRET_KEY}
+      - MITHRA_DB_PATH=/data/mithra/mithra.db
     networks:
       - mithra-net
     restart: unless-stopped
@@ -163,8 +168,6 @@ services:
       - "com.centurylinklabs.watchtower.enable=true"
     ports:
       - "11434:11434"
-    volumes:
-      - ollama-models:/root/.ollama
     environment:
       - OLLAMA_NUM_CTX=2048
     networks:
@@ -189,8 +192,6 @@ services:
     image: ghcr.io/home-assistant/home-assistant:stable
     ports:
       - "8123:8123"
-    volumes:
-      - ha-config:/config
     environment:
       - TZ=${TZ:-America/Chicago}
     networks:
@@ -208,8 +209,6 @@ services:
     image: rhasspy/wyoming-whisper
     ports:
       - "10300:10300"
-    volumes:
-      - whisper-models:/data
     command: >
       --uri tcp://0.0.0.0:10300
       --model tiny-int8
@@ -226,8 +225,6 @@ services:
     image: rhasspy/wyoming-piper
     ports:
       - "10200:10200"
-    volumes:
-      - piper-voices:/data
     command: >
       --uri tcp://0.0.0.0:10200
       --voice en_US-lessac-medium
@@ -262,7 +259,6 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - whatsapp-sessions:/sessions/whatsapp
       - ./services/whatsapp-bridge:/app
     working_dir: /app
     command: sh -c "npm install && node index.js"
@@ -276,12 +272,7 @@ services:
 volumes:
   mithra-data:
   mithra-files:
-  ollama-models:
   chroma-data:
-  ha-config:
-  whisper-models:
-  piper-voices:
-  whatsapp-sessions:
 
 networks:
   mithra-net:
