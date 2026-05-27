@@ -1,4 +1,4 @@
-# Mithra — Work Tracker (Updated 2026-05-26)
+# Mithra — Work Tracker (Updated 2026-05-27)
 
 ## Current IDs (generated 2026-05-24, never change)
   household_id: hh_b76fef08
@@ -92,7 +92,10 @@
   [x] Google OAuth working end-to-end
   [x] Calendar write verified (POST /calendar → Google)
   [x] Nango removed entirely from stack
-  [ ] Microsoft OAuth (code ready, needs Azure registration)
+  [x] OA-08 Microsoft Azure app registered
+  [x] OA-09 OneDrive auth — connect microsoft working
+            upload/download/list/delete verified
+  [x] Microsoft OAuth token stored for usr_ba6d9199
 
 #### Stability (completed this session)
   [x] DP-07 Windows never sleep + lid close keeps running
@@ -117,20 +120,27 @@
   [x] P1-01 files table in SQLite (+ 3 indexes)
   [x] P1-02 FileStorageAdapter abstract base
   [x] P1-03 LocalFileAdapter (/data/mithra/files/)
-  [x] P1-04 MicrosoftGraphClient (Graph API wrapper)
-  [x] P1-05 OneDriveFileAdapter
+  [x] P1-04 MicrosoftGraphClient — fully tested
+  [x] P1-05 OneDriveFileAdapter — verified
   [x] P1-06 FileStorageRouter (health=local hardcoded)
   [x] P1-07 DocumentIndexer (Kreuzberg + ChromaDB)
   [x] P1-08 FileSearchService (3-tier retrieval)
   [x] P1-09 Wired into bootstrap
   [x] P1-10 SQLite weekly backup (scripts/backup.py)
 
+  All P1-01 through P1-10 implemented and verified
+  OneDrive CRUD verified end to end
+  Google OAuth working
+  Microsoft OAuth working
+  FileStorageRouter health=local enforced
+  DocumentIndexer (Kreuzberg) deployed
+  FileSearchService (3-tier) ready
   Image size: 1.24GB (acceptable)
   Kreuzberg: replaces Docling, 71MB vs 4-9GB
   Tesseract: installed for OCR support
   784 tests passing
 
-## Phase 1 — Domains (PENDING Phase 1 storage)
+## Phase 1 — Domains (NEXT)
 
   Pending: domain plugin architecture decision first.
   Then Time domain (calendar read), People, Documents.
@@ -150,7 +160,15 @@
   7-day stability run (started 2026-05-25) — ongoing
   Daily: send "hi" to bot, verify response
   Next: Domain plugin architecture decision
+        → How domains register with LangGraph
         Then: Time domain (calendar read)
 
 ## Test Baseline
-  784 tests passing (2026-05-26)
+  784 tests passing (2026-05-27)
+
+## Infra Cleanup (deferred to end of Phase 1)
+  Automate as part of closing infrastructure phases.
+  [ ] Remove unused Docker volumes on phase close
+  [ ] docker system prune scheduled monthly
+  [ ] Compact docker.vhdx after major cleanups
+  [ ] Add cleanup step to CI/CD on phase tags
