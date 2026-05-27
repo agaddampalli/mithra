@@ -1,4 +1,4 @@
-# Mithra — Work Tracker (Updated 2026-05-25)
+# Mithra — Work Tracker (Updated 2026-05-26)
 
 ## Current IDs (generated 2026-05-24, never change)
   household_id: hh_b76fef08
@@ -21,7 +21,7 @@
       Section 2: OAuth Token Management
       Section 3: File Storage and Document RAG
       Section 4: Document Interaction UX
-      Section 5: Document Processing Libraries (Docling)
+      Section 5: Document Processing Libraries (Kreuzberg)
       Section 6: Phase 1 Storage Infrastructure
   [ ] D-24 Architecture Pass 2 (component diagrams)
   [ ] D-25 Architecture Pass 3 (end-to-end scenarios)
@@ -110,20 +110,25 @@
   [ ] Local LLM (Phi-3 Mini) not yet configured
   [ ] 14-day stability run (starting now)
 
-## Phase 1 — Storage Foundation (IMPLEMENTED)
+## Phase 1 — Storage Foundation (COMPLETE)
 
   Architecture documented in ARCHITECTURE_DECISIONS.md section 6.
 
-  [x] P1-01 files table in SQLite
+  [x] P1-01 files table in SQLite (+ 3 indexes)
   [x] P1-02 FileStorageAdapter abstract base
   [x] P1-03 LocalFileAdapter (/data/mithra/files/)
   [x] P1-04 MicrosoftGraphClient (Graph API wrapper)
   [x] P1-05 OneDriveFileAdapter
-  [x] P1-06 FileStorageRouter (local + OneDrive)
-  [x] P1-07 DocumentIndexer (Docling extraction + ChromaDB)
-  [x] P1-08 FileSearchService (tiered retrieval)
-  [x] P1-09 Wire into bootstrap
-  [x] P1-10 SQLite weekly backup job
+  [x] P1-06 FileStorageRouter (health=local hardcoded)
+  [x] P1-07 DocumentIndexer (Kreuzberg + ChromaDB)
+  [x] P1-08 FileSearchService (3-tier retrieval)
+  [x] P1-09 Wired into bootstrap
+  [x] P1-10 SQLite weekly backup (scripts/backup.py)
+
+  Image size: 1.24GB (acceptable)
+  Kreuzberg: replaces Docling, 71MB vs 4-9GB
+  Tesseract: installed for OCR support
+  784 tests passing
 
 ## Phase 1 — Domains (PENDING Phase 1 storage)
 
@@ -141,9 +146,11 @@
   [ ] ET-01 to ET-15
 
 ## Current Focus
-  7-day stability run (started 2026-05-25)
+  Phase 1 storage: COMPLETE
+  7-day stability run (started 2026-05-25) — ongoing
   Daily: send "hi" to bot, verify response
-  Next: Phase 1 Domains — Time (calendar read), People, Documents
+  Next: Domain plugin architecture decision
+        Then: Time domain (calendar read)
 
 ## Test Baseline
   784 tests passing (2026-05-26)
