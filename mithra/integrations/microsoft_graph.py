@@ -26,8 +26,12 @@ class MicrosoftGraphClient:
 
     async def _headers(self, user_id: str) -> dict[str, str]:
         token = await self._oauth.get_token("microsoft", user_id)
+        if not token:
+            raise RuntimeError(
+                f"No Microsoft token for {user_id}. "
+                f"Send 'connect microsoft' to Mithra.")
         return {
-            "Authorization": f"Bearer {token['access_token']}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
 
