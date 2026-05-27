@@ -88,6 +88,30 @@ CREATE TABLE IF NOT EXISTS household_config (
 """
 
 
+_FILES_DDL = """
+CREATE TABLE IF NOT EXISTS files (
+    id           TEXT PRIMARY KEY,
+    household_id TEXT NOT NULL,
+    user_id      TEXT NOT NULL,
+    domain       TEXT NOT NULL,
+    filename     TEXT NOT NULL,
+    storage      TEXT NOT NULL,
+    path         TEXT NOT NULL,
+    size_bytes   INTEGER,
+    mime_type    TEXT,
+    uploaded_at  TEXT NOT NULL,
+    metadata     TEXT,
+    chunk_ids    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_files_household
+    ON files(household_id);
+CREATE INDEX IF NOT EXISTS idx_files_domain
+    ON files(domain, household_id);
+CREATE INDEX IF NOT EXISTS idx_files_user
+    ON files(user_id, household_id);
+"""
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     """Add household_id column and update PRIMARY KEY if missing (handles existing databases)."""
     cols = [row[1] for row in conn.execute("PRAGMA table_info(records)").fetchall()]
@@ -153,6 +177,8 @@ class LocalStorageAdapter(StorageAdapter):
         self._conn.commit()
         _migrate(self._conn)
         self._conn.executescript(_IDENTITY_DDL)
+        self._conn.commit()
+        self._conn.executescript(_FILES_DDL)
         self._conn.commit()
 
     def read(

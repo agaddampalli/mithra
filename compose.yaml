@@ -11,6 +11,7 @@ services:
     environment:
       - MITHRA_STORAGE_DIR=/data/mithra/files
       - MITHRA_DB_DIR=/data/mithra
+      - MITHRA_FILES_PATH=/data/mithra/files
       - LITELLM_BASE_URL=http://llm-router:4000
       - LITELLM_MASTER_KEY=${SECRET_KEY}
       - AUTONOMY_CONFIG_PATH=/app/services/autonomy/autonomy.yaml
@@ -32,6 +33,7 @@ services:
       - MITHRA_BASE_URL=${MITHRA_BASE_URL:-https://assistant.mithra-app.com}
     volumes:
       - mithra-data:/data/mithra
+      - mithra-files:/data/mithra/files
     depends_on:
       - llm-router
       - vector-store
@@ -273,6 +275,7 @@ services:
 
 volumes:
   mithra-data:
+  mithra-files:
   ollama-models:
   chroma-data:
   ha-config:

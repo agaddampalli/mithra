@@ -183,6 +183,48 @@ def _build_calendar(state: dict, household_id: str, executor) -> None:
     executor.register("calendar_write", calendar_adapter)
 
 
+def _build_file_storage(state: dict) -> None:
+    """Wire FileStorageRouter, DocumentIndexer, and FileSearchService."""
+    from mithra.storage.local_file import LocalFileAdapter
+    from mithra.storage.file_router import FileStorageRouter
+
+    files_path = os.environ.get("MITHRA_FILES_PATH", "/data/mithra/files")
+    db_path = state["local_adapter"].db_path
+    local_file = LocalFileAdapter(base_path=files_path, db_path=db_path)
+
+    onedrive_file = None
+    oauth_manager = state.get("oauth_manager")
+    if oauth_manager and oauth_manager.is_provider_configured("microsoft"):
+        from mithra.integrations.microsoft_graph import MicrosoftGraphClient
+        from mithra.storage.onedrive_file import OneDriveFileAdapter
+        graph_client = MicrosoftGraphClient(oauth_manager)
+        onedrive_file = OneDriveFileAdapter(graph_client=graph_client, db_path=db_path)
+
+    file_router = FileStorageRouter(local_adapter=local_file, onedrive_adapter=onedrive_file)
+    state["file_router"] = file_router
+
+    try:
+        import chromadb
+        chroma = chromadb.HttpClient(
+            host=os.environ.get("CHROMA_HOST", "vector-store"),
+            port=int(os.environ.get("CHROMA_PORT", "8000")),
+        )
+        from mithra.storage.document_indexer import DocumentIndexer
+        from mithra.storage.file_search import FileSearchService
+        state["document_indexer"] = DocumentIndexer(
+            chroma_client=chroma,
+            file_router=file_router,
+            household_id=state["household_id"],
+        )
+        state["file_search"] = FileSearchService(
+            file_router=file_router,
+            chroma_client=chroma,
+            household_id=state["household_id"],
+        )
+    except Exception as exc:
+        _logger.warning("ChromaDB not available for file indexing: %s", exc)
+
+
 def _build_telegram_handler(state: dict, household_config: dict, base_url: str) -> None:
     from mithra.adapters.messaging.telegram_handler import TelegramSignalHandler
 
@@ -261,6 +303,7 @@ async def build_state(
         )
 
     _build_oauth_manager(state)
+    _build_file_storage(state)
     _build_calendar(state, household_id, executor)
 
     if state.get("telegram_output"):

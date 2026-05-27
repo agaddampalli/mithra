@@ -144,6 +144,10 @@ class OAuthManager:
     def available_providers(self) -> list[str]:
         return list(self._providers.keys())
 
+    def is_provider_configured(self, provider_id: str) -> bool:
+        """Return True if the provider is in the configured providers list."""
+        return provider_id in self._providers
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------

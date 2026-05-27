@@ -1,8 +1,10 @@
 import os
+import sys
 import time
 import json
 import urllib.request
 import urllib.error
+from datetime import datetime, timezone
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_ID = os.environ.get("MITHRA_ADMIN_TELEGRAM_ID", "")
@@ -36,10 +38,34 @@ def check_service(name: str, url: str) -> bool:
     except Exception:
         return False
 
+_SECONDS_PER_WEEK = 7 * 24 * 3600
+
+
+def _is_backup_due(last_backup_ts: float) -> bool:
+    return (time.time() - last_backup_ts) >= _SECONDS_PER_WEEK
+
+
+def _run_backup() -> None:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    backup_script = os.path.join(script_dir, "backup.py")
+    if not os.path.exists(backup_script):
+        return
+    # Import and run directly (same process, same env)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("backup", backup_script)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        mod.run_backup()
+    except Exception as exc:
+        print(f"Backup error: {exc}")
+
+
 def main():
     print("Mithra health monitor started")
     # Track previous state to avoid repeated alerts
     state = {name: True for name in SERVICES}
+    last_backup_ts = 0.0  # run immediately on first week expiry check
 
     while True:
         for name, url in SERVICES.items():
@@ -57,6 +83,11 @@ def main():
                     f"✅ Mithra: {name} is back online")
 
             state[name] = healthy
+
+        if _is_backup_due(last_backup_ts):
+            print("Running weekly SQLite backup")
+            _run_backup()
+            last_backup_ts = time.time()
 
         time.sleep(INTERVAL)
 

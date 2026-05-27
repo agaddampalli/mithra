@@ -110,20 +110,20 @@
   [ ] Local LLM (Phi-3 Mini) not yet configured
   [ ] 14-day stability run (starting now)
 
-## Phase 1 — Storage Foundation (DESIGNED, NOT IMPLEMENTED)
+## Phase 1 — Storage Foundation (IMPLEMENTED)
 
   Architecture documented in ARCHITECTURE_DECISIONS.md section 6.
 
-  [ ] P1-01 files table in SQLite
-  [ ] P1-02 FileStorageAdapter abstract base
-  [ ] P1-03 LocalFileAdapter (/data/mithra/files/)
-  [ ] P1-04 MicrosoftGraphClient (Graph API wrapper)
-  [ ] P1-05 OneDriveFileAdapter
-  [ ] P1-06 FileStorageRouter (local + OneDrive)
-  [ ] P1-07 DocumentIndexer (Docling extraction + ChromaDB)
-  [ ] P1-08 FileSearchService (tiered retrieval)
-  [ ] P1-09 Wire into bootstrap
-  [ ] P1-10 SQLite weekly backup job
+  [x] P1-01 files table in SQLite
+  [x] P1-02 FileStorageAdapter abstract base
+  [x] P1-03 LocalFileAdapter (/data/mithra/files/)
+  [x] P1-04 MicrosoftGraphClient (Graph API wrapper)
+  [x] P1-05 OneDriveFileAdapter
+  [x] P1-06 FileStorageRouter (local + OneDrive)
+  [x] P1-07 DocumentIndexer (Docling extraction + ChromaDB)
+  [x] P1-08 FileSearchService (tiered retrieval)
+  [x] P1-09 Wire into bootstrap
+  [x] P1-10 SQLite weekly backup job
 
 ## Phase 1 — Domains (PENDING Phase 1 storage)
 
@@ -143,7 +143,7 @@
 ## Current Focus
   7-day stability run (started 2026-05-25)
   Daily: send "hi" to bot, verify response
-  Next after stability: Phase 1 storage implementation
+  Next: Phase 1 Domains — Time (calendar read), People, Documents
 
 ## Test Baseline
-  753 tests passing (2026-05-25)
+  784 tests passing (2026-05-26)
