@@ -205,23 +205,44 @@ class TelegramSignalHandler:
             p in text_lower
             for p in ["connect google", "link google", "connect calendar", "setup google"]
         )
-        if not wants_google:
+        wants_microsoft = signal.get("connect_integration") == "microsoft" or any(
+            word in text_lower
+            for word in ["connect microsoft", "microsoft", "onedrive", "connect onedrive"]
+        )
+
+        if not wants_google and not wants_microsoft:
             return False
 
         uid = agent_request.user_id
+        manager = self._oauth_manager
+        base_url = os.environ.get("MITHRA_BASE_URL", "https://assistant.mithra-app.com")
 
-        if self._oauth_manager and "google" in self._oauth_manager.available_providers():
-            if self._oauth_manager.is_connected("google", uid):
-                await self.send(agent_request, "✅ Your Google account is already connected.")
+        if wants_google:
+            if not manager or not manager.is_provider_configured("google"):
+                await self.send(agent_request, "Google is not configured.")
+                return True
+            if manager.is_connected("google", uid):
+                await self.send(agent_request, "✅ Google is already connected.")
             else:
-                auth_url = f"{self._base_url}/auth/google?user_id={uid}"
+                url = f"{base_url}/auth/google?user_id={uid}"
+                await self.send(agent_request, f"Tap to connect Google:\n{url}")
+            return True
+
+        if wants_microsoft:
+            if not manager or not manager.is_provider_configured("microsoft"):
                 await self.send(
                     agent_request,
-                    f"Tap to connect your Google account:\n{auth_url}",
+                    "Microsoft is not configured on this Mithra instance.",
                 )
-        else:
-            await self.send(agent_request, "Google integration is not configured on this instance.")
-        return True
+                return True
+            if manager.is_connected("microsoft", uid):
+                await self.send(agent_request, "✅ Microsoft is already connected.")
+            else:
+                url = f"{base_url}/auth/microsoft?user_id={uid}"
+                await self.send(agent_request, f"Tap to connect Microsoft:\n{url}")
+            return True
+
+        return False
 
     async def _handle_confirmation(self, agent_request: "AgentRequest") -> bool:
         signal = agent_request.signal or {}
