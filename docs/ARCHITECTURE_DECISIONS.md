@@ -758,107 +758,104 @@ who already have documents in cloud storage.
 ## 5. Document Processing Libraries
 
 ### Decision
-Use Docling for all document extraction and chunking.
-No separate document processing Docker service.
+Use Kreuzberg for all document text extraction and chunking.
+No separate Docker service needed. No ML/PyTorch dependency.
 
-### Why Docling
-- Open source (MIT), Linux Foundation AI & Data
-- Handles: PDF, DOCX, PPTX, HTML, images with OCR
-- Hierarchical chunking built in for RAG pipelines
-- Integrates directly with ChromaDB
-- Python library — no Docker service needed
-- 42,000 GitHub stars, 1.5M monthly PyPI downloads
-- Weekly releases, active community
+### Why Kreuzberg
+- Rust core: 10-100x faster than Python alternatives
+- 97+ formats: PDF, DOCX, XLSX, XLS, CSV, PPTX, images + OCR
+- Async-first: matches Mithra's async codebase
+- Docker-ready by design: minimal system dependencies
+- ~71MB pip install vs 4-9GB for Docling (PyTorch)
+- All processing local: no API calls, no cloud
+- Active releases: multiple per month throughout 2025-2026
+- Featured in Tryolabs Top Python Libraries of 2025
 
-### Usage Modes
-    FAST MODE (default for Mithra)
-      No ML model downloads
-      Basic text extraction, structure preservation
-      Appropriate for: text PDFs, DOCX, PPTX
-      Low memory, fast processing
+### Format Coverage for Mithra
 
-    FULL MODE (enabled per document type)
-      Downloads ML models (~1-2GB, one time)
-      Table reconstruction, layout analysis
-      OCR for scanned documents
-      Appropriate for: scanned receipts, complex PDFs
-      Enable via config per domain
+    PDF            Native Rust extractor (fast, no ML)
+                   Scanned PDFs via force_ocr=True
+    DOCX           Native Rust parser
+    XLSX/XLS/CSV   Native Rust spreadsheet extractors
+                   Bank statements, expense files
+    PPTX           Presentations
+    Images         JPEG, PNG, TIFF via Tesseract OCR
+    HTML/MD        Web content, emails
 
-### Document Processing Pipeline
+### Usage Pattern
 
-    File received (Telegram, OneDrive, Gmail)
-         ↓
-    Docling extracts text + structure
-      fast_mode=True by default
-      full_mode=True for health.* and scanned images
-         ↓
-    Docling chunks into segments (~500 tokens)
-    with hierarchy metadata preserved
-         ↓
-    DocumentIndexer embeds chunks
-      health domain → local model only (phi3:mini)
-      all other domains → LLM router (cloud ok)
-         ↓
-    Chunks stored in ChromaDB
-    Metadata stored in SQLite files table
-    Raw file stored in FileStorageAdapter
+    from kreuzberg import extract_bytes, ExtractionConfig
 
-### Supported Formats (via Docling)
-    PDF       text + scanned (OCR in full mode)
-    DOCX      Word documents
-    PPTX      PowerPoint presentations
-    XLSX      Excel (basic text extraction)
-    HTML      web pages, email HTML bodies
-    Images    JPEG, PNG → OCR in full mode
-    MD        Markdown files
+    # Standard extraction (native PDFs, DOCX, XLSX)
+    result = await extract_bytes(content, mime_type=mime)
+    text = result.content
 
-### Web Crawling (Phase 2, not now)
-    Not needed for Phase 1.
-    Household documents live in OneDrive/Google Drive.
-    When research domain is built in Phase 2:
-      Use crawl4ai (open source, async, LLM-friendly)
-      Clean markdown output from web pages
-      Self-hostable, no managed service needed
+    # Force OCR for scanned images
+    config = ExtractionConfig(force_ocr=True)
+    result = await extract_bytes(content, mime_type=mime,
+                                  config=config)
+
+### System Dependencies
+    Tesseract OCR required for image/scanned PDF support.
+    Add to Dockerfile:
+      RUN apt-get install -y tesseract-ocr
+
+    Without tesseract: native text PDFs, DOCX, XLSX, CSV
+    still work. OCR gracefully degrades.
+
+### Risks and Mitigations
+    Risk: Single maintainer (Na'aman Hirschfeld / Goldziher)
+    Mitigation: DocumentIndexer abstraction means swapping
+    Kreuzberg = one file change, zero domain code changes.
+    Acceptable for personal household use.
+
+    Risk: v4 is a Rust rewrite (newer, less battle-tested)
+    Mitigation: Fallback path in _extract_chunks() catches
+    all exceptions and returns empty list — file is still
+    saved and searchable via SQLite metadata (Tier 1).
+
+    Risk: Breaking API changes between versions
+    Mitigation: Pin version in requirements.txt
 
 ### Alternatives Considered
 
-#### PyMuPDF (fitz)
-    Rejected as primary: fast simple text extraction
-    but no chunking, no structure preservation,
-    no table reconstruction, no OCR.
-    May use internally if Docling unavailable.
+#### Docling (IBM Research / Linux Foundation AI)
+    Rejected: PyTorch dependency adds 4-9GB to Docker image.
+    Unacceptable for Windows laptop with Watchtower
+    auto-updates pulling on every commit.
+    Better suited: GPU-based, high-volume enterprise workloads.
+    Revisit: if Kreuzberg proves insufficient for complex
+    scanned documents or enterprise-grade OCR is needed.
 
-#### RAGFlow
-    Rejected: full RAG engine requiring Docker service.
-    Adds significant infrastructure complexity.
-    Overkill for household document volumes.
+#### PyMuPDF4LLM + python-docx + openpyxl (per-format)
+    Pros: each library battle-tested 8-12+ years
+          no single-maintainer risk
+          ~65MB total
+    Cons: no unified API, 4 separate imports,
+          no built-in OCR, async wrappers needed
+    Decision: Deferred — migrate to this if Kreuzberg
+    maintainer becomes inactive or API stability issues emerge.
+    The DocumentIndexer abstraction makes this a one-day swap.
 
-#### Chunkr
-    Rejected: newer, less mature than Docling.
-    Requires separate service. Docling covers all
-    same use cases as Python library.
+#### Apache Tika
+    Rejected: requires Java server as sidecar container.
+    Adds Java runtime (~200MB) and separate service.
 
-#### pdfminer.six
-    Rejected as primary: complex API, no chunking,
-    less actively maintained. Docling uses better
-    underlying technology.
+#### Unstructured.io
+    Rejected: heavy like Docling, ML dependencies,
+    unsuitable for low-resource environments.
 
-### Dependencies to Add
-    docling              document extraction + chunking
-    docling[ocr]         OCR support (full mode only)
-    pytesseract          OCR fallback for images
-
-### Privacy Rules for Document Processing
-    Health domain documents:
-      Extract using Docling locally (no network calls)
-      Embed using local model ONLY (phi3:mini or similar)
-      Never send content to cloud embedding APIs
-      Docling runs entirely offline — safe for health data
-
-    All other domains:
-      Docling extraction is local (no network calls)
-      Embedding may use cloud LLM router
-      DataSanitiser runs before any cloud call
+### Migration Path
+If Kreuzberg needs to be replaced:
+  1. Update DocumentIndexer._extract_chunks() only
+  2. Replace kreuzberg imports with per-format libraries:
+       PDF:  pymupdf4llm
+       DOCX: python-docx
+       XLSX: openpyxl
+       OCR:  pytesseract
+  3. Zero changes to FileStorageRouter, FileSearchService,
+     domain code, or bootstrap
+  DocumentIndexer abstraction exists specifically for this.
 
 ---
 
