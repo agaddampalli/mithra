@@ -16,7 +16,7 @@
 
 ### Design Track (T1)
   [x] D-01 to D-23 — all design complete
-  [x] ARCHITECTURE_DECISIONS.md (8 sections)
+  [x] ARCHITECTURE_DECISIONS.md (10 sections)
       Section 1: Identity & Household Management
       Section 2: OAuth Token Management
       Section 3: File Storage and Document RAG
@@ -25,6 +25,8 @@
       Section 6: Phase 1 Storage Infrastructure
       Section 7: Storage Architecture
       Section 8: Dashboard and Visual Interface
+      Section 9: Domain Plugin Architecture
+      Section 10: Design Principles
   [ ] D-24 Architecture Pass 2 (component diagrams)
   [ ] D-25 Architecture Pass 3 (end-to-end scenarios)
 
