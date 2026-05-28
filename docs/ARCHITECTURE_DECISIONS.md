@@ -1193,7 +1193,159 @@ across households. Zero schema changes for product.
 
 ---
 
-## 8. Migration Plan (Current -> Target)
+## 8. Dashboard and Visual Interface
+
+### Decision
+Home Assistant (Lovelace) is Mithra's visual display layer.
+Mithra is the brain and single source of truth.
+HA reads from Mithra API — not from Google/Microsoft directly.
+Fire tablet runs HA in kiosk mode as always-on household display.
+
+### Why Option B (Mithra API → HA) Over Option A (HA direct)
+Option A: HA connects directly to Google Calendar, Microsoft etc.
+  Problem: data is fragmented across providers
+           HA knows about calendar but not Mithra's people notes,
+           budget summaries, document alerts, or household context
+           Two sources of truth — diverges over time
+
+Option B: Mithra exposes dashboard API → HA reads it
+  Mithra = single source of truth for all household data
+  HA = display only, no business logic
+  Richer: shows Mithra-specific data across all 15 domains
+  Consistent: same data in Telegram and on dashboard
+  Extensible: new domain = new dashboard card, no HA config change
+
+### Architecture
+
+    Mithra API (FastAPI)
+      GET /api/v1/dashboard/today
+      GET /api/v1/dashboard/people
+      GET /api/v1/dashboard/money
+      GET /api/v1/dashboard/home
+      GET /api/v1/dashboard/{domain}
+           ↓
+    Home Assistant (Lovelace)
+      Custom cards call Mithra API
+      Refresh every 5 minutes
+      household_id scoped per installation
+           ↓
+    Fire tablet (kiosk mode)
+      Always-on wall display
+      Shows today view by default
+      Touch to navigate domains
+
+### Dashboard API Design
+
+Each domain exposes a dashboard-ready summary endpoint.
+Standardized response format across all domains:
+
+    GET /api/v1/dashboard/{domain}?user_id=usr_ba6d9199
+
+    Response:
+    {
+        "domain": "time",
+        "updated_at": "2026-05-27T10:00:00Z",
+        "summary": "2 events today",
+        "items": [
+            {
+                "id": "...",
+                "title": "Dentist appointment",
+                "subtitle": "3:00 PM",
+                "icon": "calendar",
+                "priority": "high",
+                "action": "calendar.view"
+            }
+        ],
+        "alerts": [],
+        "quick_actions": [
+            {"label": "Add event", "action": "calendar.create"}
+        ]
+    }
+
+### Today View (primary dashboard screen)
+
+Aggregates across all domains into one daily summary:
+
+    GET /api/v1/dashboard/today
+
+    Sections:
+      📅 Today's calendar (Time domain)
+      🎂 Upcoming birthdays (People domain)
+      📦 Package deliveries (Shopping domain)
+      💰 Recent spending (Money domain)
+      🏠 Home status (Home domain — temp, locks)
+      ✅ Pending Mithra confirmations (Autonomy engine)
+      🌤 Weather summary
+
+### HA Lovelace Integration
+
+    Custom REST sensor in HA:
+      sensor:
+        - platform: rest
+          name: mithra_today
+          resource: https://assistant.mithra-app.com/api/v1/dashboard/today
+          headers:
+            Authorization: Bearer ${HA_MITHRA_TOKEN}
+          scan_interval: 300
+          value_template: "{{ value_json.summary }}"
+          json_attributes:
+            - items
+            - alerts
+            - quick_actions
+
+    HA token: new token type "dashboard" with read-only
+    access to dashboard endpoints only.
+    Stored in household_config: "ha_dashboard_token"
+
+### Fire Tablet Setup
+
+    Hardware: Amazon Fire HD 8 or Fire HD 10
+    Software: HA Companion app in kiosk mode
+    Display: always-on, auto-brightness
+    Default screen: Today view
+    Touch navigation: swipe between domain views
+    Voice: tap microphone → Mithra via HA Assist
+
+### Implementation Order (when ready)
+
+    D1. Add dashboard router to gateway.py
+        GET /api/v1/dashboard/{domain}
+        GET /api/v1/dashboard/today
+
+    D2. Time domain dashboard endpoint
+        (implement when Time domain is built)
+
+    D3. People domain dashboard endpoint
+        (implement when People domain is built)
+
+    D4. HA setup (can start once Time + People exist)
+        Install HA in Docker
+        Configure Lovelace with REST sensors
+        Fire tablet kiosk mode
+
+    D5. Today view (aggregate endpoint)
+        Once 3+ domains exist
+
+    D6. Voice integration
+        HA Assist → Wyoming → Mithra
+        (requires hardware)
+
+### Product Considerations
+
+    Multi-household (product):
+      Each household has its own HA instance
+      Or: Mithra hosts a web dashboard (no HA needed)
+      HA is personal-use optimized; product may use
+      a custom React dashboard instead
+
+    Authentication:
+      Dashboard token scoped to household_id
+      Read-only by default
+      HA never writes to Mithra — Telegram is write channel
+
+---
+
+## 9. Migration Plan (Current -> Target)
 
 ### Current State
     household.yaml -> has members list with person_a, person_b
@@ -1265,7 +1417,7 @@ across households. Zero schema changes for product.
 
 ---
 
-## 9. Implementation Order
+## 10. Implementation Order
 
 ### Phase A — Identity Foundation
 Must complete and verify before Phase B.
@@ -1370,7 +1522,7 @@ Start only after Phase A is verified.
 
 ---
 
-## 10. Alternatives Considered
+## 11. Alternatives Considered
 
 ### Nango Self-Hosted (Free) v0.70.4
 Decision: Removed
@@ -1433,7 +1585,7 @@ Reason:
 
 ---
 
-## 11. Design Principles
+## 12. Design Principles
 
 These apply to ALL future decisions.
 
