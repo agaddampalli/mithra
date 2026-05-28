@@ -1833,6 +1833,52 @@ Design now enables migration with zero domain code changes.
 
     I5. Each subsequent domain follows same pattern
 
+### 9.18 Deployment Architecture
+
+Decision: Modular monolith for all phases until product scale.
+
+    NOW — Single image (personal use):
+      All domains in mithra:latest image
+      One requirements.txt for all deps
+      Domain = Python package in monorepo
+      Deploy: docker compose up
+
+    PRODUCT Phase 1 — Plugin system:
+      Domains as pip-installable packages
+      pip install git+https://github.com/org/mithra-domain-time
+      Bootstrap auto-discovers via entry points:
+        [project.entry-points."mithra.domains"]
+        time = "mithra_domain_time:TimeDomain"
+      Mithra core image unchanged when domains update
+
+    PRODUCT Phase 2 — Separate domain image:
+      mithra-core:latest   (gateway, storage, agent)
+      mithra-domains:latest (all domain packages)
+      Two images, updated independently
+
+    PRODUCT Phase 3 — A2A specialist agents:
+      Each domain becomes an A2A agent
+      Zero domain logic changes (interface already compatible)
+      See section 9.15 for migration path
+
+    Why not microservices now:
+      Prerequisites not met: single developer, 2 users,
+      no Kubernetes, no distributed tracing,
+      no scale requirements.
+      42% of organizations that adopted microservices
+      early consolidated back (CNCF 2025 survey).
+      Modular monolith gives structural readiness
+      without operational complexity.
+
+    Domain dependency isolation:
+      Each domain declares its pip dependencies
+      in a comment block at top of __init__.py:
+        # Domain dependencies:
+        # google-api-python-client>=2.0
+        # google-auth-oauthlib>=1.0
+      When domains become pip packages,
+      these move to pyproject.toml automatically.
+
 ### 9.17 Alternatives Considered
 
     MCP for internal domains (rejected):
