@@ -13,8 +13,16 @@ LITELLM_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
 MITHRA_DB_PATH = os.environ.get("MITHRA_DB_PATH", "/data/mithra/mithra.db")
 
 SERVICES = {
-    "api-gateway": "http://api-gateway:8000/api/v1/health",
-    "llm-router":  "http://llm-router:4000/health",
+    "api-gateway": {
+        "url": "http://api-gateway:8000/api/v1/health",
+        "headers": {},
+    },
+    "llm-router": {
+        "url": "http://llm-router:4000/health",
+        "headers": {
+            "Authorization": f"Bearer {os.environ.get('LITELLM_MASTER_KEY', '')}",
+        },
+    },
 }
 
 def send_telegram(text: str) -> None:
@@ -33,12 +41,11 @@ def send_telegram(text: str) -> None:
     except Exception:
         pass
 
-def check_service(name: str, url: str) -> bool:
-    headers = {}
-    if "llm-router" in url and LITELLM_KEY:
-        headers["Authorization"] = f"Bearer {LITELLM_KEY}"
+def check_service(name: str, config: dict) -> bool:
     try:
-        req = urllib.request.Request(url, headers=headers)
+        req = urllib.request.Request(
+            config["url"],
+            headers=config.get("headers", {}))
         urllib.request.urlopen(req, timeout=5)
         return True
     except Exception:
@@ -73,8 +80,8 @@ def main():
     last_backup_ts = 0.0  # run immediately on first week expiry check
 
     while True:
-        for name, url in SERVICES.items():
-            healthy = check_service(name, url)
+        for name, config in SERVICES.items():
+            healthy = check_service(name, config)
             was_healthy = state[name]
 
             if not healthy and was_healthy:
