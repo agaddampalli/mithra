@@ -144,10 +144,21 @@
   Tesseract: installed for OCR support
   784 tests passing
 
-## Phase 1 — Domains (NEXT)
+## Phase 1 — Domains
 
-  Pending: domain plugin architecture decision first.
-  Then Time domain (calendar read), People, Documents.
+  [x] I1 mithra/domains/ package — Domain ABC, DomainContext, ToolResult,
+          DomainEvent, ToolBundle, ToolMetadata, PermissionTier,
+          DashboardData, DashboardItem, DomainRegistry
+  [x] I2 LangGraphAdapter — domain_registry param, _build_domain_context(),
+          _extract_domain_ids(), _execute_with_autonomy()
+  [x] I3 gateway.py — GET /api/v1/dashboard/{domain_id},
+          GET /api/v1/dashboard/today, domain registry in /health
+  [x] I4 bootstrap.py — DomainRegistry wired into build_state()
+
+  50 new domain infrastructure tests passing.
+
+  Next: Time domain (I4 per ADR section 9.16)
+        mithra/domains/time/ — calendar read and write tools
 
 ## Pending Hardware (blocked until hardware arrives)
   [ ] HA-01 to HA-12 (Home Assistant setup)
@@ -161,14 +172,15 @@
 
 ## Current Focus
   Phase 1 storage: COMPLETE
+  Domain plugin infrastructure: COMPLETE
   7-day stability run (started 2026-05-25) — ongoing
   Daily: send "hi" to bot, verify response
-  Next: Domain plugin architecture decision
-        → How domains register with LangGraph
-        Then: Time domain (calendar read)
+  Next: Time domain — mithra/domains/time/
+        calendar read (read events) + calendar write (create event)
+        registers with DomainRegistry at bootstrap
 
 ## Test Baseline
-  784 tests passing (2026-05-27)
+  784 + 50 = 834 tests passing (2026-05-27)
 
 ## Infra Cleanup (deferred to end of Phase 1)
   Automate as part of closing infrastructure phases.
