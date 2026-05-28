@@ -51,6 +51,7 @@ class _GraphState(TypedDict):
     intent: str
     confidence: float
     selected_tool: str | None
+    domain_bundles: list[Any]
     tool_result: dict[str, Any] | None
     pending_actions: list
     response_text: str
@@ -67,11 +68,23 @@ class LangGraphAdapter(AgentInterface):
         storage_router: StorageRouter | None = None,
         context_cache: Any | None = None,
         household_timezone: str = "UTC",
+        domain_registry: Any | None = None,
+        household_id: str = "",
+        oauth_manager: Any | None = None,
+        file_router: Any | None = None,
+        member_registry: Any | None = None,
+        file_search: Any | None = None,
     ) -> None:
         self._llm_router = llm_router
         self._storage_router = storage_router
         self._context_cache = context_cache
         self._household_tz = household_timezone
+        self._domain_registry = domain_registry
+        self._household_id = household_id
+        self._oauth_manager = oauth_manager
+        self._file_router = file_router
+        self._member_registry = member_registry
+        self._file_search = file_search
         self._tools: dict[str, MCPTool] = {}
         self._graph = self._build_graph()
 
@@ -137,22 +150,62 @@ class LangGraphAdapter(AgentInterface):
 
     def _node_select_tool(self, state: _GraphState) -> dict[str, Any]:
         intent = state.get("intent", "")
+
+        # Stage 2: load domain tools from registry for this intent's domain(s)
+        domain_bundles: list[Any] = []
+        if self._domain_registry is not None:
+            request: AgentRequest = state["request"]
+            domain_ids = self._extract_domain_ids(intent)
+            if domain_ids:
+                try:
+                    ctx = self._build_domain_context(request)
+                    domain_bundles = self._domain_registry.get_tools(domain_ids, ctx)
+                except Exception:
+                    pass
+
+        # Fall back to MCPTool registry (backward compat)
         if intent in self._tools:
-            return {"selected_tool": intent}
-        # Best-effort: find a tool in the same domain
+            return {"selected_tool": intent, "domain_bundles": domain_bundles}
         domain_prefix = intent.split(".")[0] if "." in intent else ""
         for name in self._tools:
             if name.startswith(domain_prefix + "."):
-                return {"selected_tool": name}
-        return {"selected_tool": None}
+                return {"selected_tool": name, "domain_bundles": domain_bundles}
+        return {"selected_tool": None, "domain_bundles": domain_bundles}
 
     def _node_execute_tool(self, state: _GraphState) -> dict[str, Any]:
         tool_name = state.get("selected_tool")
+        domain_bundles: list[Any] = state.get("domain_bundles", [])
+
+        # Try domain registry bundles first
+        if domain_bundles:
+            request: AgentRequest = state["request"]
+            intent = state.get("intent", "")
+            for bundle in domain_bundles:
+                if bundle.metadata.name == tool_name or bundle.metadata.name in str(intent):
+                    try:
+                        ctx = self._build_domain_context(request)
+                        result = self._execute_with_autonomy(bundle, {}, ctx)
+                        if result.get("requires_confirmation"):
+                            return {
+                                "tool_result": None,
+                                "pending_actions": [{
+                                    "action_type": bundle.metadata.name,
+                                    "domain": bundle.metadata.domain_id,
+                                    "payload": {},
+                                    "output_channel": "none",
+                                    "autonomy_level": bundle.metadata.autonomy_level,
+                                    "reversibility": "full" if bundle.metadata.is_reversible else "none",
+                                }],
+                            }
+                        return {"tool_result": result}
+                    except Exception as exc:  # noqa: BLE001
+                        return {"tool_result": None, "error": str(exc)}
+
+        # Fall back to MCPTool registry
         if tool_name is None or tool_name not in self._tools:
-            # No domain tool registered for this intent — let generate_response use LLM
             return {"tool_result": None, "error": None}
         tool = self._tools[tool_name]
-        request: AgentRequest = state["request"]
+        request = state["request"]
         try:
             kwargs: dict[str, Any] = {}
             if tool.requires_user_id:
@@ -306,6 +359,7 @@ class LangGraphAdapter(AgentInterface):
             "intent": AgentIntent.SYSTEM_UNKNOWN,
             "confidence": 0.0,
             "selected_tool": None,
+            "domain_bundles": [],
             "tool_result": None,
             "pending_actions": [],
             "response_text": "",
@@ -342,6 +396,7 @@ class LangGraphAdapter(AgentInterface):
             "intent": AgentIntent.SYSTEM_UNKNOWN,
             "confidence": 0.0,
             "selected_tool": None,
+            "domain_bundles": [],
             "tool_result": None,
             "pending_actions": [],
             "response_text": "",
@@ -438,6 +493,112 @@ class LangGraphAdapter(AgentInterface):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _build_domain_context(self, request: AgentRequest) -> Any:
+        """Build an immutable DomainContext from the current request."""
+        from mithra.domains.context import DomainContext
+
+        channel_map = {
+            "voice": "voice",
+            "telegram": "telegram",
+            "whatsapp": "telegram",
+            "api": "dashboard",
+            "scheduler": "dashboard",
+            "upload": "telegram",
+            "email": "telegram",
+        }
+        channel = channel_map.get(str(request.input_channel), "telegram")
+
+        storage_adapter = None
+        if self._storage_router:
+            try:
+                storage_adapter = self._storage_router.get_adapter("general")
+            except Exception:  # noqa: BLE001
+                pass
+
+        return DomainContext(
+            user_id=request.user_id,
+            household_id=self._household_id,
+            household_timezone=self._household_tz,
+            oauth_manager=self._oauth_manager,
+            storage_adapter=storage_adapter,
+            file_router=self._file_router,
+            member_registry=self._member_registry,
+            file_search=self._file_search,
+            request_id=request.request_id or "",
+            channel=channel,
+            language="en-US",
+            autonomy_override=None,
+        )
+
+    def _extract_domain_ids(self, intent: str) -> list[str]:
+        """Extract domain IDs from a classified intent string.
+
+        Intent format: "domain.action" (e.g. "time.create_event")
+        Also handles underscore format: "calendar_create_event" → "time"
+        """
+        from mithra.agent.interface import AgentIntent
+
+        if not intent or intent in (
+            str(AgentIntent.SYSTEM_UNKNOWN),
+            str(AgentIntent.SYSTEM_CLARIFICATION_NEEDED),
+        ):
+            return []
+        intent_str = str(intent)
+        if "." in intent_str:
+            domain = intent_str.split(".")[0]
+        else:
+            domain = intent_str.split("_")[0] if "_" in intent_str else intent_str
+        if domain and domain not in ("system",):
+            return [domain]
+        return []
+
+    def _execute_with_autonomy(
+        self,
+        bundle: Any,
+        tool_input: dict[str, Any],
+        context: Any,
+    ) -> dict[str, Any]:
+        """Execute a ToolBundle with PermissionTier enforcement.
+
+        DESTRUCTIVE is a ONE-WAY DOOR: always returns requires_confirmation=True,
+        no override possible. READ and WRITE execute inline; the AutononomyEngine
+        handles WRITE confirmation at the action level.
+        """
+        from mithra.domains.bundle import PermissionTier
+
+        if bundle.metadata.permission == PermissionTier.DESTRUCTIVE:
+            return {
+                "requires_confirmation": True,
+                "tool_name": bundle.metadata.name,
+                "description": f"Requires confirmation: {bundle.metadata.name}",
+            }
+
+        try:
+            result = bundle.tool.invoke(tool_input)
+            from mithra.domains.result import ToolResult
+            if isinstance(result, ToolResult):
+                return {
+                    "success": result.success,
+                    "summary": result.summary,
+                    "data": result.data,
+                    "error": result.error,
+                    "events": [
+                        {
+                            "event_type": e.event_type,
+                            "source_domain": e.source_domain,
+                            "payload": e.payload,
+                        }
+                        for e in result.events
+                    ],
+                    "undo_token": result.undo_token,
+                    "response": result.summary,
+                }
+            if isinstance(result, dict):
+                return result
+            return {"result": str(result), "success": True, "response": str(result)}
+        except Exception as exc:  # noqa: BLE001
+            return {"success": False, "error": str(exc)}
 
     def _state_to_result(
         self, state: dict[str, Any], request_id: str, start: float

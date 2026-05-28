@@ -225,6 +225,11 @@ def _build_file_storage(state: dict) -> None:
         _logger.warning("ChromaDB not available for file indexing: %s", exc)
 
 
+def _build_domain_registry() -> Any:
+    from mithra.domains import DomainRegistry
+    return DomainRegistry()
+
+
 def _build_telegram_handler(state: dict, household_config: dict, base_url: str) -> None:
     from mithra.adapters.messaging.telegram_handler import TelegramSignalHandler
 
@@ -287,11 +292,16 @@ async def build_state(
     state["action_log"] = action_log
     state["dead_letter_queue"] = dead_letter_queue
 
+    domain_registry = _build_domain_registry()
+    state["domain_registry"] = domain_registry
+
     from mithra.agent.langgraph_adapter import LangGraphAdapter
     state["agent"] = LangGraphAdapter(
         llm_router=llm_router,
         storage_router=storage_router,
         household_timezone=state.get("household_timezone", "UTC"),
+        domain_registry=domain_registry,
+        household_id=household_id,
     )
 
     base_url = os.environ.get("MITHRA_BASE_URL", "https://assistant.mithra-app.com")
@@ -305,6 +315,14 @@ async def build_state(
     _build_oauth_manager(state)
     _build_file_storage(state)
     _build_calendar(state, household_id, executor)
+
+    # Patch agent with services built after initial construction
+    agent = state.get("agent")
+    if agent is not None:
+        agent._oauth_manager = state.get("oauth_manager")
+        agent._file_router = state.get("file_router")
+        agent._member_registry = state.get("member_registry")
+        agent._file_search = state.get("file_search")
 
     if state.get("telegram_output"):
         _build_telegram_handler(state, household_config, base_url)

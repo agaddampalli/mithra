@@ -169,6 +169,14 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                 h = {"status": "error", "error": str(exc)}
             components.setdefault("services", {})["local_storage"] = h
 
+        domain_registry = _state.get("domain_registry")
+        if domain_registry:
+            try:
+                h = domain_registry.health()
+            except Exception as exc:
+                h = {"status": "error", "error": str(exc)}
+            components["domain_registry"] = h
+
         overall = "ok"
         if any(s == "error" for s in statuses):
             overall = "error"
@@ -268,6 +276,42 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                 else None
             ),
         }
+
+    @app.get("/api/v1/dashboard/{domain_id}")
+    async def get_domain_dashboard(domain_id: str, request: Request, user_id: str = ""):
+        """Return dashboard data for a single domain. Authenticated."""
+        registry = _state.get("domain_registry")
+        if registry is None:
+            raise HTTPException(status_code=503, detail="Domain registry not available")
+        domain = registry.get(domain_id)
+        if domain is None:
+            raise HTTPException(status_code=404, detail=f"Domain '{domain_id}' not registered")
+        hid = _state.get("household_id", "")
+        uid = user_id or hid
+        from dataclasses import asdict
+        data = await domain.get_dashboard_data(user_id=uid, household_id=hid)
+        return asdict(data)
+
+    @app.get("/api/v1/dashboard/today")
+    async def get_today_dashboard(request: Request, user_id: str = ""):
+        """Return aggregated dashboard data across all registered domains. Authenticated."""
+        registry = _state.get("domain_registry")
+        if registry is None:
+            raise HTTPException(status_code=503, detail="Domain registry not available")
+        hid = _state.get("household_id", "")
+        uid = user_id or hid
+        from dataclasses import asdict
+        results = []
+        for domain_id in registry.get_all_domain_ids():
+            domain = registry.get(domain_id)
+            if domain is None:
+                continue
+            try:
+                data = await domain.get_dashboard_data(user_id=uid, household_id=hid)
+                results.append(asdict(data))
+            except Exception:
+                pass
+        return results
 
     # Generic OAuth routes — works for any configured provider in OAUTH_PROVIDERS.
     # Google Cloud Console must have this redirect URI:
