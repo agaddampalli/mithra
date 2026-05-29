@@ -158,3 +158,153 @@ PATTERN 5 — Silent exception swallowing
   Built:    except Exception: return error_response
   Result:   Real errors hidden, impossible to debug
   Fix:      Always log with traceback before returning error
+
+---
+
+## 9. Confirmation Flow Checklist
+
+When any WRITE or DESTRUCTIVE tool triggers a confirmation,
+trace the full round-trip before marking the feature complete.
+
+  [ ] _node_execute_tool stores user_id in pending payload:
+      pending_actions[0]["payload"]["user_id"] = request.user_id
+      Verify: grep for "user_id" in the payload dict at plan time
+
+  [ ] DefaultAutonomyEngine.confirm() reads user_id from payload:
+      exec_user_id = pending.payload.get("user_id") or user_id
+      NEVER uses the caller's user_id directly — caller may be
+      a different user than the one who made the original request
+
+  [ ] Engine has _domain_registry set at runtime:
+      bootstrap.py patches engine._domain_registry after build
+      Verify: engine._domain_registry is not None at confirm() call
+
+  [ ] _build_execution_context() called with exec_user_id (not household):
+      DomainContext.user_id must match the requesting member's ID
+      Google OAuth lookup uses this user_id — wrong ID = auth failure
+
+  [ ] DomainToolAdapter registered as executor fallback:
+      executor.register_fallback(adapter) called in bootstrap
+      Verify: executor._fallback is not None before first confirm
+
+  [ ] Tool name in pending payload matches domain tool name exactly:
+      pending.payload["tool_name"] must equal bundle.tool.name
+      Mismatch = "tool not found" at confirm time, not at plan time
+
+  [ ] ActionLogEntry written on confirm (success AND failure):
+      Status "confirmed" written regardless of tool outcome
+      Success/failure recorded in entry.success field
+
+  [ ] Pending action removed from store after confirm or reject:
+      get_pending() must return empty list after resolution
+      Verify: _storage.delete() called with correct key
+
+### Round-Trip Test Procedure (run before marking any WRITE tool done)
+
+  Step 1 — Plan:
+    Send: "add dentist tuesday 3pm"
+    Verify: response contains confirmation buttons [Yes] [No]
+    Verify: pending action stored with correct user_id in payload
+
+  Step 2 — Inspect pending:
+    Call engine.get_pending(user_id)
+    Verify: one entry, domain="time", payload has user_id
+
+  Step 3 — Confirm:
+    Simulate "Yes" → engine.confirm(request_id, 0, user_id, executor)
+    Verify: ExecutionReceipt.executed has one entry
+
+  Step 4 — Check calendar:
+    Call calendar_read_events for the scheduled day
+    Verify: event appears in Google Calendar
+
+  Step 5 — Verify pending cleared:
+    Call engine.get_pending(user_id)
+    Verify: empty list returned
+
+---
+
+## 10. Logging and Exception Handling Standards
+
+Every module must follow these rules. Deviations hide bugs.
+
+### Module Requirements
+
+  [ ] Module-level logger defined at top of every file:
+      _logger = logging.getLogger(__name__)
+      Never use print(). Never use logging.info() directly.
+      Never use a logger named "mithra" — always __name__.
+
+  [ ] No bare logger passed into constructors:
+      Modules own their own logger. Never inject a logger
+      as a constructor argument unless building a test stub.
+
+### Required Log Points
+
+  [ ] Domain tool success — INFO level:
+      _logger.info("calendar_create_event succeeded: %s", event_id)
+
+  [ ] Domain tool failure — WARNING level (user-facing failure):
+      _logger.warning("calendar_create_event failed: %s", error_msg)
+
+  [ ] Infrastructure failure — ERROR level with exc_info:
+      _logger.error("Google Calendar API error", exc_info=True)
+
+  [ ] Confirmation flow entry — DEBUG level:
+      _logger.debug("confirm() called: request_id=%s user_id=%s",
+                    request_id, user_id)
+
+  [ ] NEVER violations — ERROR level (security audit):
+      _logger.error("NEVER violation: domain=%s action=%s user=%s",
+                    domain, action_type, user_id)
+
+### Exception Handling Rules
+
+  [ ] Tools NEVER propagate exceptions to the agent graph:
+      All exceptions caught at tool boundary, returned as
+      ToolResult(success=False, summary="...", error="...")
+      Agent graph receives ToolResult, not exception
+
+  [ ] Infrastructure exceptions logged BEFORE returning error:
+      try:
+          result = gc.create_event(event)
+      except Exception as exc:
+          _logger.error("create_event failed", exc_info=True)
+          return ToolResult(success=False,
+                            summary=f"Could not create event: {exc}",
+                            error=str(exc))
+
+  [ ] Never use bare except without re-raise or log:
+      except Exception:           ← BANNED (silent swallow)
+      except Exception as exc:    ← REQUIRED
+          _logger.error(..., exc_info=True)
+          # then return error or re-raise
+
+  [ ] confirm() catches per-path exceptions, falls through:
+      Domain registry path fails → log warning → try executor path
+      Executor path fails → log error → return failed receipt
+      Never let one path's exception kill the whole confirm()
+
+### Mandatory Domain Tool Exception Pattern
+
+Every domain tool's _run() must follow this exact structure:
+
+    def _run(self, **kwargs) -> dict:
+        try:
+            # do the work
+            return ToolResult(success=True, summary="...").model_dump()
+        except SomeSpecificError as exc:
+            _logger.warning("%s: %s", self.name, exc)
+            return ToolResult(
+                success=False,
+                summary=f"Could not complete: {exc}",
+                error=str(exc),
+                error_code="SPECIFIC_ERROR_CODE",
+            ).model_dump()
+        except Exception as exc:
+            _logger.error("%s unexpected error", self.name, exc_info=True)
+            return ToolResult(
+                success=False,
+                summary=f"Unexpected error in {self.name}",
+                error=str(exc),
+            ).model_dump()

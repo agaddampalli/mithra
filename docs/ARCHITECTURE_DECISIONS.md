@@ -1909,6 +1909,147 @@ Decision: Modular monolith for all phases until product scale.
       Two-stage selection keeps tools per request ≤ 15.
       Industry consensus: inject only relevant tools.
 
+### 9.19 Confirmation Flow (Complete Design)
+
+This section captures the full round-trip for WRITE and DESTRUCTIVE
+tool confirmations. It is the authoritative reference for any code
+that touches pending actions, confirm(), or user identity at
+execution time.
+
+#### Step 1 — Pending Action Creation (_node_execute_tool)
+
+    When _execute_with_autonomy() returns requires_confirmation=True,
+    _node_execute_tool constructs the pending action:
+
+        pending_actions = [{
+            "domain":       "time",
+            "action_type":  "calendar_create_event",
+            "tool_name":    "calendar_create_event",  # exact tool name
+            "payload": {
+                **tool_args,                           # all tool inputs
+                "user_id": request.user_id,            # REQUIRED — see below
+            },
+            "output_channel": "telegram",
+            "autonomy_level": 1,
+            "description":  "Create 'Dentist appointment' Tuesday 3pm",
+        }]
+
+    WHY user_id is required in payload:
+      confirm() is called by the gateway with the Telegram user_id
+      of whoever tapped [Yes]. That may be household admin, not the
+      user who made the original request. Without payload["user_id"],
+      the tool executes as the wrong user → wrong OAuth token →
+      "Google not connected for household" error.
+
+#### Step 2 — Engine Storage (DefaultAutonomyEngine.process())
+
+    process() stores pending actions in StorageAdapter:
+        domain="autonomy", layer="state",
+        key=f"pending_{request_id}_{action_index}"
+    Expires 24 hours after creation.
+    Returns ExecutionReceipt with pending list populated.
+
+#### Step 3 — User Confirmation (Telegram)
+
+    TelegramOutputAdapter sends inline keyboard:
+        [✅ Yes, do it] [❌ No]
+    Callback data encodes: request_id + action_index
+    User taps → TelegramInputAdapter routes to
+    gateway confirm() handler → engine.confirm() called.
+
+#### Step 4 — confirm() Execution Paths
+
+    exec_user_id = pending.payload.get("user_id") or user_id
+
+    Path A — Domain Registry (preferred):
+      domain = self._domain_registry.get(pending.domain)
+      if domain:
+          ctx = self._build_execution_context(exec_user_id)
+          bundles = await asyncio.to_thread(domain.get_tools, ctx)
+          bundle = next(b for b in bundles
+                        if b.tool.name == pending.payload["tool_name"])
+          result = await asyncio.to_thread(
+              bundle.tool.invoke, pending.payload)
+          # write ActionLogEntry, return receipt
+
+    Path B — Executor Fallback:
+      If domain not registered OR Path A raises exception:
+          action = AgentAction(
+              action_type=pending.action_type,
+              domain=pending.domain,
+              payload=pending.payload,
+              output_channel=pending.output_channel,
+          )
+          exec_result = await executor.execute(action)
+          # DomainToolAdapter handles via register_fallback()
+
+    Invariant: NEVER route health domain through Path B.
+    Health domain tools must only execute via Path A with a
+    DomainContext that has LocalStorageAdapter.
+
+#### Step 5 — Result to User
+
+    ExecutionReceipt returned to gateway:
+        executed: [ActionLogEntry(...)]
+        pending:  []
+        response_text: "Done! 'Dentist appointment' created for
+                        Tuesday June 3 at 3:00 PM."
+    Gateway passes response_text to TelegramOutputAdapter.send().
+
+#### Key Invariants (one-way doors)
+
+    1. payload["user_id"] ALWAYS set at plan time, ALWAYS read at
+       confirm time. No exceptions.
+
+    2. exec_user_id used for DomainContext — never "household" for
+       personal tool execution.
+
+    3. confirm() catches Path A exceptions with WARNING log and
+       falls through to Path B. Path B exceptions use ERROR log
+       and return a failed receipt. Neither path propagates to caller.
+
+    4. ActionLogEntry written on BOTH success and failure.
+       Audit trail must be complete regardless of tool outcome.
+
+    5. PermissionTier.DESTRUCTIVE ALWAYS goes through confirmation.
+       No autonomy level override bypasses this.
+       Enforced in _execute_with_autonomy() — one-way door.
+
+---
+
+### Logging Standard for Domains
+
+All domain tool files must use this pattern:
+
+    import logging
+    _logger = logging.getLogger(__name__)
+
+    class SomeTool(BaseTool):
+        def _run(self, **kwargs) -> dict:
+            _logger.debug("%s called: %s", self.name, kwargs)
+            try:
+                result = do_the_work(...)
+                _logger.info("%s succeeded: %s", self.name, result.summary)
+                return ToolResult(success=True, ...).model_dump()
+            except KnownError as exc:
+                _logger.warning("%s: %s", self.name, exc)
+                return ToolResult(success=False,
+                                  summary=f"...: {exc}",
+                                  error=str(exc)).model_dump()
+            except Exception as exc:
+                _logger.error("%s unexpected error", self.name,
+                              exc_info=True)
+                return ToolResult(success=False,
+                                  summary=f"Unexpected error",
+                                  error=str(exc)).model_dump()
+
+    Rules:
+      DEBUG  — entry point, kwargs (sanitise before logging PII)
+      INFO   — success with key identifiers (event_id, not full data)
+      WARNING — user-facing failures (Google not connected, parse fail)
+      ERROR  — unexpected exceptions, always exc_info=True
+      Never log access_token, refresh_token, or any OAuth credential.
+
 ---
 
 ## 10. Time Domain
