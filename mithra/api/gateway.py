@@ -123,7 +123,10 @@ def create_app(state_override: dict | None = None) -> FastAPI:
     @app.get("/api/v1/health")
     async def health():
         """Aggregated health from all components. Unauthenticated."""
+        _hlog = logging.getLogger(__name__ + ".health")
+
         async def _collect() -> dict[str, Any]:
+            import time
             components: dict[str, Any] = {}
             statuses = []
 
@@ -152,6 +155,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             # Synchronous I/O calls — offloaded to thread pool
             llm_router = _state.get("llm_router")
             if llm_router:
+                t = time.time()
                 try:
                     rh = await asyncio.to_thread(llm_router.health)
                     h = {
@@ -160,33 +164,40 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                     }
                 except Exception as exc:
                     h = {"status": "error", "error": str(exc)}
+                _hlog.info("llm_router health: %.2fs", time.time() - t)
                 components["llm_router"] = h
                 statuses.append(h.get("status", "ok"))
 
             domain_router = _state.get("domain_router")
             if domain_router:
+                t = time.time()
                 try:
                     h = await asyncio.to_thread(domain_router.health)
                 except Exception as exc:
                     h = {"status": "error", "error": str(exc)}
+                _hlog.info("domain_router health: %.2fs", time.time() - t)
                 components["domain_router"] = h
                 statuses.append(h.get("status", "ok"))
 
             context_cache = _state.get("context_cache")
             if context_cache:
+                t = time.time()
                 try:
                     h = await asyncio.to_thread(context_cache.health)
                 except Exception as exc:
                     h = {"status": "error", "error": str(exc)}
+                _hlog.info("context_cache health: %.2fs", time.time() - t)
                 components["context_cache"] = h
                 statuses.append(h.get("status", "ok"))
 
             local_adapter = _state.get("local_adapter")
             if local_adapter:
+                t = time.time()
                 try:
                     h = await asyncio.to_thread(local_adapter.health)
                 except Exception as exc:
                     h = {"status": "error", "error": str(exc)}
+                _hlog.info("local_adapter health: %.2fs", time.time() - t)
                 components.setdefault("services", {})["local_storage"] = h
 
             overall = "ok"
@@ -297,24 +308,9 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             ),
         }
 
-    @app.get("/api/v1/dashboard/{domain_id}")
-    async def get_domain_dashboard(domain_id: str, request: Request, user_id: str = ""):
-        """Return dashboard data for a single domain. Authenticated."""
-        registry = _state.get("domain_registry")
-        if registry is None:
-            raise HTTPException(status_code=503, detail="Domain registry not available")
-        domain = registry.get(domain_id)
-        if domain is None:
-            raise HTTPException(status_code=404, detail=f"Domain '{domain_id}' not registered")
-        hid = _state.get("household_id", "")
-        uid = user_id or hid
-        from dataclasses import asdict
-        data = await domain.get_dashboard_data(user_id=uid, household_id=hid)
-        return asdict(data)
-
     @app.get("/api/v1/dashboard/today")
     async def get_today_dashboard(request: Request, user_id: str = ""):
-        """Return aggregated dashboard data across all registered domains. Authenticated."""
+        """Return aggregated dashboard data across all registered domains. Unauthenticated."""
         registry = _state.get("domain_registry")
         if registry is None:
             raise HTTPException(status_code=503, detail="Domain registry not available")
@@ -332,6 +328,21 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             except Exception:
                 pass
         return results
+
+    @app.get("/api/v1/dashboard/{domain_id}")
+    async def get_domain_dashboard(domain_id: str, request: Request, user_id: str = ""):
+        """Return dashboard data for a single domain. Unauthenticated."""
+        registry = _state.get("domain_registry")
+        if registry is None:
+            raise HTTPException(status_code=503, detail="Domain registry not available")
+        domain = registry.get(domain_id)
+        if domain is None:
+            raise HTTPException(status_code=404, detail=f"Domain '{domain_id}' not registered")
+        hid = _state.get("household_id", "")
+        uid = user_id or hid
+        from dataclasses import asdict
+        data = await domain.get_dashboard_data(user_id=uid, household_id=hid)
+        return asdict(data)
 
     # Generic OAuth routes — works for any configured provider in OAUTH_PROVIDERS.
     # Google Cloud Console must have this redirect URI:
