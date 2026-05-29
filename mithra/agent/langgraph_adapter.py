@@ -221,36 +221,66 @@ class LangGraphAdapter(AgentInterface):
         return {"domain_bundles": domain_bundles}
 
     def _node_llm_tool_selection(self, state: _GraphState) -> dict[str, Any]:
-        """Stage 2b — LLM selects the specific tool via bind_tools (ADR 9.4)."""
-        from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore[import]
+        """Stage 2b — LLM selects the specific tool via call_with_tools (ADR 9.4).
 
+        Converts ToolBundles to OpenAI tool schema, calls call_with_tools()
+        which routes through the LiteLLM proxy with the full fallback chain.
+        """
         domain_bundles: list[Any] = state.get("domain_bundles", [])
         request: AgentRequest = state["request"]
 
         if not domain_bundles:
             return {"tool_calls": [], "llm_response": None}
 
-        lc_tools = [bundle.tool for bundle in domain_bundles]
-        try:
-            llm = self._llm_router.get_langchain_llm()
-            llm_with_tools = llm.bind_tools(lc_tools)
-            messages = [
-                SystemMessage(
-                    content=(
-                        "You are Mithra, a household AI assistant. "
-                        f"Timezone: {self._household_tz}. "
-                        "Select and call the most appropriate tool to fulfill the "
-                        "user's request. Be precise with the parameters."
-                    )
-                ),
-                HumanMessage(content=request.text or ""),
-            ]
-            response = llm_with_tools.invoke(messages)
-            tool_calls = getattr(response, "tool_calls", []) or []
-            _logger.info(
-                "_node_llm_tool_selection: %d tool call(s) selected", len(tool_calls)
+        # Convert ToolBundles to OpenAI-format tool schema
+        tools_schema: list[dict[str, Any]] = []
+        for bundle in domain_bundles:
+            lc_tool = bundle.tool
+            schema: dict[str, Any] = (
+                lc_tool.args_schema.model_json_schema()
+                if lc_tool.args_schema else {}
             )
-            return {"tool_calls": tool_calls, "llm_response": response}
+            schema.pop("title", None)
+            tools_schema.append({
+                "type": "function",
+                "function": {
+                    "name": lc_tool.name,
+                    "description": lc_tool.description,
+                    "parameters": schema,
+                },
+            })
+
+        tz = pytz.timezone(self._household_tz)
+        now = datetime.now(tz)
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Mithra, a household AI assistant. "
+                    f"Today is {now.strftime('%A, %B %-d, %Y')}. "
+                    f"Current time: {now.strftime('%-I:%M %p')} {self._household_tz}. "
+                    "Use the available tools to help the user. "
+                    "Always use a tool when one is relevant."
+                ),
+            },
+            {"role": "user", "content": request.text or ""},
+        ]
+
+        try:
+            result = self._llm_router.call_with_tools(
+                messages=messages,
+                tools=tools_schema,
+            )
+            if result.get("name"):
+                _logger.info(
+                    "_node_llm_tool_selection: selected tool=%r", result["name"]
+                )
+                return {
+                    "tool_calls": [{"name": result["name"], "args": result.get("args", {})}],
+                    "llm_response": None,
+                }
+            _logger.info("_node_llm_tool_selection: LLM chose text response (no tool)")
+            return {"tool_calls": [], "llm_response": result.get("content", "")}
         except Exception as exc:
             _logger.error(
                 "_node_llm_tool_selection failed: %s\n%s", exc, traceback.format_exc()

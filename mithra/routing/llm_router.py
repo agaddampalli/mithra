@@ -190,13 +190,23 @@ class LLMRouter(ABC):
         """Return health status of the router and its model backends."""
         ...
 
-    def get_langchain_llm(self) -> Any:
-        """Return a LangChain ChatModel bound to this router's LiteLLM proxy.
+    def call_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """Call the LLM with tool definitions and return the selected tool call.
 
-        Used by LangGraphAdapter for bind_tools two-stage tool selection (ADR 9.4).
-        Only concrete adapters that support LangChain integration implement this.
+        Uses the same model routing and fallback chain as complete().
+        Returns {"name": str, "args": dict} when the LLM selected a tool,
+        or {"name": None, "content": str} when it responded with text only.
+
+        tools: OpenAI-format tool dicts:
+          [{"type": "function", "function": {
+              "name": "...", "description": "...", "parameters": {...}}}]
         """
-        raise NotImplementedError("get_langchain_llm() not implemented for this router")
+        raise NotImplementedError("call_with_tools() not implemented for this router")
 
 
 # ---------------------------------------------------------------------------
@@ -581,22 +591,67 @@ class LiteLLMRouterAdapter(LLMRouter):
         )
 
     # ------------------------------------------------------------------
-    # get_langchain_llm
+    # call_with_tools
     # ------------------------------------------------------------------
 
-    def get_langchain_llm(self) -> Any:
-        """Return a ChatOpenAI instance pointed at the LiteLLM proxy.
+    def call_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """Call LLM with tool definitions via the LiteLLM proxy HTTP API.
 
-        Temperature 0 for deterministic tool selection. The model name is the
-        first entry in the cloud chain; LiteLLM routes it to the actual provider.
+        Reuses _call() and the _CLOUD_CHAIN fallback loop so routing and
+        fallback behaviour matches complete() exactly. No separate litellm
+        Python package required — the proxy handles provider routing.
+
+        Returns {"name": str, "args": dict} when LLM selected a tool,
+        or {"name": None, "content": str} when it responded with text only.
         """
-        from langchain_openai import ChatOpenAI  # type: ignore[import]
-        return ChatOpenAI(
-            model=_CLOUD_CHAIN[0],
-            base_url=f"{self._base_url}/v1",
-            api_key=self._litellm_key or "no-key",
-            temperature=0,
-        )
+        target_model = model or _CLOUD_CHAIN[0]
+        raw: Any = None
+        last_exc: str = ""
+
+        try:
+            raw = self._call(target_model, messages, tools)
+        except Exception as exc:
+            last_exc = str(exc)
+            logger.warning(
+                "call_with_tools: primary model=%s failed: %s", target_model, last_exc
+            )
+
+        # Walk fallback chain — same logic as complete()
+        if raw is None:
+            start_idx = (
+                _CLOUD_CHAIN.index(target_model) + 1
+                if target_model in _CLOUD_CHAIN else 0
+            )
+            for fallback_model in _CLOUD_CHAIN[start_idx:]:
+                try:
+                    raw = self._call(fallback_model, messages, tools)
+                    break
+                except Exception as exc:
+                    last_exc = str(exc)
+                    logger.warning(
+                        "call_with_tools: fallback model=%s failed: %s",
+                        fallback_model, last_exc,
+                    )
+
+        if raw is None:
+            logger.error("call_with_tools: all models failed — last error: %s", last_exc)
+            return {"name": None, "content": ""}
+
+        data = raw.json() if hasattr(raw, "json") else raw
+        message = data["choices"][0]["message"]
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            tc = tool_calls[0]
+            return {
+                "name": tc["function"]["name"],
+                "args": json.loads(tc["function"].get("arguments") or "{}"),
+            }
+        return {"name": None, "content": message.get("content") or ""}
 
     # ------------------------------------------------------------------
     # Private helpers
