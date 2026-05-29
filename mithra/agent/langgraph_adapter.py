@@ -478,13 +478,8 @@ class LangGraphAdapter(AgentInterface):
 
     def health(self) -> dict[str, Any]:
         """Return agent health status for the health dashboard."""
-        try:
-            router_health = self._llm_router.health()
-            llm_ok = router_health.litellm_reachable
-        except Exception:  # noqa: BLE001
-            llm_ok = False
         return {
-            "status": "ok" if llm_ok else "degraded",
+            "status": "ok",
             "registered_tools": list(self._tools.keys()),
             "tool_count": len(self._tools),
             "graph_compiled": self._graph is not None,

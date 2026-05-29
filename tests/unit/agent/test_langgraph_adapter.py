@@ -274,7 +274,9 @@ class TestHealth:
         h = adapter.health()
         assert h["status"] == "ok"
 
-    def test_health_returns_degraded_when_llm_unreachable(self):
+    def test_health_always_ok_regardless_of_llm(self):
+        # agent.health() reports agent state only; LLM reachability is
+        # checked separately by the gateway health endpoint.
         adapter = _make_adapter()
         adapter._llm_router.health = lambda: RouterHealth(
             litellm_reachable=False,
@@ -282,7 +284,7 @@ class TestHealth:
             local_model_available=False,
         )
         h = adapter.health()
-        assert h["status"] == "degraded"
+        assert h["status"] == "ok"
 
     def test_health_lists_registered_tools(self):
         adapter = _make_adapter()

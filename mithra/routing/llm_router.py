@@ -555,7 +555,12 @@ class LiteLLMRouterAdapter(LLMRouter):
             headers = {"Content-Type": "application/json"}
             if self._litellm_key:
                 headers["Authorization"] = f"Bearer {self._litellm_key}"
-            self._http.get(f"{self._base_url}/health", headers=headers)
+            # 2s timeout: health checks only verify reachability, not throughput
+            _requests.get(
+                f"{self._base_url}/health",
+                headers=headers,
+                timeout=2,
+            ).raise_for_status()
             ok = True
         except Exception as exc:
             error = str(exc)

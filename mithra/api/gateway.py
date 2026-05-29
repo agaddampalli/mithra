@@ -130,10 +130,12 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             components: dict[str, Any] = {}
             statuses = []
 
-            # Pure-Python health checks — run synchronously
+            # Agent health — pure Python but wrapped for consistent async pattern
             agent = _state.get("agent")
             if agent:
-                h = agent.health()
+                _t = _time.time()
+                h = await asyncio.to_thread(agent.health)
+                _hlog.info(f"HEALTH_TIMING agent: {_time.time()-_t:.2f}s")
                 components["agent"] = h
                 statuses.append(h.get("status", "ok"))
 
