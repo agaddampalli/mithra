@@ -284,7 +284,7 @@ class _DefaultHTTPClient:
         return resp
 
     def get(self, url: str, headers: dict | None = None) -> Any:
-        resp = _requests.get(url, headers=self._headers(headers), timeout=10)
+        resp = _requests.get(url, headers=self._headers(headers), timeout=3)
         resp.raise_for_status()
         return resp
 

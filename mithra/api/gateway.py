@@ -88,11 +88,13 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
-        # Unauthenticated paths: health check, all webhooks (each has its own
-        # auth), OAuth routes (/auth/*), and WebSocket upgrades.
+        # Unauthenticated paths: health check, dashboard (HA REST sensors),
+        # all webhooks (each has its own auth), OAuth routes (/auth/*),
+        # and WebSocket upgrades.
         p = request.url.path
         if (
             p == "/api/v1/health"
+            or p.startswith("/api/v1/dashboard")
             or p.startswith("/api/v1/webhook/")
             or p.startswith("/connect/")
             or p.startswith("/oauth/")
@@ -121,69 +123,87 @@ def create_app(state_override: dict | None = None) -> FastAPI:
     @app.get("/api/v1/health")
     async def health():
         """Aggregated health from all components. Unauthenticated."""
-        components: dict[str, Any] = {}
-        statuses = []
+        async def _collect() -> dict[str, Any]:
+            components: dict[str, Any] = {}
+            statuses = []
 
-        agent = _state.get("agent")
-        if agent:
-            h = agent.health()
-            components["agent"] = h
-            statuses.append(h.get("status", "ok"))
+            # Pure-Python health checks — run synchronously
+            agent = _state.get("agent")
+            if agent:
+                h = agent.health()
+                components["agent"] = h
+                statuses.append(h.get("status", "ok"))
 
-        llm_router = _state.get("llm_router")
-        if llm_router:
-            try:
-                rh = llm_router.health()
-                h = {
-                    "status": "ok" if rh.litellm_reachable else "degraded",
-                    "litellm_reachable": rh.litellm_reachable,
+            domain_registry = _state.get("domain_registry")
+            if domain_registry:
+                try:
+                    h = domain_registry.health()
+                except Exception as exc:
+                    h = {"status": "error", "error": str(exc)}
+                components["domain_registry"] = h
+                statuses.append(h.get("status", "ok"))
+            else:
+                components["domain_registry"] = {
+                    "status": "ok",
+                    "registered_domains": [],
+                    "domain_count": 0,
                 }
-            except Exception as exc:
-                h = {"status": "error", "error": str(exc)}
-            components["llm_router"] = h
-            statuses.append(h.get("status", "ok"))
 
-        domain_router = _state.get("domain_router")
-        if domain_router:
-            try:
-                h = domain_router.health()
-            except Exception as exc:
-                h = {"status": "error", "error": str(exc)}
-            components["domain_router"] = h
-            statuses.append(h.get("status", "ok"))
+            # Synchronous I/O calls — offloaded to thread pool
+            llm_router = _state.get("llm_router")
+            if llm_router:
+                try:
+                    rh = await asyncio.to_thread(llm_router.health)
+                    h = {
+                        "status": "ok" if rh.litellm_reachable else "degraded",
+                        "litellm_reachable": rh.litellm_reachable,
+                    }
+                except Exception as exc:
+                    h = {"status": "error", "error": str(exc)}
+                components["llm_router"] = h
+                statuses.append(h.get("status", "ok"))
 
-        context_cache = _state.get("context_cache")
-        if context_cache:
-            try:
-                h = context_cache.health()
-            except Exception as exc:
-                h = {"status": "error", "error": str(exc)}
-            components["context_cache"] = h
-            statuses.append(h.get("status", "ok"))
+            domain_router = _state.get("domain_router")
+            if domain_router:
+                try:
+                    h = await asyncio.to_thread(domain_router.health)
+                except Exception as exc:
+                    h = {"status": "error", "error": str(exc)}
+                components["domain_router"] = h
+                statuses.append(h.get("status", "ok"))
 
-        local_adapter = _state.get("local_adapter")
-        if local_adapter:
-            try:
-                h = local_adapter.health()
-            except Exception as exc:
-                h = {"status": "error", "error": str(exc)}
-            components.setdefault("services", {})["local_storage"] = h
+            context_cache = _state.get("context_cache")
+            if context_cache:
+                try:
+                    h = await asyncio.to_thread(context_cache.health)
+                except Exception as exc:
+                    h = {"status": "error", "error": str(exc)}
+                components["context_cache"] = h
+                statuses.append(h.get("status", "ok"))
 
-        domain_registry = _state.get("domain_registry")
-        if domain_registry:
-            try:
-                h = domain_registry.health()
-            except Exception as exc:
-                h = {"status": "error", "error": str(exc)}
-            components["domain_registry"] = h
+            local_adapter = _state.get("local_adapter")
+            if local_adapter:
+                try:
+                    h = await asyncio.to_thread(local_adapter.health)
+                except Exception as exc:
+                    h = {"status": "error", "error": str(exc)}
+                components.setdefault("services", {})["local_storage"] = h
 
-        overall = "ok"
-        if any(s == "error" for s in statuses):
-            overall = "error"
-        elif any(s == "degraded" for s in statuses):
-            overall = "degraded"
+            overall = "ok"
+            if any(s == "error" for s in statuses):
+                overall = "error"
+            elif any(s == "degraded" for s in statuses):
+                overall = "degraded"
 
-        return {"status": overall, **components}
+            return {"status": overall, **components}
+
+        try:
+            return await asyncio.wait_for(_collect(), timeout=5.0)
+        except asyncio.TimeoutError:
+            return {
+                "status": "degraded",
+                "error": "Health check timed out after 5s",
+            }
 
     @app.post("/api/v1/webhook/telegram")
     async def webhook_telegram(request: Request):
