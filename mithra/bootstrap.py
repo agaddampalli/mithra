@@ -230,6 +230,28 @@ def _build_domain_registry() -> Any:
     return DomainRegistry()
 
 
+def _register_domains(state: dict) -> None:
+    """Register domain plugins after all services are built.
+
+    Called after _build_oauth_manager so TimeDomain gets a live oauth_manager.
+    Domain registry is the same object already held by the agent — mutations
+    are visible without re-patching.
+    """
+    from mithra.domains.time.domain import TimeDomain
+
+    registry = state.get("domain_registry")
+    if registry is None:
+        return
+
+    registry.register(
+        TimeDomain(
+            oauth_manager=state.get("oauth_manager"),
+            household_id=state.get("household_id", ""),
+            household_timezone=state.get("household_timezone", "UTC"),
+        )
+    )
+
+
 def _build_telegram_handler(state: dict, household_config: dict, base_url: str) -> None:
     from mithra.adapters.messaging.telegram_handler import TelegramSignalHandler
 
@@ -315,6 +337,7 @@ async def build_state(
     _build_oauth_manager(state)
     _build_file_storage(state)
     _build_calendar(state, household_id, executor)
+    _register_domains(state)
 
     # Patch agent with services built after initial construction
     agent = state.get("agent")

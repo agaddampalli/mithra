@@ -185,19 +185,33 @@
 ## End-to-End Tests (pending domains)
   [ ] ET-01 to ET-15
 
-## Current Focus → Time Domain (first real domain)
-  mithra/domains/time/
-  Tools: calendar_read_events, calendar_create_event,
-         calendar_update_event, calendar_delete_event,
-         calendar_daily_briefing
-  Wires into: CalendarAdapter (already working)
-  Unblocks: People domain, Money domain
+## Time Domain — Complete (2026-05-28)
+
+  [x] T1 mithra/domains/time/ package — __init__.py, service.py, tools.py, domain.py
+  [x] T2 GoogleCalendarService (gcsa wrapper, OAuthManager cred injection, cache)
+  [x] T3 8 tools implemented and tested:
+          calendar_read_events, calendar_check_availability,
+          calendar_daily_briefing, calendar_create_event,
+          calendar_create_recurring, calendar_update_event,
+          calendar_delete_event, calendar_find_time
+  [x] T4 TimeDomain class implementing Domain ABC
+  [x] T5 Registered in bootstrap.py (_register_domains after oauth build)
+  [x] T6 67 tests passing (parsing, tools, domain, service)
+  [x] ADR Section 10 — Time domain architecture documented
+  [x] requirements.txt: gcsa>=2.0.0, dateparser>=1.4.0 added
+  [ ] T6b End-to-end test: "add dentist tuesday 3pm" → Google Calendar (needs hardware)
+  [ ] T7 Dashboard endpoint test: GET /api/v1/dashboard/time (needs running stack)
 
   7-day stability run (started 2026-05-25) — ongoing
   Daily: send "hi" to bot, verify response
 
+## Current Focus → People Domain (next domain)
+  mithra/domains/people/
+  Unblocked by Time domain
+
 ## Test Baseline
-  834 tests passing (2026-05-29)
+  901 tests passing (2026-05-28)
+  (834 + 67 Time domain tests)
 
 ## Infra Cleanup (deferred to end of Phase 1)
   Automate as part of closing infrastructure phases.
