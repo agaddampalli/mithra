@@ -1,4 +1,4 @@
-# Mithra — Work Tracker (Updated 2026-05-27)
+# Mithra — Work Tracker (Updated 2026-05-29)
 
 ## Current IDs (generated 2026-05-24, never change)
   household_id: hh_b76fef08
@@ -144,21 +144,36 @@
   Tesseract: installed for OCR support
   784 tests passing
 
-## Phase 1 — Domains
+## Phase 1 — Complete (2026-05-29)
 
-  [x] I1 mithra/domains/ package — Domain ABC, DomainContext, ToolResult,
-          DomainEvent, ToolBundle, ToolMetadata, PermissionTier,
-          DashboardData, DashboardItem, DomainRegistry
+  Storage infrastructure: FileStorageAdapter stack
+  OAuth: Google + Microsoft working end to end
+  Identity: MemberRegistry with proper IDs
+  Domain infrastructure: base classes + registry
+  784 → 834 tests passing
+
+### Domain plugin infrastructure
+  [x] I1 mithra/domains/ package — Domain ABC, DomainContext (frozen),
+          ToolResult, DomainEvent, PermissionTier, ToolBundle,
+          ToolMetadata, DashboardData, DashboardItem, DomainRegistry
   [x] I2 LangGraphAdapter — domain_registry param, _build_domain_context(),
           _extract_domain_ids(), _execute_with_autonomy()
-  [x] I3 gateway.py — GET /api/v1/dashboard/{domain_id},
-          GET /api/v1/dashboard/today, domain registry in /health
+  [x] I3 Dashboard routes
+          GET /api/v1/dashboard/{domain_id}
+          GET /api/v1/dashboard/today
+          Excluded from auth middleware (HA REST sensors)
   [x] I4 bootstrap.py — DomainRegistry wired into build_state()
+  [x] MicrosoftGraphClient CRUD verified
+          upload/download/list/delete end to end
 
-  50 new domain infrastructure tests passing.
-
-  Next: Time domain (I4 per ADR section 9.16)
-        mithra/domains/time/ — calendar read and write tools
+### Health endpoint fixed
+  [x] asyncio.to_thread for all sync I/O calls
+  [x] agent.health() decoupled from llm_router
+          (was causing double 3s blocking call)
+  [x] llm_router health timeout 3s → 2s
+  [x] Per-component HEALTH_TIMING logs added
+  [x] 5s overall timeout (raised to 15s temporarily for diagnosis)
+  [x] /api/v1/dashboard/today route order fixed (was 404)
 
 ## Pending Hardware (blocked until hardware arrives)
   [ ] HA-01 to HA-12 (Home Assistant setup)
@@ -170,17 +185,19 @@
 ## End-to-End Tests (pending domains)
   [ ] ET-01 to ET-15
 
-## Current Focus
-  Phase 1 storage: COMPLETE
-  Domain plugin infrastructure: COMPLETE
+## Current Focus → Time Domain (first real domain)
+  mithra/domains/time/
+  Tools: calendar_read_events, calendar_create_event,
+         calendar_update_event, calendar_delete_event,
+         calendar_daily_briefing
+  Wires into: CalendarAdapter (already working)
+  Unblocks: People domain, Money domain
+
   7-day stability run (started 2026-05-25) — ongoing
   Daily: send "hi" to bot, verify response
-  Next: Time domain — mithra/domains/time/
-        calendar read (read events) + calendar write (create event)
-        registers with DomainRegistry at bootstrap
 
 ## Test Baseline
-  784 + 50 = 834 tests passing (2026-05-27)
+  834 tests passing (2026-05-29)
 
 ## Infra Cleanup (deferred to end of Phase 1)
   Automate as part of closing infrastructure phases.
