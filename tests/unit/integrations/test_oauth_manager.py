@@ -140,6 +140,25 @@ class TestGetTokenData:
         assert result["access_token"] == "ya29.expired"
 
 
+class TestSaveTokenData:
+    def test_save_then_load_round_trip(self):
+        store = _FakeTokenStore()
+        mgr = OAuthManager(providers=_make_providers(), token_store=store)
+        token = {"access_token": "ya29.new", "refresh_token": "1//r", "expires_at": 9999999999}
+        mgr.save_token_data("google", "usr_abc", token)
+        result = mgr.get_token_data("google", "usr_abc")
+        assert result is not None
+        assert result["access_token"] == "ya29.new"
+
+    def test_save_overwrites_existing(self):
+        store = _FakeTokenStore()
+        store.save("google", "usr_abc", {"access_token": "old_token"})
+        mgr = OAuthManager(providers=_make_providers(), token_store=store)
+        mgr.save_token_data("google", "usr_abc", {"access_token": "new_token"})
+        result = mgr.get_token_data("google", "usr_abc")
+        assert result["access_token"] == "new_token"
+
+
 class TestGetToken:
     @pytest.mark.asyncio
     async def test_returns_none_when_not_connected(self):

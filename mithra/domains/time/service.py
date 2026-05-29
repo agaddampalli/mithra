@@ -24,6 +24,47 @@ def _to_aware(dt: datetime, tz_name: str) -> datetime:
     return tz.localize(dt)
 
 
+def _make_refresh_persisting_credentials(
+    CredentialsClass: Any,
+    oauth_manager: Any,
+    user_id: str,
+    fallback_scopes: list,
+    **credential_kwargs: Any,
+) -> Any:
+    """Build a Credentials subclass that persists token refreshes to OAuthTokenStore.
+
+    google-auth refreshes the access token in-place when it expires but has no
+    built-in callback. The returned subclass intercepts refresh() and calls
+    oauth_manager.save_token_data() so the next process startup does not need
+    to refresh immediately again.
+
+    Accepts CredentialsClass as a parameter so tests can inject a mock base
+    class without needing google-auth installed.
+    """
+
+    class _Persisting(CredentialsClass):  # type: ignore[valid-type,misc]
+        def refresh(self, request: Any) -> None:  # type: ignore[override]
+            super().refresh(request)
+            try:
+                updated: dict = {
+                    "access_token": self.token or "",
+                    "refresh_token": self.refresh_token or "",
+                    "expires_at": int(self.expiry.timestamp()) if self.expiry else 0,
+                    "scopes": list(self.scopes) if self.scopes else fallback_scopes,
+                }
+                oauth_manager.save_token_data("google", user_id, updated)
+                _logger.debug(
+                    "GoogleCalendarService: persisted refreshed token for %s", user_id
+                )
+            except Exception as exc:
+                _logger.warning(
+                    "GoogleCalendarService: failed to persist token for %s: %s",
+                    user_id, exc,
+                )
+
+    return _Persisting(**credential_kwargs)
+
+
 class GoogleCalendarService:
     """Thin wrapper around gcsa for Time domain tools.
 
@@ -79,7 +120,11 @@ class GoogleCalendarService:
         if isinstance(scopes, str):
             scopes = scopes.split()
 
-        creds = Credentials(
+        creds = _make_refresh_persisting_credentials(
+            Credentials,
+            oauth_manager=self._oauth,
+            user_id=user_id,
+            fallback_scopes=scopes,
             token=token_data["access_token"],
             refresh_token=token_data.get("refresh_token"),
             client_id=self._client_id,

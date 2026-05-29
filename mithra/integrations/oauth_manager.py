@@ -143,6 +143,19 @@ class OAuthManager:
         """
         return self._token_store.load(provider_id, user_id)
 
+    def save_token_data(
+        self,
+        provider_id: str,
+        user_id: str,
+        token_data: dict,
+    ) -> None:
+        """Persist updated token data (e.g. after an in-flight credential refresh).
+
+        Used by credentials wrappers that refresh outside OAuthManager's
+        own get_token() flow — e.g. google-auth refreshing inside gcsa.
+        """
+        self._token_store.save(provider_id, user_id, token_data)
+
     def is_connected(self, provider_id: str, user_id: str) -> bool:
         return self._token_store.is_connected(provider_id, user_id)
 
