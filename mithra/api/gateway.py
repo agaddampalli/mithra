@@ -123,10 +123,10 @@ def create_app(state_override: dict | None = None) -> FastAPI:
     @app.get("/api/v1/health")
     async def health():
         """Aggregated health from all components. Unauthenticated."""
+        import time as _time
         _hlog = logging.getLogger(__name__ + ".health")
 
         async def _collect() -> dict[str, Any]:
-            import time
             components: dict[str, Any] = {}
             statuses = []
 
@@ -155,7 +155,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             # Synchronous I/O calls — offloaded to thread pool
             llm_router = _state.get("llm_router")
             if llm_router:
-                t = time.time()
+                _t = _time.time()
                 try:
                     rh = await asyncio.to_thread(llm_router.health)
                     h = {
@@ -164,40 +164,40 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                     }
                 except Exception as exc:
                     h = {"status": "error", "error": str(exc)}
-                _hlog.info("llm_router health: %.2fs", time.time() - t)
+                _hlog.info(f"HEALTH_TIMING llm_router: {_time.time()-_t:.2f}s")
                 components["llm_router"] = h
                 statuses.append(h.get("status", "ok"))
 
             domain_router = _state.get("domain_router")
             if domain_router:
-                t = time.time()
+                _t = _time.time()
                 try:
                     h = await asyncio.to_thread(domain_router.health)
                 except Exception as exc:
                     h = {"status": "error", "error": str(exc)}
-                _hlog.info("domain_router health: %.2fs", time.time() - t)
+                _hlog.info(f"HEALTH_TIMING domain_router: {_time.time()-_t:.2f}s")
                 components["domain_router"] = h
                 statuses.append(h.get("status", "ok"))
 
             context_cache = _state.get("context_cache")
             if context_cache:
-                t = time.time()
+                _t = _time.time()
                 try:
                     h = await asyncio.to_thread(context_cache.health)
                 except Exception as exc:
                     h = {"status": "error", "error": str(exc)}
-                _hlog.info("context_cache health: %.2fs", time.time() - t)
+                _hlog.info(f"HEALTH_TIMING context_cache: {_time.time()-_t:.2f}s")
                 components["context_cache"] = h
                 statuses.append(h.get("status", "ok"))
 
             local_adapter = _state.get("local_adapter")
             if local_adapter:
-                t = time.time()
+                _t = _time.time()
                 try:
                     h = await asyncio.to_thread(local_adapter.health)
                 except Exception as exc:
                     h = {"status": "error", "error": str(exc)}
-                _hlog.info("local_adapter health: %.2fs", time.time() - t)
+                _hlog.info(f"HEALTH_TIMING local_adapter: {_time.time()-_t:.2f}s")
                 components.setdefault("services", {})["local_storage"] = h
 
             overall = "ok"
@@ -209,7 +209,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             return {"status": overall, **components}
 
         try:
-            return await asyncio.wait_for(_collect(), timeout=5.0)
+            return await asyncio.wait_for(_collect(), timeout=15.0)
         except asyncio.TimeoutError:
             return {
                 "status": "degraded",
