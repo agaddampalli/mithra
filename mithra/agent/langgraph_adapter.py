@@ -341,6 +341,11 @@ class LangGraphAdapter(AgentInterface):
                     return {"tool_result": None, "error": str(exc)}
 
         # --- Path B: MCPTool fallback (legacy, no domain registry) ---
+        # Domain bundles were loaded but LLM chose not to call a tool (text response).
+        # Never fall through to legacy MCP lookup when domain tools were available.
+        if domain_bundles:
+            return {"tool_result": None, "error": None}
+
         intent = state.get("intent", "")
         mcp_tool_name = str(intent)
         if mcp_tool_name not in self._tools:
@@ -728,13 +733,13 @@ class LangGraphAdapter(AgentInterface):
     ) -> dict[str, Any]:
         """Execute a ToolBundle with PermissionTier enforcement.
 
-        DESTRUCTIVE is a ONE-WAY DOOR: always returns requires_confirmation=True,
-        no override possible. READ and WRITE execute inline; the AutononomyEngine
-        handles WRITE confirmation at the action level.
+        DESTRUCTIVE is a ONE-WAY DOOR: always requires confirmation, no override.
+        WRITE requires confirmation at autonomy_level=1 (SURFACE).
+        READ executes immediately — no confirmation needed.
         """
         from mithra.domains.bundle import PermissionTier
 
-        if bundle.metadata.permission == PermissionTier.DESTRUCTIVE:
+        if bundle.metadata.permission in (PermissionTier.DESTRUCTIVE, PermissionTier.WRITE):
             return {
                 "requires_confirmation": True,
                 "tool_name": bundle.metadata.name,

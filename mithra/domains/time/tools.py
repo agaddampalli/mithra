@@ -305,6 +305,7 @@ class CalendarCreateEventTool(BaseTool):
             description=description or None,
             location=location or None,
             reminders=reminders or None,
+            timezone=ctx.household_timezone,
         )
 
         try:
@@ -658,8 +659,10 @@ class _DeleteEventArgs(BaseModel):
 class CalendarDeleteEventTool(BaseTool):
     name: str = "calendar_delete_event"
     description: str = (
-        "Delete a calendar event permanently. Always requires confirmation. "
-        "Cannot be undone. Use when user explicitly wants to cancel/delete. "
+        "Delete a calendar event permanently. Trigger words: cancel, delete, "
+        "remove, drop, scratch, remove appointment, cancel meeting. "
+        "Always requires confirmation. Cannot be undone. "
+        "Use when user explicitly wants to cancel/delete/remove an event. "
         "For recurring events specify scope. "
         "Do NOT use for: rescheduling (use calendar_update_event instead)."
     )
