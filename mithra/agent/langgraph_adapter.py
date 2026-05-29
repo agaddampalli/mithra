@@ -15,8 +15,12 @@ Conditional routing after classify_intent:
 from __future__ import annotations
 
 import json
+import logging
 import time
+import traceback
 import uuid
+
+_logger = logging.getLogger(__name__)
 from datetime import datetime, timedelta, timezone
 from typing import Any, Generator, TypedDict
 
@@ -174,6 +178,10 @@ class LangGraphAdapter(AgentInterface):
 
     def _node_select_tool(self, state: _GraphState) -> dict[str, Any]:
         intent = state.get("intent", "")
+        _logger.info(
+            "_node_select_tool: intent=%r domain_ids=%s",
+            intent, self._extract_domain_ids(str(intent)),
+        )
 
         # Stage 2: load domain tools from registry for this intent's domain(s)
         domain_bundles: list[Any] = []
@@ -184,8 +192,11 @@ class LangGraphAdapter(AgentInterface):
                 try:
                     ctx = self._build_domain_context(request)
                     domain_bundles = self._domain_registry.get_tools(domain_ids, ctx)
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    _logger.error(
+                        "_node_select_tool: domain tool load failed: %s\n%s",
+                        _exc, traceback.format_exc(),
+                    )
 
         # Fall back to MCPTool registry (backward compat)
         if intent in self._tools:
@@ -199,6 +210,10 @@ class LangGraphAdapter(AgentInterface):
     def _node_execute_tool(self, state: _GraphState) -> dict[str, Any]:
         tool_name = state.get("selected_tool")
         domain_bundles: list[Any] = state.get("domain_bundles", [])
+        _logger.info(
+            "_node_execute_tool: tool_name=%r domain_bundles=%s",
+            tool_name, [getattr(b.metadata, "name", "?") for b in domain_bundles],
+        )
 
         # Try domain registry bundles first
         if domain_bundles:
@@ -223,6 +238,10 @@ class LangGraphAdapter(AgentInterface):
                             }
                         return {"tool_result": result}
                     except Exception as exc:  # noqa: BLE001
+                        _logger.error(
+                            "_node_execute_tool: domain bundle %r failed: %s\n%s",
+                            getattr(bundle.metadata, "name", "?"), exc, traceback.format_exc(),
+                        )
                         return {"tool_result": None, "error": str(exc)}
 
         # Fall back to MCPTool registry
@@ -239,6 +258,10 @@ class LangGraphAdapter(AgentInterface):
                 return {"tool_result": result}
             return {"tool_result": {"result": result}}
         except Exception as exc:  # noqa: BLE001
+            _logger.error(
+                "_node_execute_tool: MCP tool %r failed: %s\n%s",
+                tool_name, exc, traceback.format_exc(),
+            )
             return {"tool_result": None, "error": str(exc)}
 
     def _node_generate_response(self, state: _GraphState) -> dict[str, Any]:
@@ -311,7 +334,11 @@ class LangGraphAdapter(AgentInterface):
                     if raw.endswith("```"):
                         raw = raw.rsplit("```", 1)[0]
                     event_data = json.loads(raw.strip())
-            except Exception:  # noqa: BLE001
+            except Exception as _exc:  # noqa: BLE001
+                _logger.error(
+                    "_node_generate_response: calendar event extraction failed: %s\n%s",
+                    _exc, traceback.format_exc(),
+                )
                 event_data = {}
 
             if not event_data.get("summary"):
@@ -363,8 +390,11 @@ class LangGraphAdapter(AgentInterface):
             )
             if llm_resp.success and llm_resp.content:
                 return {"response_text": llm_resp.content}
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as _exc:  # noqa: BLE001
+            _logger.error(
+                "_node_generate_response: LLM fallback failed: %s\n%s",
+                _exc, traceback.format_exc(),
+            )
 
         # LLM unavailable — fall back to clarification prompt
         return {"response_text": "Could you clarify what you'd like me to do?"}
@@ -394,6 +424,10 @@ class LangGraphAdapter(AgentInterface):
         try:
             final_state = self._graph.invoke(initial_state)
         except Exception as exc:  # noqa: BLE001
+            _logger.error(
+                "LangGraph agent error in run(): %s\n%s",
+                exc, traceback.format_exc(),
+            )
             return AgentResult(
                 request_id=request_id,
                 success=False,
@@ -439,6 +473,10 @@ class LangGraphAdapter(AgentInterface):
                             data={"delta": node_state["response_text"]},
                         )
         except Exception as exc:  # noqa: BLE001
+            _logger.error(
+                "LangGraph agent error in run_stream(): %s\n%s",
+                exc, traceback.format_exc(),
+            )
             yield AgentStreamEvent(
                 event_type=StreamEventType.DONE,
                 data={"error": str(exc)},
@@ -515,6 +553,7 @@ class LangGraphAdapter(AgentInterface):
 
     def _build_domain_context(self, request: AgentRequest) -> Any:
         """Build an immutable DomainContext from the current request."""
+        _logger.info("_build_domain_context: user=%s", request.user_id)
         from mithra.domains.context import DomainContext
 
         channel_map = {
@@ -532,8 +571,11 @@ class LangGraphAdapter(AgentInterface):
         if self._storage_router:
             try:
                 storage_adapter = self._storage_router.get_adapter("general")
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _exc:  # noqa: BLE001
+                _logger.error(
+                    "_build_domain_context: storage adapter lookup failed: %s\n%s",
+                    _exc, traceback.format_exc(),
+                )
 
         return DomainContext(
             user_id=request.user_id,
@@ -627,6 +669,11 @@ class LangGraphAdapter(AgentInterface):
                 return result
             return {"result": str(result), "success": True, "response": str(result)}
         except Exception as exc:  # noqa: BLE001
+            _logger.error(
+                "_execute_with_autonomy: tool %r failed: %s\n%s",
+                getattr(getattr(bundle, "metadata", None), "name", "?"),
+                exc, traceback.format_exc(),
+            )
             return {"success": False, "error": str(exc)}
 
     def _state_to_result(
