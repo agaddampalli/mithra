@@ -102,6 +102,44 @@ class TestDisconnect:
         mgr.disconnect("google", "usr_nobody")  # must not raise
 
 
+class TestGetTokenData:
+    def test_returns_none_when_no_token(self):
+        store = _FakeTokenStore()
+        mgr = OAuthManager(providers=_make_providers(), token_store=store)
+        assert mgr.get_token_data("google", "usr_abc") is None
+
+    def test_returns_full_token_dict(self):
+        store = _FakeTokenStore()
+        token = {
+            "access_token": "ya29.test",
+            "refresh_token": "1//refresh",
+            "expires_at": 9999999999,
+            "scopes": ["https://www.googleapis.com/auth/calendar"],
+        }
+        store.save("google", "usr_abc", token)
+        mgr = OAuthManager(providers=_make_providers(), token_store=store)
+        result = mgr.get_token_data("google", "usr_abc")
+        assert result is not None
+        assert result["access_token"] == "ya29.test"
+        assert result["refresh_token"] == "1//refresh"
+        assert "scopes" in result
+
+    def test_does_not_refresh_token(self):
+        """get_token_data() is a raw read — no refresh side-effects."""
+        import time
+        store = _FakeTokenStore()
+        store.save("google", "usr_abc", {
+            "access_token": "ya29.expired",
+            "refresh_token": "1//refresh",
+            "expires_at": int(time.time()) - 3600,  # already expired
+        })
+        mgr = OAuthManager(providers=_make_providers(), token_store=store)
+        result = mgr.get_token_data("google", "usr_abc")
+        # Returns raw data even if expired — caller decides what to do
+        assert result is not None
+        assert result["access_token"] == "ya29.expired"
+
+
 class TestGetToken:
     @pytest.mark.asyncio
     async def test_returns_none_when_not_connected(self):

@@ -31,7 +31,7 @@ class GoogleCalendarService:
     Credentials are built from OAuthManager's token store so gcsa can
     auto-refresh when the access token expires.
 
-    oauth_manager must expose: _store.load(provider_id, user_id) -> dict | None
+    oauth_manager must expose: get_token_data(provider_id, user_id) -> dict | None
     """
 
     def __init__(
@@ -63,7 +63,7 @@ class GoogleCalendarService:
                 "Google not connected — send 'connect google' to Mithra."
             )
 
-        token_data = self._oauth._store.load("google", user_id)
+        token_data = self._oauth.get_token_data("google", user_id)
         if not token_data:
             raise RuntimeError(
                 f"Google not connected for {user_id}. "

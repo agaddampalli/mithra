@@ -135,7 +135,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             if agent:
                 _t = _time.time()
                 h = await asyncio.to_thread(agent.health)
-                _hlog.info(f"HEALTH_TIMING agent: {_time.time()-_t:.2f}s")
+                _hlog.debug(f"HEALTH_TIMING agent: {_time.time()-_t:.2f}s")
                 components["agent"] = h
                 statuses.append(h.get("status", "ok"))
 
@@ -166,7 +166,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                     }
                 except Exception as exc:
                     h = {"status": "error", "error": str(exc)}
-                _hlog.info(f"HEALTH_TIMING llm_router: {_time.time()-_t:.2f}s")
+                _hlog.debug(f"HEALTH_TIMING llm_router: {_time.time()-_t:.2f}s")
                 components["llm_router"] = h
                 statuses.append(h.get("status", "ok"))
 
@@ -177,7 +177,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                     h = await asyncio.to_thread(domain_router.health)
                 except Exception as exc:
                     h = {"status": "error", "error": str(exc)}
-                _hlog.info(f"HEALTH_TIMING domain_router: {_time.time()-_t:.2f}s")
+                _hlog.debug(f"HEALTH_TIMING domain_router: {_time.time()-_t:.2f}s")
                 components["domain_router"] = h
                 statuses.append(h.get("status", "ok"))
 
@@ -188,7 +188,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                     h = await asyncio.to_thread(context_cache.health)
                 except Exception as exc:
                     h = {"status": "error", "error": str(exc)}
-                _hlog.info(f"HEALTH_TIMING context_cache: {_time.time()-_t:.2f}s")
+                _hlog.debug(f"HEALTH_TIMING context_cache: {_time.time()-_t:.2f}s")
                 components["context_cache"] = h
                 statuses.append(h.get("status", "ok"))
 
@@ -199,7 +199,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                     h = await asyncio.to_thread(local_adapter.health)
                 except Exception as exc:
                     h = {"status": "error", "error": str(exc)}
-                _hlog.info(f"HEALTH_TIMING local_adapter: {_time.time()-_t:.2f}s")
+                _hlog.debug(f"HEALTH_TIMING local_adapter: {_time.time()-_t:.2f}s")
                 components.setdefault("services", {})["local_storage"] = h
 
             overall = "ok"

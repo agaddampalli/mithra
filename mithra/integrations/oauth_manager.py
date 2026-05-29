@@ -135,6 +135,14 @@ class OAuthManager:
         self._token_store.save(provider_id, user_id, updated)
         return updated["access_token"]
 
+    def get_token_data(self, provider_id: str, user_id: str) -> dict | None:
+        """Return full token data dict for credential building.
+
+        Returns None if not connected. Use get_token() for just the
+        access token string (with auto-refresh).
+        """
+        return self._token_store.load(provider_id, user_id)
+
     def is_connected(self, provider_id: str, user_id: str) -> bool:
         return self._token_store.is_connected(provider_id, user_id)
 

@@ -23,7 +23,7 @@ class TestGoogleCalendarServiceInit:
 
     def test_missing_token_raises_runtime_error(self):
         oauth = MagicMock()
-        oauth._store.load.return_value = None
+        oauth.get_token_data.return_value = None
         svc = GoogleCalendarService(oauth_manager=oauth, household_id="hh_001")
         with pytest.raises(RuntimeError, match="Google not connected"):
             svc._get_gc("usr_001")
