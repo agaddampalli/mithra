@@ -289,12 +289,7 @@ class LangGraphAdapter(AgentInterface):
         )
 
         if is_calendar_intent:
-            # Per-user preference overrides household timezone when available.
-            user_tz_str = (
-                (request.context.preferences or {}).get("timezone")
-                if request.context
-                else None
-            ) or self._household_tz
+            user_tz_str = self._household_tz
             tz = pytz.timezone(user_tz_str)
             now_local = datetime.now(tz)
             today = now_local.strftime("%Y-%m-%d")
