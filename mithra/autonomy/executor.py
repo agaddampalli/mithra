@@ -40,10 +40,19 @@ class ActionExecutorRegistry:
     def __init__(self) -> None:
         self._registry: dict[str, Any] = {}
         self._notify_adapters: dict[str, Any] = {}
+        self._fallback: Any = None
 
     def register(self, action_type: str, adapter: Any) -> None:
         """Register an OutputAdapter for an action_type."""
         self._registry[action_type] = adapter
+
+    def register_fallback(self, adapter: Any) -> None:
+        """Register a fallback adapter called when no action_type match exists.
+
+        Used by DomainToolAdapter so domain tools execute via the normal
+        confirm() path without needing a registered entry per tool.
+        """
+        self._fallback = adapter
 
     def register_notify(self, channel: str, adapter: Any) -> None:
         """Register an OutputAdapter for a notification channel."""
@@ -54,9 +63,12 @@ class ActionExecutorRegistry:
 
         Receives the full AgentAction so output_channel, reversibility,
         payload, and action_type are all available to the executor.
+        Falls back to the fallback adapter when no specific adapter is registered.
         """
         adapter = self._registry.get(action.action_type)
         if adapter is None:
+            if self._fallback is not None:
+                return await self._fallback.execute(action)
             return ExecutionResult(
                 action_id=str(uuid.uuid4()),
                 action_type=action.action_type,

@@ -65,10 +65,33 @@ def parse_time(
     if base is not None:
         settings["RELATIVE_BASE"] = base
 
+    def _fix_tz(dt: datetime | None) -> datetime | None:
+        """Re-localize to household tz when dateparser returns UTC for local input.
+
+        dateparser 1.4.0 ignores TO_TIMEZONE for relative expressions like
+        "next Tuesday 3pm", returning the time-of-day anchored to UTC instead
+        of the household timezone. Detect this and re-interpret the hour as
+        local time so "3pm" → 15:00 CST, not 15:00 UTC (= 10:00 CST).
+        """
+        import pytz as _pytz
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            return _pytz.timezone(timezone_name).localize(dt)
+        offset_sec = dt.utcoffset().total_seconds() if dt.utcoffset() is not None else None
+        if offset_sec == 0:
+            tz = _pytz.timezone(timezone_name)
+            tz_offset_sec = datetime.now(tz).utcoffset().total_seconds()
+            if tz_offset_sec != 0:
+                # Household is non-UTC: strip UTC and re-localize the hour-of-day
+                naive = dt.replace(tzinfo=None)
+                return tz.localize(naive)
+        return dt
+
     try:
         result = dateparser.parse(text, settings=settings)
         if result is not None:
-            return result
+            return _fix_tz(result)
     except Exception as exc:
         _logger.debug("parse_time primary attempt failed for %r: %s", text, exc)
 
@@ -83,7 +106,7 @@ def parse_time(
                 try:
                     result = dateparser.parse(modified, settings=settings)
                     if result is not None:
-                        return result
+                        return _fix_tz(result)
                 except Exception as exc:
                     _logger.debug("parse_time retry failed for %r: %s", modified, exc)
 

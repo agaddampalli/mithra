@@ -63,6 +63,7 @@ INTENT_DOMAIN_MAP: dict[str, str] = {
     "reminder":   "time",
     "reminders":  "time",
     "event":      "time",
+    "cancel":     "time",
     "people":     "people",
     "contacts":   "people",
     "money":      "money",
@@ -373,6 +374,8 @@ class LangGraphAdapter(AgentInterface):
         tool_result = state.get("tool_result")
         error = state.get("error")
         intent_str = str(state.get("intent", "")).lower()
+        domain_bundles: list[Any] = state.get("domain_bundles", [])
+        llm_response: str = state.get("llm_response") or ""
 
         # Tool executed successfully — prefer summary (domain tools) over response (MCP tools)
         if tool_result:
@@ -381,6 +384,15 @@ class LangGraphAdapter(AgentInterface):
         # Real tool execution error (not "no tool found")
         if error:
             return {"response_text": f"I encountered an error: {error}"}
+
+        # Domain tools were loaded — LLM chose a text response (no tool selected).
+        # The old calendar_write adapter fallback must NOT run here: it bypasses the
+        # domain tool path and creates actions through a different adapter, producing
+        # the wrong behavior (e.g. "cancel" triggers a create instead of delete).
+        if domain_bundles:
+            if llm_response:
+                return {"response_text": llm_response}
+            return {"response_text": "I'm not sure how to help with that. Try rephrasing."}
 
         # Detect calendar/scheduling intents — build a structured pending action
         _CALENDAR_PREFIXES = ("time.", "calendar.")

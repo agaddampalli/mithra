@@ -256,6 +256,34 @@ def _register_domains(state: dict) -> None:
     )
 
 
+def _register_domain_tool_adapter(state: dict) -> None:
+    """Register DomainToolAdapter as executor fallback for domain tool confirmation.
+
+    Without this, confirmed domain tool actions (calendar_create_recurring,
+    calendar_delete_event, etc.) fail with "No adapter registered" because
+    ActionExecutorRegistry only knows about telegram_reply and calendar_write.
+    """
+    from mithra.domains.executor_adapter import DomainToolAdapter
+
+    domain_registry = state.get("domain_registry")
+    executor = state.get("executor")
+    if domain_registry is None or executor is None:
+        return
+
+    adapter = DomainToolAdapter(
+        domain_registry=domain_registry,
+        household_id=state.get("household_id", ""),
+        household_timezone=state.get("household_timezone", "UTC"),
+        oauth_manager=state.get("oauth_manager"),
+        storage_router=state.get("storage_router"),
+        member_registry=state.get("member_registry"),
+        file_router=state.get("file_router"),
+        file_search=state.get("file_search"),
+    )
+    executor.register_fallback(adapter)
+    _logger.info("DomainToolAdapter registered as executor fallback")
+
+
 def _build_telegram_handler(state: dict, household_config: dict, base_url: str) -> None:
     from mithra.adapters.messaging.telegram_handler import TelegramSignalHandler
 
@@ -342,6 +370,7 @@ async def build_state(
     _build_file_storage(state)
     _build_calendar(state, household_id, executor)
     _register_domains(state)
+    _register_domain_tool_adapter(state)
 
     # Patch agent with services built after initial construction
     agent = state.get("agent")

@@ -63,6 +63,28 @@ class TestParseTime:
         result = parse_time("in 2 hours", TZ, base=base)
         assert result is not None
 
+    def test_hour_of_day_is_local_not_utc(self):
+        """parse_time('3pm') must return 15:xx in the household timezone, not 15:xx UTC.
+
+        dateparser 1.4.0 bug: returns UTC time-of-day despite TO_TIMEZONE setting.
+        The re-localization fix strips UTC and re-localises to the household tz so
+        '3pm' → 15:00 CST (-06:00), not 15:00 UTC (= 10:00 CST).
+        """
+        result = parse_time("tuesday 3pm", TZ)
+        assert result is not None
+        assert result.hour == 15, (
+            f"Expected hour=15 (3pm local) but got {result.hour} — "
+            f"likely UTC offset: full dt={result}"
+        )
+
+    def test_hour_preserved_after_next_prefix_strip(self):
+        """'next Tuesday 3pm' must have hour=15 in local timezone after retry."""
+        result = parse_time("next tuesday 3pm", TZ)
+        assert result is not None
+        assert result.hour == 15, (
+            f"Expected hour=15 (3pm local) but got {result.hour}"
+        )
+
 
 class TestRangeFromPeriod:
     def test_today_is_single_day(self):

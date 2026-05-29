@@ -213,3 +213,51 @@ class TestActionExecutorRegistry:
         registry = ActionExecutorRegistry()
         # No adapter registered for "telegram" — should not raise
         await registry.notify("person_a", "telegram", "Hello!")
+
+    @pytest.mark.asyncio
+    async def test_fallback_called_when_action_type_not_registered(self):
+        """register_fallback() adapter is invoked for unregistered action_types."""
+        registry = ActionExecutorRegistry()
+        fallback = MagicMock()
+        fallback.execute = AsyncMock(return_value=ExecutionResult(
+            action_id="fb1", action_type="calendar_create_recurring", success=True,
+        ))
+        registry.register_fallback(fallback)
+
+        action = AgentAction(
+            action_type="calendar_create_recurring",
+            domain="time",
+            payload={"title": "Standup", "start_time": "monday 9am"},
+        )
+        result = await registry.execute(action)
+
+        fallback.execute.assert_called_once_with(action)
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_fallback_not_called_when_registered_adapter_exists(self):
+        """Registered adapters take precedence over the fallback."""
+        registry = ActionExecutorRegistry()
+        specific = MagicMock()
+        specific.execute = AsyncMock(return_value=ExecutionResult(
+            action_id="sp1", action_type="calendar_write", success=True,
+        ))
+        fallback = MagicMock()
+        fallback.execute = AsyncMock()
+        registry.register("calendar_write", specific)
+        registry.register_fallback(fallback)
+
+        action = AgentAction(action_type="calendar_write", domain="time", payload={})
+        await registry.execute(action)
+
+        specific.execute.assert_called_once()
+        fallback.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_fallback_returns_error_for_unregistered_type(self):
+        """Without fallback, unregistered action_type still returns error result."""
+        registry = ActionExecutorRegistry()
+        action = AgentAction(action_type="calendar_create_recurring", domain="time", payload={})
+        result = await registry.execute(action)
+        assert result.success is False
+        assert "No adapter registered" in result.error
