@@ -43,6 +43,30 @@ from mithra.storage.router import StorageRouter
 
 
 # ---------------------------------------------------------------------------
+# Intent → domain_id mapping
+# ---------------------------------------------------------------------------
+
+INTENT_DOMAIN_MAP: dict[str, str] = {
+    "calendar":   "time",
+    "time":       "time",
+    "scheduling": "time",
+    "people":     "people",
+    "contacts":   "people",
+    "money":      "money",
+    "finance":    "money",
+    "documents":  "documents",
+    "files":      "documents",
+    "home":       "home",
+    "health":     "health",
+    "food":       "food",
+    "shopping":   "shopping",
+    "travel":     "travel",
+    "general":    "",
+    "system":     "",
+}
+
+
+# ---------------------------------------------------------------------------
 # Graph state
 # ---------------------------------------------------------------------------
 
@@ -527,10 +551,11 @@ class LangGraphAdapter(AgentInterface):
         )
 
     def _extract_domain_ids(self, intent: str) -> list[str]:
-        """Extract domain IDs from a classified intent string.
+        """Extract registered domain_ids from a classified intent string.
 
-        Intent format: "domain.action" (e.g. "time.create_event")
-        Also handles underscore format: "calendar_create_event" → "time"
+        Intent format: "domain.action" (e.g. "calendar.create_event" → ["time"])
+        Multi-domain: "time,money" → ["time", "money"]
+        Uses INTENT_DOMAIN_MAP so LLM-facing prefixes map to registered domain_ids.
         """
         from mithra.agent.interface import AgentIntent
 
@@ -539,13 +564,22 @@ class LangGraphAdapter(AgentInterface):
             str(AgentIntent.SYSTEM_CLARIFICATION_NEEDED),
         ):
             return []
+
         intent_str = str(intent)
-        if "." in intent_str:
-            domain = intent_str.split(".")[0]
-        else:
-            domain = intent_str.split("_")[0] if "_" in intent_str else intent_str
-        if domain and domain not in ("system",):
-            return [domain]
+
+        if "," in intent_str:
+            domains: list[str] = []
+            for part in intent_str.split(","):
+                prefix = part.strip().split(".")[0].lower()
+                domain_id = INTENT_DOMAIN_MAP.get(prefix, prefix)
+                if domain_id and domain_id not in domains:
+                    domains.append(domain_id)
+            return domains
+
+        prefix = intent_str.split(".")[0].lower()
+        domain_id = INTENT_DOMAIN_MAP.get(prefix, prefix)
+        if domain_id:
+            return [domain_id]
         return []
 
     def _execute_with_autonomy(
