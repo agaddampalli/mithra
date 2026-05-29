@@ -1911,7 +1911,723 @@ Decision: Modular monolith for all phases until product scale.
 
 ---
 
-## 10. Design Principles
+## 10. Time Domain
+
+### Purpose
+The Time domain manages everything related to how the
+household organizes time — scheduling, reminders,
+recurring events, availability, and daily briefings.
+It is the most frequently used domain and the first
+to be implemented.
+
+### Scope Boundaries
+    IN SCOPE (Time domain owns):
+      Calendar event management (CRUD)
+      Recurring events and schedules
+      Reminders and notifications
+      Availability checking
+      Daily/weekly briefings
+      Multi-user calendar view
+
+    OUT OF SCOPE (handled elsewhere):
+      Contacts for event attendees → People domain
+      Expense tracking for appointments → Money domain
+      Flight/hotel bookings → Travel domain
+      Medication reminders → Health domain
+      Household maintenance schedules → Home domain (Phase 2)
+      Proactive email capture of events → Documents domain
+
+---
+
+### 10.1 Use Case Inventory
+
+#### Category 1 — Event Management (CRUD)
+    "Add dentist appointment Tuesday 3pm"
+    "Schedule dinner with John next Friday 7pm"
+    "Block 2 hours tomorrow morning for deep work"
+    "Add all-day event: Wife's birthday March 15"
+    "Reschedule my dentist to next week same time"
+    "Move all Thursday meetings to Friday"
+    "Cancel tomorrow's meeting"
+    "Delete all events named standup this week"
+    "Update dentist appointment to 4pm"
+    "Add team meeting for 1 hour with video call link"
+
+#### Category 2 — Recurring Events
+    "Add weekly trash pickup every Tuesday at 7am"
+    "Add recycling every other Tuesday at 7am"
+    "Set up daily standup every weekday at 9am"
+    "Add rent reminder on the 1st of every month"
+    "Add wife's birthday reminder every year March 15"
+    "Add weekly date night every Friday 7pm"
+    "Stop recurring standup after June 30"
+    "Change trash day from Tuesday to Wednesday"
+    "Skip trash pickup next Tuesday (holiday)"
+    "Add quarterly dentist checkup every 3 months"
+
+#### Category 3 — Querying and Reading
+    "What's on my calendar today?"
+    "What do I have this week?"
+    "What's happening tomorrow?"
+    "Show me next week's schedule"
+    "When is my next dentist appointment?"
+    "What did I do last Tuesday?"
+    "How many meetings do I have this week?"
+    "Show all events with John this month"
+    "What events are on my work calendar?"
+    "Show wife's schedule for today"
+
+#### Category 4 — Availability Checking
+    "Am I free Saturday afternoon?"
+    "Are we both free Sunday for brunch?"
+    "Find a free 2-hour slot this week"
+    "Do I have any conflicts next week?"
+    "When is the next free evening this week?"
+    "Is Tuesday morning free for a doctor appointment?"
+
+#### Category 5 — Reminders
+    "Remind me to call mom on Sunday at 3pm"
+    "Remind me 30 minutes before dentist"
+    "Remind me every Monday to send weekly update"
+    "Set a reminder to take medication at 8am daily"
+    "Remind me the night before trash day"
+    "Alert me 1 hour before any appointment downtown"
+
+#### Category 6 — Briefings (on-demand)
+    "What's happening today?"
+    "Give me my daily briefing"
+    "What does my week look like?"
+    "Any conflicts this week?"
+    "What's on for the weekend?"
+    "What events do I have coming up this month?"
+
+#### Category 7 — Household Schedules
+    "Set up weekly trash pickup every Tuesday"
+    "Add alternating recycling every other Tuesday"
+    "Remind us the night before trash day"
+    "Skip trash next week — it's a holiday"
+    "Remind me to pay rent on the 1st"
+    NOTES:
+      Trash/recycling = recurring calendar events
+      Biweekly recycling = WEEKLY interval=2 recurrence
+      Schedule changes handled via update/exception
+      Municipality ICS subscription → Phase 2
+        (when Documents domain can handle URL import)
+
+#### Category 8 — Multi-User Calendar
+    "What does Wife have tomorrow?"
+    "Are we both free Saturday?"
+    "Add family dinner for both of us next Sunday"
+    "Show our combined schedule this week"
+    "Add dentist for Wife on Thursday 2pm"
+    NOTES:
+      Each member's calendar accessed via their own
+      Google OAuth token (OAuthManager per user_id)
+      Wife's calendar reads available once she connects Google
+      Events added to specific user's calendar by default
+      Shared events duplicated to both calendars
+
+---
+
+### 10.2 Natural Language Time Parsing
+
+#### The Problem
+LLM-based time parsing is non-deterministic:
+  - Same input can produce different ISO8601 outputs
+  - Timezone handling is unreliable
+  - Edge cases fail: "first Tuesday of next month"
+  - Not testable (different output each run)
+
+#### The Solution: Deterministic Hybrid
+    LLM:        understands intent, extracts time string
+                "add dentist tuesday 3pm" →
+                LLM calls calendar_create_event with
+                start_time="tuesday 3pm"
+
+    dateparser: converts deterministically
+                "tuesday 3pm" + TIMEZONE=America/Chicago →
+                2026-06-03T15:00:00-05:00
+
+    This is always correct, always testable,
+    always timezone-aware.
+
+#### dateparser Configuration
+    import dateparser
+
+    def parse_datetime(
+        text: str,
+        timezone: str,
+        prefer_future: bool = True,
+    ) -> datetime | None:
+        return dateparser.parse(text, settings={
+            "TIMEZONE": timezone,
+            "RETURN_AS_TIMEZONE_AWARE": True,
+            "PREFER_FUTURE_DATES": prefer_future,
+            "PREFER_DAY_OF_MONTH": "first",
+            "TO_TIMEZONE": timezone,
+        })
+
+    Handles:
+      "next Tuesday"             → next Tue from today
+      "first Monday of month"    → deterministic
+      "in 3 days"                → relative from now
+      "tuesday 3pm"              → this or next Tuesday
+      "March 15"                 → next March 15
+      "every Monday"             → recurrence base date
+      "tomorrow morning"         → 9am tomorrow (configurable)
+
+#### Tool Input Design (one-way door)
+    Tools receive raw time strings from LLM.
+    Tools call parse_datetime() internally.
+    Tools NEVER receive pre-parsed ISO8601 from LLM.
+    Tools NEVER ask LLM to produce ISO8601.
+
+    WHY: LLM-produced ISO8601 is unreliable.
+    parse_datetime() is deterministic and testable.
+
+    If parse_datetime() fails → tool returns ToolResult.fail()
+    with error_code="UNPARSEABLE_DATE" and asks LLM to
+    reformulate: "Could not understand 'blurp' as a date.
+    Try: 'next Tuesday at 3pm'"
+
+---
+
+### 10.3 Library Stack
+
+#### gcsa — Google Calendar Simple API
+    pip install gcsa>=2.0.0
+
+    Why gcsa over raw Google API:
+      Pythonic objects instead of raw JSON dicts
+      Event, Recurrence, Attendee classes
+      Recurring events with full RRULE support
+      Reminders built in (popup, email)
+      Pagination handled automatically
+
+    Auth integration:
+      gcsa accepts google.oauth2.credentials.Credentials
+      We build Credentials from OAuthManager tokens:
+
+        from google.oauth2.credentials import Credentials
+        from gcsa.google_calendar import GoogleCalendar
+
+        token_data = oauth_manager._store.load(
+            "google", user_id)
+        creds = Credentials(
+            token=token_data["access_token"],
+            refresh_token=token_data["refresh_token"],
+            client_id=GOOGLE_CLIENT_ID,
+            client_secret=GOOGLE_CLIENT_SECRET,
+            scopes=["https://www.googleapis.com/auth/calendar"],
+            token_uri="https://oauth2.googleapis.com/token",
+        )
+        gc = GoogleCalendar(credentials=creds)
+
+    gcsa will auto-refresh if access_token is expired.
+    Our OAuthManager token refresh is the primary path;
+    gcsa refresh is the fallback.
+
+#### dateparser — Natural Language Date Parser
+    pip install dateparser>=1.4.0
+
+    Why dateparser:
+      Actively maintained (v1.4.0 March 2026)
+      Built on dateutil, extended for NL
+      Timezone-aware output
+      Handles relative expressions
+      Deterministic given same input + settings
+
+#### Deferred Libraries (for Home Assistant integration)
+    gcal-sync (defer to HA phase):
+      asyncio-based Google Calendar sync to local storage
+      Used by Home Assistant internally
+      Relevant when Mithra syncs events to HA for display
+      Without HA: gcsa is sufficient for Phase 1
+
+    beautiful_date (defer, optional):
+      Companion library to gcsa for readable date code
+      e.g. 15/Mar/2026 instead of date(2026, 3, 15)
+      Useful for scheduled jobs and fixtures
+      Not needed until scheduled briefing jobs are built
+
+---
+
+### 10.4 GoogleCalendarService
+
+Thin service layer between Time domain tools and gcsa.
+Per-user — each call creates/reuses a per-user gc instance.
+Handles credential injection from OAuthManager.
+
+    class GoogleCalendarService:
+        """Thin wrapper around gcsa for Time domain.
+
+        Accepts OAuthManager context and provides
+        clean async interface over gcsa's sync API.
+        Creates GoogleCalendar instance per user.
+        """
+
+        def __init__(
+            self,
+            oauth_manager,
+            household_id: str,
+            client_id: str,
+            client_secret: str,
+        ):
+            self._oauth = oauth_manager
+            self._household_id = household_id
+            self._client_id = client_id
+            self._client_secret = client_secret
+            self._gc_cache: dict[str, Any] = {}
+
+        def _get_gc(self, user_id: str) -> "GoogleCalendar":
+            """Get or create GoogleCalendar for user."""
+            if user_id in self._gc_cache:
+                return self._gc_cache[user_id]
+            token_data = self._oauth._store.load(
+                "google", user_id)
+            if not token_data:
+                raise RuntimeError(
+                    f"Google not connected for {user_id}. "
+                    f"Send 'connect google' to Mithra.")
+            from google.oauth2.credentials import Credentials
+            from gcsa.google_calendar import GoogleCalendar
+            creds = Credentials(
+                token=token_data["access_token"],
+                refresh_token=token_data.get("refresh_token"),
+                client_id=self._client_id,
+                client_secret=self._client_secret,
+                scopes=token_data.get("scopes", [
+                    "https://www.googleapis.com/auth/calendar"]),
+                token_uri="https://oauth2.googleapis.com/token",
+            )
+            gc = GoogleCalendar(credentials=creds)
+            self._gc_cache[user_id] = gc
+            return gc
+
+        Methods:
+          list_events(user_id, start, end) -> list[Event]
+          get_event(user_id, event_id) -> Event | None
+          create_event(user_id, event) -> Event
+          update_event(user_id, event) -> Event
+          delete_event(user_id, event_id) -> None
+          get_free_busy(user_id, start, end) -> list[dict]
+          list_calendars(user_id) -> list[Calendar]
+
+---
+
+### 10.5 Tool Set
+
+Maximum 8 tools. All use Pydantic args_schema (MCP-compatible).
+All return ToolResult. All use dateparser for time parsing.
+
+#### Tool 1: calendar_read_events
+    Permission:   READ
+    Reversible:   false
+    Autonomy:     ACT_SILENT (3)
+    Event:        none
+
+    Description:
+      List calendar events for a time range.
+      Use when user asks what is on their calendar,
+      what they have today/this week/this month,
+      or wants to see upcoming appointments.
+      Do NOT use for: checking availability (use
+      calendar_check_availability), or adding events.
+
+    Input schema:
+      time_range: str  "today", "tomorrow", "this week",
+                       "next week", "this month", or
+                       "from X to Y"
+      user_id:    str  default: requesting user
+      calendar:   str  default: "primary"
+
+    Output summary examples:
+      "3 events today: Dentist at 3pm, Gym at 6pm,
+       Dinner with John at 8pm"
+      "No events scheduled for tomorrow"
+
+#### Tool 2: calendar_create_event
+    Permission:   WRITE
+    Reversible:   true
+    Autonomy:     SURFACE (1)
+    Event:        "appointment_created"
+
+    Description:
+      Create a new calendar event.
+      Use when user wants to schedule an appointment,
+      meeting, reminder, or any future event.
+      Requires Google to be connected.
+      Do NOT use for: recurring events (use
+      calendar_create_recurring), or reminders without
+      a specific time.
+
+    Input schema:
+      title:       str  event name
+      start_time:  str  natural language e.g. "tuesday 3pm"
+      duration_minutes: int  default 60
+      description: str  optional
+      location:    str  optional
+      user_id:     str  default: requesting user
+      add_reminder_minutes: int  optional, popup reminder
+
+    Output summary:
+      "Created 'Dentist appointment' for Tuesday June 3
+       at 3:00 PM (1 hour). Added to your Google Calendar."
+
+#### Tool 3: calendar_create_recurring
+    Permission:   WRITE
+    Reversible:   true
+    Autonomy:     SURFACE (1)
+    Event:        "recurring_event_created"
+
+    Description:
+      Create a recurring calendar event.
+      Use for events that repeat: weekly meetings,
+      monthly bills, annual birthdays, trash pickup,
+      medication reminders, exercise routines.
+      Do NOT use for: one-time events (use
+      calendar_create_event).
+
+    Input schema:
+      title:          str   event name
+      start_time:     str   first occurrence natural language
+      duration_minutes: int default 30
+      frequency:      str   "daily"|"weekly"|"monthly"|"yearly"
+      interval:       int   default 1 (2=every other week)
+      by_week_day:    str   optional "MO,TU,WE,TH,FR,SA,SU"
+      by_month_day:   int   optional day of month (1-31)
+      end_date:       str   optional "after 10 occurrences"
+                            or "until Dec 31 2026"
+      description:    str   optional
+      user_id:        str   default: requesting user
+
+    Example inputs:
+      trash:      title="Trash pickup" start_time="next Tuesday 7am"
+                  frequency="weekly" by_week_day="TU"
+      recycling:  same but interval=2
+      standup:    frequency="weekly" by_week_day="MO,TU,WE,TH,FR"
+      birthday:   frequency="yearly"
+      rent:       frequency="monthly" by_month_day=1
+
+    Output summary:
+      "Created recurring 'Trash pickup' every Tuesday
+       at 7:00 AM. First occurrence June 3, 2026."
+
+#### Tool 4: calendar_update_event
+    Permission:   WRITE
+    Reversible:   true
+    Autonomy:     SURFACE (1)
+    Event:        "appointment_updated"
+
+    Description:
+      Update an existing calendar event.
+      Use when user wants to reschedule, rename,
+      or modify an event.
+      For recurring events: specify if changing
+      this occurrence only or all future occurrences.
+      Do NOT use for: deleting events.
+
+    Input schema:
+      event_query:   str   event title or description
+                           to find the event
+      new_time:      str   optional new time
+      new_title:     str   optional new title
+      new_duration:  int   optional new duration minutes
+      new_location:  str   optional
+      scope:         str   "this"|"future"|"all"
+                           for recurring events
+      user_id:       str   default: requesting user
+
+    Output summary:
+      "Updated 'Dentist appointment' to Friday June 6
+       at 3:00 PM."
+
+#### Tool 5: calendar_delete_event
+    Permission:   DESTRUCTIVE
+    Reversible:   false
+    Autonomy:     always confirm (DESTRUCTIVE)
+    Event:        "appointment_cancelled"
+
+    Description:
+      Delete a calendar event permanently.
+      Always requires confirmation. Cannot be undone.
+      Use when user explicitly wants to cancel/delete.
+      For recurring events: specify scope.
+      Do NOT use for: rescheduling (use update instead).
+
+    Input schema:
+      event_query:   str   event title to find
+      scope:         str   "this"|"future"|"all"
+      user_id:       str   default: requesting user
+
+    Output summary:
+      "Deleted 'Monday standup' on June 3. This was
+       a recurring event — only this occurrence deleted."
+
+#### Tool 6: calendar_check_availability
+    Permission:   READ
+    Reversible:   false
+    Autonomy:     ACT_SILENT (3)
+    Event:        none
+
+    Description:
+      Check if a user (or multiple users) is free
+      during a time period. Use when asked about
+      availability, finding free slots, or checking
+      for conflicts.
+      Do NOT use for: listing events (use read_events).
+
+    Input schema:
+      time_range:   str        "saturday afternoon",
+                               "this week", "tuesday 2-4pm"
+      duration_minutes: int    optional min duration needed
+      user_ids:     list[str]  default: [requesting user]
+                               ["all"] for all household members
+
+    Output summary:
+      "You're free Saturday afternoon 1pm-6pm."
+      "You and Wife are both free Sunday evening."
+      "No free 2-hour slot found this week. Closest:
+       Monday 4-6pm or Wednesday 3-5pm."
+
+#### Tool 7: calendar_daily_briefing
+    Permission:   READ
+    Reversible:   false
+    Autonomy:     ACT_SILENT (3)
+    Event:        none
+
+    Description:
+      Generate a structured briefing of upcoming events.
+      Use when user asks about their day, week, or
+      requests a schedule summary.
+      Includes: today's events, upcoming reminders,
+      relevant weather context, household member events.
+      Do NOT use for: adding or modifying events.
+
+    Input schema:
+      period:    str   "today"|"tomorrow"|"week"|"weekend"
+      user_id:   str   default: requesting user
+      include_household: bool  default true
+
+    Output summary:
+      "Your day: Dentist at 3pm (in 4 hours, downtown),
+       Gym at 6pm. Wife has book club at 7pm.
+       Trash pickup tomorrow — remember to put bins out."
+
+#### Tool 8: calendar_find_time
+    Permission:   READ
+    Reversible:   false
+    Autonomy:     ACT_SILENT (3)
+    Event:        none
+
+    Description:
+      Find the best available time slot for a new event.
+      Use when user wants to schedule something but
+      hasn't specified a time, or asks for suggestions.
+      Considers all household members if requested.
+      Do NOT use for: checking specific time availability
+      (use check_availability).
+
+    Input schema:
+      duration_minutes:  int      required
+      within_period:     str      "this week", "next week"
+      preferred_time:    str      optional "morning"|"afternoon"
+                                  |"evening"
+      participants:      list[str] optional user_ids
+
+    Output summary:
+      "Best slots for a 1-hour meeting this week:
+       Monday 2pm, Wednesday 10am, Thursday 3pm.
+       Which works for you?"
+
+---
+
+### 10.6 Cross-Domain Side Effects
+
+Time domain emits these events after tool execution.
+Other domains subscribe and react automatically.
+
+    appointment_created:
+      Payload: {title, start_time, end_time,
+                event_id, user_id, calendar_id}
+      Subscribers:
+        MoneyDomain → record expense if cost mentioned
+        PeopleDomain → link contact if attendee mentioned
+
+    appointment_updated:
+      Payload: {event_id, old_time, new_time, user_id}
+      Subscribers:
+        PeopleDomain → update contact interaction log
+
+    appointment_cancelled:
+      Payload: {event_id, title, original_time, user_id}
+      Subscribers:
+        MoneyDomain → flag potential refund if expense linked
+
+    recurring_event_created:
+      Payload: {title, frequency, start_date, user_id}
+      Subscribers: none today (reserved)
+
+---
+
+### 10.7 Proactive Briefings (Scheduled Jobs)
+
+Daily briefings are BOTH a tool (on demand) AND
+a scheduled job (proactive push).
+
+    ON DEMAND (tool — Phase 1):
+      User: "what's today?"
+      LLM calls calendar_daily_briefing
+      Returns structured summary
+
+    SCHEDULED (proactive — Phase 1b):
+      Fires at household configured time (default 7am)
+      Sends Telegram message without user asking
+      Uses same underlying data fetch as the tool
+
+    Implementation for scheduled jobs:
+      APScheduler in healthmonitor container
+      OR FastAPI background tasks at startup
+      Configured in household_config:
+        "briefing_enabled": "true"
+        "briefing_time": "07:00"
+        "briefing_channel": "telegram"
+
+    NOTE: Scheduled briefings require scheduler
+    infrastructure. Implement tool first (simpler),
+    add scheduler when Time domain is stable.
+    Scheduler implementation is separate task.
+
+---
+
+### 10.8 Dashboard Data
+
+    GET /api/v1/dashboard/time
+
+    DashboardData:
+      domain:    "time"
+      summary:   "2 events today"
+      items:
+        - id: event_id
+          title: "Dentist appointment"
+          subtitle: "3:00 PM today"
+          icon: "mdi:calendar"
+          priority: "high" (if within 2 hours)
+          action: "calendar_read_events"
+      alerts:
+        - "Trash pickup tomorrow"
+        - "Rent reminder in 3 days"
+      quick_actions:
+        - label: "Add event"
+          action: "calendar_create_event"
+        - label: "Today's briefing"
+          action: "calendar_daily_briefing"
+
+---
+
+### 10.9 Implementation Order
+
+    T1. Create mithra/domains/time/ package
+        __init__.py, service.py, tools.py
+
+    T2. GoogleCalendarService
+        Wraps gcsa, accepts OAuthManager credentials
+        Methods: list_events, create, update, delete,
+                 free_busy, list_calendars
+        Runs sync (gcsa is sync) → wrap with
+        asyncio.to_thread in tools
+
+    T3. Time domain tools (one by one, tested)
+        calendar_read_events first (read-only, safe)
+        calendar_check_availability second
+        calendar_daily_briefing third
+        calendar_create_event fourth (wraps existing)
+        calendar_create_recurring fifth
+        calendar_update_event sixth
+        calendar_delete_event seventh
+        calendar_find_time eighth
+
+    T4. TimeDomain class implementing Domain ABC
+        get_tools(context) → all 8 tools
+        get_dashboard_data(user_id, household_id)
+        get_event_subscriptions() → []
+        handle_event() → no-op (Time doesn't react to events)
+
+    T5. Register TimeDomain in bootstrap.py
+        domain_registry.register(TimeDomain(...))
+
+    T6. Test end to end:
+        "what's on today" → read_events → response
+        "am I free Saturday" → check_availability
+        "add dentist tuesday 3pm" → create_event → calendar
+        "add weekly trash tuesday 7am" → create_recurring
+        "cancel dentist" → delete_event → confirmation
+
+    T7. Dashboard endpoint test:
+        GET /api/v1/dashboard/time → 200 with today's events
+
+---
+
+### 10.10 Alternatives Considered
+
+#### Raw Google Calendar API (no gcsa)
+    Rejected: raw API returns JSON dicts requiring
+    manual parsing of start/end (dateTime vs date),
+    timezone handling, pagination, and recurrence rules.
+    gcsa handles all of this in Pythonic objects.
+    gcsa accepts our existing OAuth credentials directly.
+
+#### LLM-only time parsing (no dateparser)
+    Rejected: non-deterministic. Same input can produce
+    different ISO8601 outputs. Edge cases like
+    "first Tuesday of next month" fail silently.
+    Not unit-testable. dateparser is 100% deterministic
+    given same input and timezone settings.
+
+#### gcal-sync for calendar operations
+    Deferred to Home Assistant phase:
+      gcal-sync is designed for syncing events to local
+      storage — the pattern Home Assistant uses internally.
+      When Mithra integrates with HA for the dashboard,
+      gcal-sync provides efficient incremental sync.
+      For Phase 1 (direct API calls), gcsa is sufficient.
+
+#### beautiful_date companion library
+    Deferred to scheduled jobs phase:
+      Makes date code more readable in Python scripts.
+      Useful when writing scheduled briefing jobs and
+      test fixtures. Not needed for async tool code
+      where datetime objects work cleanly.
+
+#### Apple Calendar / CalDAV
+    Deferred: requires CalDAV server setup.
+    Neither household member uses Apple Calendar as primary.
+    Add when household member requests it.
+    CalDAV protocol support via caldav Python library.
+
+#### Microsoft Outlook Calendar
+    Deferred to Phase 2:
+    Neither household member uses Outlook as primary.
+    Microsoft OAuth already configured.
+    Add Outlook read via Microsoft Graph when needed.
+    GoogleCalendarService pattern repeats for Outlook.
+
+---
+
+### 10.11 Dependencies to Add
+
+    requirements.txt:
+      gcsa>=2.0.0          Google Calendar CRUD
+      dateparser>=1.4.0    Natural language → datetime
+
+    Note: gcsa requires google-auth which is already
+    in requirements.txt. dateparser requires dateutil
+    which is also already installed.
+    No major new dependencies.
+
+---
+
+## 11. Design Principles
 
 These apply to ALL future decisions.
 
@@ -1941,7 +2657,7 @@ These apply to ALL future decisions.
    All domain tools have unit tests.
    Tests use mock DomainContext injection.
    No domain ships without passing full test suite.
-   Current baseline: 784 tests.
+   Current baseline: 834 tests.
 
 6. DOCUMENT THE WHY
    Every ADR records alternatives considered.
