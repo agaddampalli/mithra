@@ -45,6 +45,24 @@ class TestParseTime:
         assert result.year == 2026
         assert result.month == 12
 
+    def test_next_day_of_week_with_time(self):
+        # dateparser can't parse "next <day>" natively; parse_time strips
+        # "next" and relies on PREFER_DATES_FROM=future to stay in the future.
+        result = parse_time("next Tuesday 3pm", TZ)
+        assert result is not None
+        assert result.hour == 15
+
+    def test_next_day_at_prefix(self):
+        result = parse_time("next monday at 9am", TZ)
+        assert result is not None
+        assert result.hour == 9
+
+    def test_base_parameter_used_as_relative_anchor(self):
+        from datetime import timezone as tz_mod
+        base = datetime(2026, 1, 1, 12, 0, 0, tzinfo=tz_mod.utc)
+        result = parse_time("in 2 hours", TZ, base=base)
+        assert result is not None
+
 
 class TestRangeFromPeriod:
     def test_today_is_single_day(self):

@@ -16,6 +16,10 @@ import yaml
 
 _logger = logging.getLogger(__name__)
 
+# Suppress harmless "file_cache is only supported with oauth2client<4.0.0" warning
+# that fires on every Google API call when using google-auth instead of oauth2client.
+logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
+
 
 def load_household_config(path: str = "household.yaml") -> dict:
     try:

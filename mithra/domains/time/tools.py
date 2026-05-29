@@ -31,29 +31,64 @@ _logger = logging.getLogger(__name__)
 # Utility — time parsing
 # ---------------------------------------------------------------------------
 
+_DAY_NAMES = (
+    "monday", "tuesday", "wednesday", "thursday",
+    "friday", "saturday", "sunday",
+)
+
+
 def parse_time(
     text: str,
     timezone_name: str,
     prefer_future: bool = True,
+    base: datetime | None = None,
 ) -> datetime | None:
     """Convert natural language time string to timezone-aware datetime.
 
     Deterministic given same input + timezone. Uses dateparser.
     Returns None if the string cannot be understood.
+
+    Retry strategy: dateparser does not support "next <day>" phrases.
+    When the first parse fails and the text contains "next <day>", strip
+    the "next" prefix and retry (PREFER_DATES_FROM=future keeps it future).
     """
+    import dateparser
+    import re
+
+    settings: dict = {
+        "TIMEZONE": timezone_name,
+        "RETURN_AS_TIMEZONE_AWARE": True,
+        "PREFER_DATES_FROM": "future" if prefer_future else "past",
+        "PREFER_DAY_OF_MONTH": "first",
+        "TO_TIMEZONE": timezone_name,
+    }
+    if base is not None:
+        settings["RELATIVE_BASE"] = base
+
     try:
-        import dateparser
-        result = dateparser.parse(text, settings={
-            "TIMEZONE": timezone_name,
-            "RETURN_AS_TIMEZONE_AWARE": True,
-            "PREFER_DATES_FROM": "future" if prefer_future else "past",
-            "PREFER_DAY_OF_MONTH": "first",
-            "TO_TIMEZONE": timezone_name,
-        })
-        return result
+        result = dateparser.parse(text, settings=settings)
+        if result is not None:
+            return result
     except Exception as exc:
-        _logger.debug("parse_time failed for %r: %s", text, exc)
-        return None
+        _logger.debug("parse_time primary attempt failed for %r: %s", text, exc)
+
+    # Retry: strip "next" prefix before a day name — dateparser handles bare
+    # day names with PREFER_DATES_FROM=future, but not "next <day>" phrases.
+    text_lower = text.lower()
+    if "next" in text_lower:
+        for day in _DAY_NAMES:
+            pattern = r"\bnext\s+" + day + r"\b"
+            if re.search(pattern, text_lower):
+                modified = re.sub(pattern, day, text_lower, count=1)
+                try:
+                    result = dateparser.parse(modified, settings=settings)
+                    if result is not None:
+                        return result
+                except Exception as exc:
+                    _logger.debug("parse_time retry failed for %r: %s", modified, exc)
+
+    _logger.warning("Could not parse datetime: %r", text)
+    return None
 
 
 def _range_from_period(period: str, tz_name: str) -> tuple[datetime, datetime]:
