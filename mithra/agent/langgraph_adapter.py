@@ -5,11 +5,16 @@ orchestration engine.
 LangGraph imports are confined to this module. No other file in the codebase
 may import from langgraph directly.
 
-StateGraph nodes: classify_intent → select_tool → execute_tool → generate_response
+Graph: classify_intent → load_domain_tools → llm_tool_selection → execute_tool → generate_response
 
 Conditional routing after classify_intent:
   CLARIFICATION_NEEDED or UNKNOWN, or confidence < 0.75 → generate_response
-  otherwise → select_tool → execute_tool → generate_response
+  otherwise → load_domain_tools
+
+Conditional routing after llm_tool_selection:
+  tool_calls present → execute_tool
+  no tool_calls but MCPTool matches intent → execute_tool
+  otherwise → generate_response
 """
 
 from __future__ import annotations
@@ -78,8 +83,9 @@ class _GraphState(TypedDict):
     request: AgentRequest
     intent: str
     confidence: float
-    selected_tool: str | None
     domain_bundles: list[Any]
+    tool_calls: list[Any]            # tool_calls from LangChain bind_tools response
+    llm_response: Any | None         # raw LangChain AIMessage from llm_tool_selection
     tool_result: dict[str, Any] | None
     pending_actions: list
     response_text: str
@@ -89,29 +95,6 @@ class _GraphState(TypedDict):
 
 class LangGraphAdapter(AgentInterface):
     """LangGraph implementation of AgentInterface."""
-
-    INTENT_TOOL_MAP: dict[str, str] = {
-        # Time domain — calendar sub-intents
-        "calendar.view":         "calendar_read_events",
-        "calendar.read":         "calendar_read_events",
-        "calendar.list":         "calendar_read_events",
-        "calendar.create_event": "calendar_create_event",
-        "calendar.create":       "calendar_create_event",
-        "calendar.schedule":     "calendar_create_event",
-        "calendar.recurring":    "calendar_create_recurring",
-        "calendar.update":       "calendar_update_event",
-        "calendar.reschedule":   "calendar_update_event",
-        "calendar.delete":       "calendar_delete_event",
-        "calendar.cancel":       "calendar_delete_event",
-        "calendar.availability": "calendar_check_availability",
-        "calendar.free":         "calendar_check_availability",
-        "calendar.briefing":     "calendar_daily_briefing",
-        "calendar.today":        "calendar_daily_briefing",
-        "calendar.find_time":    "calendar_find_time",
-        "calendar.suggest":      "calendar_find_time",
-        # Bare prefix → daily briefing
-        "calendar":              "calendar_daily_briefing",
-    }
 
     def __init__(
         self,
@@ -147,7 +130,8 @@ class LangGraphAdapter(AgentInterface):
         graph = StateGraph(_GraphState)
 
         graph.add_node("classify_intent", self._node_classify_intent)
-        graph.add_node("select_tool", self._node_select_tool)
+        graph.add_node("load_domain_tools", self._node_load_domain_tools)
+        graph.add_node("llm_tool_selection", self._node_llm_tool_selection)
         graph.add_node("execute_tool", self._node_execute_tool)
         graph.add_node("generate_response", self._node_generate_response)
 
@@ -156,11 +140,19 @@ class LangGraphAdapter(AgentInterface):
             "classify_intent",
             self._route_after_classify,
             {
-                "select_tool": "select_tool",
+                "load_domain_tools": "load_domain_tools",
                 "generate_response": "generate_response",
             },
         )
-        graph.add_edge("select_tool", "execute_tool")
+        graph.add_edge("load_domain_tools", "llm_tool_selection")
+        graph.add_conditional_edges(
+            "llm_tool_selection",
+            self._route_after_tool_selection,
+            {
+                "execute_tool": "execute_tool",
+                "generate_response": "generate_response",
+            },
+        )
         graph.add_edge("execute_tool", "generate_response")
         graph.add_edge("generate_response", END)
 
@@ -174,7 +166,16 @@ class LangGraphAdapter(AgentInterface):
             AgentIntent.SYSTEM_UNKNOWN,
         ) or confidence < 0.75:
             return "generate_response"
-        return "select_tool"
+        return "load_domain_tools"
+
+    def _route_after_tool_selection(self, state: _GraphState) -> str:
+        if state.get("tool_calls"):
+            return "execute_tool"
+        # MCPTool fallback: intent maps directly to a registered legacy tool
+        intent = state.get("intent", "")
+        if str(intent) in self._tools:
+            return "execute_tool"
+        return "generate_response"
 
     # ------------------------------------------------------------------
     # Graph nodes
@@ -199,134 +200,120 @@ class LangGraphAdapter(AgentInterface):
             "confidence": classification.confidence,
         }
 
-    def _node_select_tool(self, state: _GraphState) -> dict[str, Any]:
+    def _node_load_domain_tools(self, state: _GraphState) -> dict[str, Any]:
+        """Stage 2a — load this intent's domain tools from the registry."""
         intent = state.get("intent", "")
-        _logger.info(
-            "_node_select_tool: intent=%r domain_ids=%s",
-            intent, self._extract_domain_ids(str(intent)),
-        )
-
-        # Stage 2: load domain tools from registry for this intent's domain(s)
+        domain_ids = self._extract_domain_ids(str(intent))
+        request: AgentRequest = state["request"]
         domain_bundles: list[Any] = []
-        if self._domain_registry is not None:
-            request: AgentRequest = state["request"]
-            domain_ids = self._extract_domain_ids(intent)
-            if domain_ids:
-                try:
-                    ctx = self._build_domain_context(request)
-                    domain_bundles = self._domain_registry.get_tools(domain_ids, ctx)
-                except Exception as _exc:
-                    _logger.error(
-                        "_node_select_tool: domain tool load failed: %s\n%s",
-                        _exc, traceback.format_exc(),
-                    )
-
-        # Map intent to specific tool name via INTENT_TOOL_MAP
-        selected = (
-            self.INTENT_TOOL_MAP.get(str(intent))
-            or self.INTENT_TOOL_MAP.get(str(intent).split(".")[0])
+        if self._domain_registry and domain_ids:
+            try:
+                ctx = self._build_domain_context(request)
+                domain_bundles = self._domain_registry.get_tools(domain_ids, ctx)
+            except Exception as exc:
+                _logger.error(
+                    "_node_load_domain_tools failed: %s\n%s", exc, traceback.format_exc()
+                )
+        _logger.info(
+            "_node_load_domain_tools: intent=%r domain_ids=%s bundles=%d",
+            intent, domain_ids, len(domain_bundles),
         )
+        return {"domain_bundles": domain_bundles}
 
-        # Fall back to MCPTool registry (backward compat)
-        if selected is None:
-            if intent in self._tools:
-                selected = intent
-            else:
-                domain_prefix = str(intent).split(".")[0] if "." in str(intent) else ""
-                for name in self._tools:
-                    if name.startswith(domain_prefix + "."):
-                        selected = name
-                        break
+    def _node_llm_tool_selection(self, state: _GraphState) -> dict[str, Any]:
+        """Stage 2b — LLM selects the specific tool via bind_tools (ADR 9.4)."""
+        from langchain_core.messages import HumanMessage, SystemMessage  # type: ignore[import]
 
-        return {"selected_tool": selected, "domain_bundles": domain_bundles}
+        domain_bundles: list[Any] = state.get("domain_bundles", [])
+        request: AgentRequest = state["request"]
 
-    @staticmethod
-    def _build_tool_input(tool_name: str, user_text: str, intent: str) -> dict:
-        """Build tool input kwargs from raw user message text.
+        if not domain_bundles:
+            return {"tool_calls": [], "llm_response": None}
 
-        Tools handle their own NL parsing (dateparser for times, etc.).
-        This provides the minimal required fields per tool so they can run.
-        """
-        txt = user_text.lower()
-        if tool_name == "calendar_read_events":
-            for period in ("today", "tomorrow", "this week", "next week",
-                           "this month", "weekend"):
-                if period in txt:
-                    return {"time_range": period}
-            return {"time_range": "today"}
-
-        if tool_name == "calendar_daily_briefing":
-            for period in ("today", "tomorrow", "this week", "weekend"):
-                if period in txt:
-                    return {"period": period}
-            return {"period": "today"}
-
-        if tool_name == "calendar_check_availability":
-            return {"time_range": user_text or "today"}
-
-        if tool_name == "calendar_create_event":
-            return {"title": user_text, "start_time": user_text}
-
-        if tool_name == "calendar_create_recurring":
-            return {"title": user_text, "start_time": user_text, "frequency": "weekly"}
-
-        if tool_name == "calendar_update_event":
-            return {"event_query": user_text}
-
-        if tool_name == "calendar_delete_event":
-            return {"event_query": user_text}
-
-        if tool_name == "calendar_find_time":
-            return {"duration_minutes": 60, "within_period": "this week"}
-
-        return {"text": user_text}
+        lc_tools = [bundle.tool for bundle in domain_bundles]
+        try:
+            llm = self._llm_router.get_langchain_llm()
+            llm_with_tools = llm.bind_tools(lc_tools)
+            messages = [
+                SystemMessage(
+                    content=(
+                        "You are Mithra, a household AI assistant. "
+                        f"Timezone: {self._household_tz}. "
+                        "Select and call the most appropriate tool to fulfill the "
+                        "user's request. Be precise with the parameters."
+                    )
+                ),
+                HumanMessage(content=request.text or ""),
+            ]
+            response = llm_with_tools.invoke(messages)
+            tool_calls = getattr(response, "tool_calls", []) or []
+            _logger.info(
+                "_node_llm_tool_selection: %d tool call(s) selected", len(tool_calls)
+            )
+            return {"tool_calls": tool_calls, "llm_response": response}
+        except Exception as exc:
+            _logger.error(
+                "_node_llm_tool_selection failed: %s\n%s", exc, traceback.format_exc()
+            )
+            return {"tool_calls": [], "llm_response": None}
 
     def _node_execute_tool(self, state: _GraphState) -> dict[str, Any]:
-        tool_name = state.get("selected_tool")
+        tool_calls: list[Any] = state.get("tool_calls", [])
         domain_bundles: list[Any] = state.get("domain_bundles", [])
-        _logger.info(
-            "_node_execute_tool: tool_name=%r domain_bundles=%s",
-            tool_name, [getattr(b.metadata, "name", "?") for b in domain_bundles],
-        )
+        request: AgentRequest = state["request"]
 
-        # Try domain registry bundles first
-        if domain_bundles:
-            request: AgentRequest = state["request"]
-            intent = state.get("intent", "")
-            user_text = request.text or ""
-            for bundle in domain_bundles:
-                if bundle.metadata.name == tool_name:
-                    try:
-                        ctx = self._build_domain_context(request)
-                        tool_input = self._build_tool_input(
-                            bundle.metadata.name, user_text, str(intent)
-                        )
-                        result = self._execute_with_autonomy(bundle, tool_input, ctx)
-                        if result.get("requires_confirmation"):
-                            return {
-                                "tool_result": None,
-                                "pending_actions": [{
-                                    "action_type": bundle.metadata.name,
-                                    "domain": bundle.metadata.domain_id,
-                                    "payload": tool_input,
-                                    "output_channel": "none",
-                                    "autonomy_level": bundle.metadata.autonomy_level,
-                                    "reversibility": "full" if bundle.metadata.is_reversible else "none",
-                                }],
-                            }
-                        return {"tool_result": result}
-                    except Exception as exc:  # noqa: BLE001
-                        _logger.error(
-                            "_node_execute_tool: domain bundle %r failed: %s\n%s",
-                            getattr(bundle.metadata, "name", "?"), exc, traceback.format_exc(),
-                        )
-                        return {"tool_result": None, "error": str(exc)}
+        # --- Path A: LLM-selected domain bundle tool (bind_tools) ---
+        if tool_calls:
+            first_call = tool_calls[0]
+            tool_name = (
+                first_call["name"] if isinstance(first_call, dict)
+                else getattr(first_call, "name", "")
+            )
+            tool_args: dict[str, Any] = (
+                first_call.get("args", {}) if isinstance(first_call, dict)
+                else getattr(first_call, "args", {})
+            ) or {}
 
-        # Fall back to MCPTool registry
-        if tool_name is None or tool_name not in self._tools:
+            _logger.info(
+                "_node_execute_tool (bind_tools): tool_name=%r args=%s",
+                tool_name, tool_args,
+            )
+
+            bundle = next(
+                (b for b in domain_bundles if b.metadata.name == tool_name), None
+            )
+            if bundle is not None:
+                try:
+                    ctx = self._build_domain_context(request)
+                    result = self._execute_with_autonomy(bundle, tool_args, ctx)
+                    if result.get("requires_confirmation"):
+                        return {
+                            "tool_result": None,
+                            "pending_actions": [{
+                                "action_type": bundle.metadata.name,
+                                "domain": bundle.metadata.domain_id,
+                                "payload": tool_args,
+                                "output_channel": "none",
+                                "autonomy_level": bundle.metadata.autonomy_level,
+                                "reversibility": "full" if bundle.metadata.is_reversible else "none",
+                            }],
+                        }
+                    return {"tool_result": result}
+                except Exception as exc:  # noqa: BLE001
+                    _logger.error(
+                        "_node_execute_tool: bundle %r failed: %s\n%s",
+                        tool_name, exc, traceback.format_exc(),
+                    )
+                    return {"tool_result": None, "error": str(exc)}
+
+        # --- Path B: MCPTool fallback (legacy, no domain registry) ---
+        intent = state.get("intent", "")
+        mcp_tool_name = str(intent)
+        if mcp_tool_name not in self._tools:
             return {"tool_result": None, "error": None}
-        tool = self._tools[tool_name]
-        request = state["request"]
+
+        tool = self._tools[mcp_tool_name]
+        _logger.info("_node_execute_tool (MCP fallback): tool=%r", mcp_tool_name)
         try:
             kwargs: dict[str, Any] = {}
             if tool.requires_user_id:
@@ -338,7 +325,7 @@ class LangGraphAdapter(AgentInterface):
         except Exception as exc:  # noqa: BLE001
             _logger.error(
                 "_node_execute_tool: MCP tool %r failed: %s\n%s",
-                tool_name, exc, traceback.format_exc(),
+                mcp_tool_name, exc, traceback.format_exc(),
             )
             return {"tool_result": None, "error": str(exc)}
 
@@ -348,9 +335,9 @@ class LangGraphAdapter(AgentInterface):
         error = state.get("error")
         intent_str = str(state.get("intent", "")).lower()
 
-        # Tool executed successfully — return its response
+        # Tool executed successfully — prefer summary (domain tools) over response (MCP tools)
         if tool_result:
-            return {"response_text": tool_result.get("response", "Done.")}
+            return {"response_text": tool_result.get("summary") or tool_result.get("response", "Done.")}
 
         # Real tool execution error (not "no tool found")
         if error:
@@ -485,8 +472,9 @@ class LangGraphAdapter(AgentInterface):
             "request": request,
             "intent": AgentIntent.SYSTEM_UNKNOWN,
             "confidence": 0.0,
-            "selected_tool": None,
             "domain_bundles": [],
+            "tool_calls": [],
+            "llm_response": None,
             "tool_result": None,
             "pending_actions": [],
             "response_text": "",
@@ -526,8 +514,9 @@ class LangGraphAdapter(AgentInterface):
             "request": request,
             "intent": AgentIntent.SYSTEM_UNKNOWN,
             "confidence": 0.0,
-            "selected_tool": None,
             "domain_bundles": [],
+            "tool_calls": [],
+            "llm_response": None,
             "tool_result": None,
             "pending_actions": [],
             "response_text": "",

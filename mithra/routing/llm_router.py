@@ -190,6 +190,14 @@ class LLMRouter(ABC):
         """Return health status of the router and its model backends."""
         ...
 
+    def get_langchain_llm(self) -> Any:
+        """Return a LangChain ChatModel bound to this router's LiteLLM proxy.
+
+        Used by LangGraphAdapter for bind_tools two-stage tool selection (ADR 9.4).
+        Only concrete adapters that support LangChain integration implement this.
+        """
+        raise NotImplementedError("get_langchain_llm() not implemented for this router")
+
 
 # ---------------------------------------------------------------------------
 # Route config
@@ -570,6 +578,24 @@ class LiteLLMRouterAdapter(LLMRouter):
             local_model_available=ok,
             last_call_at=_now_iso(),
             error=error,
+        )
+
+    # ------------------------------------------------------------------
+    # get_langchain_llm
+    # ------------------------------------------------------------------
+
+    def get_langchain_llm(self) -> Any:
+        """Return a ChatOpenAI instance pointed at the LiteLLM proxy.
+
+        Temperature 0 for deterministic tool selection. The model name is the
+        first entry in the cloud chain; LiteLLM routes it to the actual provider.
+        """
+        from langchain_openai import ChatOpenAI  # type: ignore[import]
+        return ChatOpenAI(
+            model=_CLOUD_CHAIN[0],
+            base_url=f"{self._base_url}/v1",
+            api_key=self._litellm_key or "no-key",
+            temperature=0,
         )
 
     # ------------------------------------------------------------------
