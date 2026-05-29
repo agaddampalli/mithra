@@ -27,7 +27,7 @@ class DomainContext:
     # Request metadata
     request_id: str             # UUID; maps to A2A task_id
     channel: str                # "telegram" | "voice" | "dashboard"
-    language: str               # "en-US"
+    language: str = "en-US"
 
     # Autonomy override — set when user explicitly said "just do it"
-    autonomy_override: int | None
+    autonomy_override: int | None = None
