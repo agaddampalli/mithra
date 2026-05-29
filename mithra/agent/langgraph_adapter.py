@@ -90,6 +90,29 @@ class _GraphState(TypedDict):
 class LangGraphAdapter(AgentInterface):
     """LangGraph implementation of AgentInterface."""
 
+    INTENT_TOOL_MAP: dict[str, str] = {
+        # Time domain — calendar sub-intents
+        "calendar.view":         "calendar_read_events",
+        "calendar.read":         "calendar_read_events",
+        "calendar.list":         "calendar_read_events",
+        "calendar.create_event": "calendar_create_event",
+        "calendar.create":       "calendar_create_event",
+        "calendar.schedule":     "calendar_create_event",
+        "calendar.recurring":    "calendar_create_recurring",
+        "calendar.update":       "calendar_update_event",
+        "calendar.reschedule":   "calendar_update_event",
+        "calendar.delete":       "calendar_delete_event",
+        "calendar.cancel":       "calendar_delete_event",
+        "calendar.availability": "calendar_check_availability",
+        "calendar.free":         "calendar_check_availability",
+        "calendar.briefing":     "calendar_daily_briefing",
+        "calendar.today":        "calendar_daily_briefing",
+        "calendar.find_time":    "calendar_find_time",
+        "calendar.suggest":      "calendar_find_time",
+        # Bare prefix → daily briefing
+        "calendar":              "calendar_daily_briefing",
+    }
+
     def __init__(
         self,
         llm_router: LLMRouter,
@@ -198,14 +221,65 @@ class LangGraphAdapter(AgentInterface):
                         _exc, traceback.format_exc(),
                     )
 
+        # Map intent to specific tool name via INTENT_TOOL_MAP
+        selected = (
+            self.INTENT_TOOL_MAP.get(str(intent))
+            or self.INTENT_TOOL_MAP.get(str(intent).split(".")[0])
+        )
+
         # Fall back to MCPTool registry (backward compat)
-        if intent in self._tools:
-            return {"selected_tool": intent, "domain_bundles": domain_bundles}
-        domain_prefix = intent.split(".")[0] if "." in intent else ""
-        for name in self._tools:
-            if name.startswith(domain_prefix + "."):
-                return {"selected_tool": name, "domain_bundles": domain_bundles}
-        return {"selected_tool": None, "domain_bundles": domain_bundles}
+        if selected is None:
+            if intent in self._tools:
+                selected = intent
+            else:
+                domain_prefix = str(intent).split(".")[0] if "." in str(intent) else ""
+                for name in self._tools:
+                    if name.startswith(domain_prefix + "."):
+                        selected = name
+                        break
+
+        return {"selected_tool": selected, "domain_bundles": domain_bundles}
+
+    @staticmethod
+    def _build_tool_input(tool_name: str, user_text: str, intent: str) -> dict:
+        """Build tool input kwargs from raw user message text.
+
+        Tools handle their own NL parsing (dateparser for times, etc.).
+        This provides the minimal required fields per tool so they can run.
+        """
+        txt = user_text.lower()
+        if tool_name == "calendar_read_events":
+            for period in ("today", "tomorrow", "this week", "next week",
+                           "this month", "weekend"):
+                if period in txt:
+                    return {"time_range": period}
+            return {"time_range": "today"}
+
+        if tool_name == "calendar_daily_briefing":
+            for period in ("today", "tomorrow", "this week", "weekend"):
+                if period in txt:
+                    return {"period": period}
+            return {"period": "today"}
+
+        if tool_name == "calendar_check_availability":
+            return {"time_range": user_text or "today"}
+
+        if tool_name == "calendar_create_event":
+            return {"title": user_text, "start_time": user_text}
+
+        if tool_name == "calendar_create_recurring":
+            return {"title": user_text, "start_time": user_text, "frequency": "weekly"}
+
+        if tool_name == "calendar_update_event":
+            return {"event_query": user_text}
+
+        if tool_name == "calendar_delete_event":
+            return {"event_query": user_text}
+
+        if tool_name == "calendar_find_time":
+            return {"duration_minutes": 60, "within_period": "this week"}
+
+        return {"text": user_text}
 
     def _node_execute_tool(self, state: _GraphState) -> dict[str, Any]:
         tool_name = state.get("selected_tool")
@@ -219,18 +293,22 @@ class LangGraphAdapter(AgentInterface):
         if domain_bundles:
             request: AgentRequest = state["request"]
             intent = state.get("intent", "")
+            user_text = request.text or ""
             for bundle in domain_bundles:
-                if bundle.metadata.name == tool_name or bundle.metadata.name in str(intent):
+                if bundle.metadata.name == tool_name:
                     try:
                         ctx = self._build_domain_context(request)
-                        result = self._execute_with_autonomy(bundle, {}, ctx)
+                        tool_input = self._build_tool_input(
+                            bundle.metadata.name, user_text, str(intent)
+                        )
+                        result = self._execute_with_autonomy(bundle, tool_input, ctx)
                         if result.get("requires_confirmation"):
                             return {
                                 "tool_result": None,
                                 "pending_actions": [{
                                     "action_type": bundle.metadata.name,
                                     "domain": bundle.metadata.domain_id,
-                                    "payload": {},
+                                    "payload": tool_input,
                                     "output_channel": "none",
                                     "autonomy_level": bundle.metadata.autonomy_level,
                                     "reversibility": "full" if bundle.metadata.is_reversible else "none",
