@@ -372,6 +372,17 @@ async def build_state(
     _register_domains(state)
     _register_domain_tool_adapter(state)
 
+    # Patch engine with services built after its initial construction
+    engine = state.get("engine")
+    if engine is not None:
+        engine._domain_registry = state.get("domain_registry")
+        engine._oauth_manager = state.get("oauth_manager")
+        engine._household_id = household_id
+        engine._household_timezone = household_tz
+        engine._file_router = state.get("file_router")
+        engine._member_registry = state.get("member_registry")
+        engine._file_search = state.get("file_search")
+
     # Patch agent with services built after initial construction
     agent = state.get("agent")
     if agent is not None:

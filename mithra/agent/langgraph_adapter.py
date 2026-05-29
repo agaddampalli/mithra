@@ -327,8 +327,8 @@ class LangGraphAdapter(AgentInterface):
                             "pending_actions": [{
                                 "action_type": bundle.metadata.name,
                                 "domain": bundle.metadata.domain_id,
-                                "payload": tool_args,
-                                "output_channel": "none",
+                                "payload": {**tool_args, "user_id": request.user_id},
+                                "output_channel": "telegram",
                                 "autonomy_level": bundle.metadata.autonomy_level,
                                 "reversibility": "full" if bundle.metadata.is_reversible else "none",
                             }],

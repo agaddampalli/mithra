@@ -301,3 +301,52 @@ class TestHealth:
         adapter.register_tool(tool)
         h = adapter.health()
         assert "home.log_maintenance" in h["registered_tools"]
+
+
+# ---------------------------------------------------------------------------
+# pending_actions payload must include user_id
+# ---------------------------------------------------------------------------
+
+class TestPendingActionPayload:
+    def test_pending_action_payload_includes_user_id(self):
+        """_node_execute_tool stores request.user_id in pending_action payload.
+
+        Without this, confirm() executes with user_id='household' which has no
+        OAuth token, causing 'Google not connected for household'.
+        """
+        from mithra.domains.bundle import PermissionTier, ToolBundle, ToolMetadata
+        from unittest.mock import MagicMock
+
+        adapter = _make_adapter()
+
+        # Build a WRITE bundle so it triggers requires_confirmation
+        meta = ToolMetadata(
+            name="calendar_create_event",
+            domain_id="time",
+            permission=PermissionTier.WRITE,
+            is_reversible=True,
+            autonomy_level=1,
+        )
+        fake_tool = MagicMock()
+        fake_tool.name = "calendar_create_event"
+        bundle = ToolBundle(tool=fake_tool, metadata=meta)
+
+        request = AgentRequest(
+            user_id="person_a",
+            device_id="phone_a",
+            input_channel=InputChannel.TELEGRAM,
+            text="add dentist next tuesday 3pm",
+            request_id="req-payload-test",
+        )
+
+        state = {
+            "request": request,
+            "tool_calls": [{"name": "calendar_create_event", "args": {"title": "Dentist"}}],
+            "domain_bundles": [bundle],
+        }
+        result = adapter._node_execute_tool(state)
+
+        assert result.get("pending_actions"), "Expected pending_actions to be set"
+        payload = result["pending_actions"][0]["payload"]
+        assert "user_id" in payload, f"user_id missing from payload: {payload}"
+        assert payload["user_id"] == "person_a"

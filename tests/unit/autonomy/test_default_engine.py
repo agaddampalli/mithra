@@ -450,6 +450,86 @@ async def test_confirm_not_found_returns_empty_receipt(engine):
     assert "not found" in receipt.response_text.lower()
 
 
+@pytest.mark.asyncio
+async def test_confirm_domain_tool_path_uses_payload_user_id(storage, action_log, config_path):
+    """confirm() uses payload['user_id'] from the pending action, not the confirming user_id."""
+    from mithra.domains.result import ToolResult
+
+    captured = {}
+
+    def fake_tool_invoke(payload):
+        captured["user_id"] = payload.get("user_id")
+        return ToolResult.ok("Created!", data={"event_id": "abc"})
+
+    bundle = MagicMock()
+    bundle.metadata.name = "calendar_create_event"
+    bundle.tool.invoke = fake_tool_invoke
+
+    domain = MagicMock()
+    domain.get_tools = MagicMock(return_value=[bundle])
+
+    registry = MagicMock()
+    registry.get = MagicMock(return_value=domain)
+
+    engine_with_registry = DefaultAutonomyEngine(
+        storage, action_log, config_path, domain_registry=registry,
+    )
+
+    executor = _mock_executor()
+    action = _action(action_type="calendar_create_event", domain="surface_domain")
+    # Manually plant a pending action with user_id in payload
+    from mithra.storage.adapter import StorageRecord
+    from datetime import timezone, timedelta
+    import uuid as _uuid
+    pending_id = str(_uuid.uuid4())
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    storage.write(StorageRecord(
+        domain="autonomy",
+        key=f"pending:{pending_id}",
+        layer="state",
+        data={
+            "action_id": pending_id,
+            "request_id": "req-uid",
+            "action_index": 0,
+            "user_id": USER,
+            "domain": "time",
+            "action_type": "calendar_create_event",
+            "payload": {"title": "Dentist", "user_id": "person_a"},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": expires_at,
+            "intent": "time.calendar_create_event",
+            "description": "Create event",
+        },
+        user_id=USER,
+        version=1,
+        updated_at=datetime.now(timezone.utc).isoformat(),
+    ))
+
+    conf_receipt = await engine_with_registry.confirm("req-uid", 0, USER, executor)
+
+    assert len(conf_receipt.executed) == 1
+    assert conf_receipt.executed[0].success is True
+    # Tool was invoked with the correct user_id from payload
+    assert captured.get("user_id") == "person_a"
+    # executor.execute was NOT called — domain tool path short-circuited it
+    executor.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_confirm_domain_tool_path_skipped_when_no_registry(engine, storage, action_log):
+    """Without domain_registry, confirm() falls through to executor (legacy path)."""
+    executor = _mock_executor()
+    action = _action(domain="surface_domain")
+    receipt = await engine.process(_result([action], request_id="req-legacy"), USER, executor)
+
+    pending = receipt.pending[0]
+    conf_receipt = await engine.confirm(pending.request_id, pending.action_index, USER, executor)
+
+    # Went through executor path since engine has no domain_registry
+    executor.execute.assert_called_once()
+    assert len(conf_receipt.executed) == 1
+
+
 # ---------------------------------------------------------------------------
 # reject()
 # ---------------------------------------------------------------------------

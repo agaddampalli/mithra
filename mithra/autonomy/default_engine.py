@@ -31,7 +31,7 @@ _logger = logging.getLogger(__name__)
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -111,10 +111,24 @@ class DefaultAutonomyEngine(AutononomyEngine):
         action_log: ActionLog,
         config_path: str,
         executor: "ActionExecutorRegistry | None" = None,
+        domain_registry: Any = None,
+        household_id: str = "",
+        household_timezone: str = "UTC",
+        oauth_manager: Any = None,
+        file_router: Any = None,
+        member_registry: Any = None,
+        file_search: Any = None,
     ) -> None:
         self._storage = storage_adapter
         self._action_log = action_log
         self._executor = executor
+        self._domain_registry = domain_registry
+        self._household_id = household_id
+        self._household_timezone = household_timezone
+        self._oauth_manager = oauth_manager
+        self._file_router = file_router
+        self._member_registry = member_registry
+        self._file_search = file_search
         self._violation_timestamps: dict[str, list[float]] = defaultdict(list)
         self._load_config(config_path)
 
@@ -130,6 +144,23 @@ class DefaultAutonomyEngine(AutononomyEngine):
         self._default_level: int = cfg.get("default_level", AutonomyLevel.SURFACE.value)
         self._never_actions: frozenset[str] = frozenset(cfg.get("never_actions", []))
         self._domain_overrides: dict[str, int] = cfg.get("domain_overrides") or {}
+
+    def _build_execution_context(self, user_id: str) -> Any:
+        """Build a minimal DomainContext for executing a confirmed domain tool."""
+        from mithra.domains.context import DomainContext
+        import uuid as _uuid
+        return DomainContext(
+            user_id=user_id,
+            household_id=self._household_id,
+            household_timezone=self._household_timezone,
+            oauth_manager=self._oauth_manager,
+            storage_adapter=self._storage,
+            file_router=self._file_router,
+            member_registry=self._member_registry,
+            file_search=self._file_search,
+            request_id=_uuid.uuid4().hex,
+            channel="telegram",
+        )
 
     def _resolve_level(self, action: "AgentAction") -> AutonomyLevel:
         """Return the autonomy level that applies to this action.
@@ -395,6 +426,73 @@ class DefaultAutonomyEngine(AutononomyEngine):
         # Remove from pending store
         self._storage.delete("autonomy", self._pending_storage_key(pending.action_id), user_id)
 
+        # Domain tool path: invoke via domain_registry when available.
+        # payload["user_id"] is set at planning time (see _node_execute_tool) so the
+        # tool executes as the original requesting user, not the confirming user.
+        if self._domain_registry is not None:
+            domain = self._domain_registry.get(pending.domain)
+            if domain is not None:
+                exec_user_id = pending.payload.get("user_id") or user_id
+                ctx = self._build_execution_context(exec_user_id)
+                try:
+                    bundles = await asyncio.to_thread(domain.get_tools, ctx)
+                    bundle = next(
+                        (b for b in bundles if b.metadata.name == pending.action_type), None
+                    )
+                    if bundle is not None:
+                        raw = await asyncio.to_thread(bundle.tool.invoke, pending.payload)
+                        from mithra.domains.result import ToolResult
+                        if isinstance(raw, ToolResult):
+                            success, error, summary = raw.success, raw.error, raw.summary
+                        elif isinstance(raw, dict):
+                            success = raw.get("success", True)
+                            error = raw.get("error")
+                            summary = raw.get("summary") or raw.get("response", "")
+                        else:
+                            success, error, summary = True, None, str(raw)
+
+                        now = _now()
+                        log_entry = ActionLogEntry(
+                            action_id=str(uuid.uuid4()),
+                            request_id=request_id,
+                            user_id=user_id,
+                            domain=pending.domain,
+                            action_type=pending.action_type,
+                            payload=pending.payload,
+                            status="executed" if success else "failed",
+                            reversibility=Reversibility.FULL,
+                            timestamp=now,
+                            intent=pending.intent,
+                            autonomy_level=AutonomyLevel.SURFACE.value,
+                            output_channel="none",
+                            executed_at=now,
+                            success=success,
+                            error=error,
+                            undoable=success,
+                            undo_expires_at=(
+                                (datetime.now(timezone.utc) + timedelta(seconds=_UNDO_WINDOW_SECONDS)).isoformat()
+                                if success else None
+                            ),
+                        )
+                        self._action_log.append(log_entry)
+                        receipt.executed.append(log_entry)
+                        if success:
+                            receipt.response_text = summary or "✅ Done."
+                        else:
+                            _logger.error(
+                                "confirm() domain tool %s failed: %s",
+                                pending.intent, error,
+                            )
+                            receipt.response_text = f"❌ {error or 'Failed.'}"
+                        return receipt
+                except Exception as exc:
+                    _logger.error(
+                        "confirm() domain tool execution failed for %s: %s",
+                        pending.intent, exc, exc_info=True,
+                    )
+                    # Fall through to executor path
+
+        # Legacy path: ActionExecutorRegistry (telegram_reply, calendar_write, etc.)
         from mithra.agent.interface import AgentAction
         action = AgentAction(
             action_type=pending.action_type,
