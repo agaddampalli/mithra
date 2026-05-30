@@ -162,24 +162,23 @@ def _make_event(
     reminders: list | None = None,
     recurrence: list | None = None,
 ) -> Any:
-    """Create a gcsa Event with timezone always set.
+    """Create a gcsa Event using the correct Google Calendar API pattern.
 
-    Single creation path shared by ALL event-creation tools so timezone
-    cannot be omitted by accident on new tools or during refactors.
+    Google Calendar requires naive local time + timeZone parameter:
+      {"dateTime": "2026-06-02T15:00:00", "timeZone": "America/Chicago"}
+    Passing a timezone-aware datetime with an offset causes the API to
+    store the event 5 hours early (UTC offset applied twice).
 
-    ALWAYS converts start_dt to household_timezone regardless of what tzinfo
-    it carries. dateparser 1.4.0 may return UTC despite settings (both the
-    correct-moment UTC case and the wrong-moment UTC case are handled here).
-    gcsa Event(timezone=...) labels the event but does not convert start —
-    the caller must pass a local-timezone-aware datetime.
+    Steps:
+      1. Convert start_dt to the correct local time in household_timezone.
+      2. Strip tzinfo → naive local datetime.
+      3. Pass naive start/end + timezone=household_timezone to gcsa Event.
     """
     import pytz
     from gcsa.event import Event
 
     tz = pytz.timezone(household_timezone)
 
-    # Always convert to local timezone — astimezone handles aware datetimes
-    # (including UTC), localize handles naive datetimes.
     if start_dt.tzinfo is not None:
         start_dt = start_dt.astimezone(tz)
     else:
@@ -187,14 +186,21 @@ def _make_event(
 
     end_dt = start_dt + timedelta(minutes=duration_minutes)
 
+    # Strip tzinfo — Google Calendar API needs naive local time + timeZone,
+    # not a timezone-aware datetime. gcsa passes whatever tzinfo is present
+    # directly to the API; a non-naive value causes the offset to be applied
+    # a second time, storing the event at the wrong UTC instant.
+    naive_start = start_dt.replace(tzinfo=None)
+    naive_end = end_dt.replace(tzinfo=None)
+
     return Event(
         summary=title,
-        start=start_dt,
-        end=end_dt,
+        start=naive_start,
+        end=naive_end,
         timezone=household_timezone,
         description=description or None,
         location=location or None,
-        reminders=reminders or None,
+        reminders=reminders,
         recurrence=recurrence,
     )
 

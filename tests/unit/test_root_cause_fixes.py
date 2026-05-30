@@ -212,19 +212,24 @@ class TestFix2MakeEventHelper:
 
     def test_make_event_end_is_start_plus_duration(self):
         from mithra.domains.time.tools import _make_event
+        # 10:00 UTC → Europe/London BST (UTC+1) = 11:00; +90 min = 12:30 naive
         start = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
         event = _make_event("Meeting", start, 90, "Europe/London")
-        expected_end = start + timedelta(minutes=90)
-        assert event.end == expected_end
+        # event.start/end are naive local time — no tzinfo
+        assert event.start.tzinfo is None
+        assert event.end.tzinfo is None
+        assert event.start.hour == 11
+        assert event.end.hour == 12
+        assert event.end.minute == 30
 
     def test_make_event_localises_naive_datetime(self):
         from mithra.domains.time.tools import _make_event
-        import pytz
         naive_start = datetime(2026, 6, 1, 15, 0)  # no tzinfo
         event = _make_event("Gym", naive_start, 60, "America/New_York")
-        tz = pytz.timezone("America/New_York")
-        assert event.start.tzinfo is not None
-        assert event.end.tzinfo is not None
+        # event.start is stripped to naive local time — tzinfo must be None
+        assert event.start.tzinfo is None
+        assert event.end.tzinfo is None
+        assert event.start.hour == 15
 
     def test_make_event_title_set_as_summary(self):
         from mithra.domains.time.tools import _make_event
@@ -838,15 +843,15 @@ class TestFix6TimezoneConversion:
         utc_dt = datetime(2026, 6, 1, 20, 0, 0, tzinfo=dt_timezone.utc)
         event = _make_event("Dentist", utc_dt, 60, "America/Chicago")
 
-        tz = pytz.timezone("America/Chicago")
-        local_start = event.start.astimezone(tz)
-        assert local_start.hour == 15, (
-            f"Expected 15:00 CDT but got {local_start} "
+        # event.start is naive local time — check hour directly, no .astimezone()
+        assert event.start.tzinfo is None
+        assert event.start.hour == 15, (
+            f"Expected naive 15:00 (CDT local) but got {event.start} "
             f"(input was 20:00 UTC = 15:00 CDT)"
         )
 
     def test_already_local_aware_datetime_unchanged(self):
-        """Already-local CDT datetime must produce correct event unchanged."""
+        """Already-local CDT datetime must produce naive 15:00 event."""
         from mithra.domains.time.tools import _make_event
         import pytz
 
@@ -854,36 +859,32 @@ class TestFix6TimezoneConversion:
         local_dt = tz.localize(datetime(2026, 6, 1, 15, 0, 0))
         event = _make_event("Dentist", local_dt, 60, "America/Chicago")
 
-        local_start = event.start.astimezone(tz)
-        assert local_start.hour == 15
+        assert event.start.tzinfo is None
+        assert event.start.hour == 15
 
     def test_naive_datetime_localised_to_household_tz(self):
-        """Naive 15:00 must be treated as 15:00 CDT, not 15:00 UTC."""
+        """Naive 15:00 must be treated as 15:00 local, preserved as naive 15:00."""
         from mithra.domains.time.tools import _make_event
-        import pytz
 
         naive_dt = datetime(2026, 6, 1, 15, 0, 0)
         event = _make_event("Dentist", naive_dt, 60, "America/Chicago")
 
-        tz = pytz.timezone("America/Chicago")
-        local_start = event.start.astimezone(tz)
-        assert local_start.hour == 15
+        assert event.start.tzinfo is None
+        assert event.start.hour == 15
 
     def test_end_dt_computed_after_timezone_conversion(self):
-        """end_dt must be start_dt + duration in local time, not UTC."""
+        """end_dt must be start_dt + duration in local time — naive 16:30."""
         from mithra.domains.time.tools import _make_event
-        import pytz
         from datetime import timezone as dt_timezone
 
         # 20:00 UTC = 15:00 CDT
         utc_dt = datetime(2026, 6, 1, 20, 0, 0, tzinfo=dt_timezone.utc)
         event = _make_event("Meeting", utc_dt, 90, "America/Chicago")
 
-        tz = pytz.timezone("America/Chicago")
-        local_end = event.end.astimezone(tz)
-        # 15:00 + 90 min = 16:30 CDT
-        assert local_end.hour == 16
-        assert local_end.minute == 30
+        # 15:00 CDT + 90 min = 16:30 CDT — stored as naive local
+        assert event.end.tzinfo is None
+        assert event.end.hour == 16
+        assert event.end.minute == 30
 
     def test_event_timezone_field_always_set(self):
         """gcsa Event.timezone must always equal the household timezone string."""
