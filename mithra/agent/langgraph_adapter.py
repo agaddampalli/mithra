@@ -341,12 +341,25 @@ class LangGraphAdapter(AgentInterface):
                     ctx = self._build_domain_context(request)
                     result = self._execute_with_autonomy(bundle, tool_args, ctx)
                     if result.get("requires_confirmation"):
+                        pending_payload: dict[str, Any] = {
+                            **tool_args,
+                            "user_id": request.user_id,
+                        }
+                        # Pre-format start_time so the confirmation message can
+                        # show "3:00 PM CST" without importing domain code in the engine.
+                        start_raw = tool_args.get("start_time", "")
+                        if start_raw and self._household_tz:
+                            display = self._format_start_for_confirmation(
+                                start_raw, self._household_tz
+                            )
+                            if display:
+                                pending_payload["start_time_display"] = display
                         return {
                             "tool_result": None,
                             "pending_actions": [{
                                 "action_type": bundle.metadata.name,
                                 "domain": bundle.metadata.domain_id,
-                                "payload": {**tool_args, "user_id": request.user_id},
+                                "payload": pending_payload,
                                 "output_channel": "telegram",
                                 "autonomy_level": bundle.metadata.autonomy_level,
                                 "reversibility": "full" if bundle.metadata.is_reversible else "none",
@@ -827,6 +840,24 @@ class LangGraphAdapter(AgentInterface):
                 exc, traceback.format_exc(),
             )
             return {"success": False, "error": str(exc)}
+
+    def _format_start_for_confirmation(self, start_raw: str, household_tz: str) -> str:
+        """Parse a natural-language start_time and return a display string with timezone.
+
+        Imported locally to avoid coupling the agent layer to a specific domain module.
+        Returns empty string on any failure so callers can fall back gracefully.
+        """
+        try:
+            from mithra.domains.time.tools import parse_time
+            import pytz
+            dt = parse_time(start_raw, household_tz)
+            if dt is None:
+                return ""
+            tz = pytz.timezone(household_tz)
+            local = dt.astimezone(tz)
+            return local.strftime("%A %B %-d, %-I:%M %p %Z")
+        except Exception:
+            return ""
 
     def _state_to_result(
         self, state: dict[str, Any], request_id: str, start: float

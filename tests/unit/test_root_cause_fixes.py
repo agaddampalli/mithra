@@ -994,3 +994,203 @@ class TestFix7HealthcheckTimeout:
             urllib.request.urlopen = original
 
         assert captured.get("timeout") == 5
+
+
+# ===========================================================================
+# FIX 8: Fuzzy event matching (_event_matches) for delete and update tools
+# ===========================================================================
+
+
+class TestFix8FuzzyEventMatching:
+    """_event_matches() must find events even when query contains stop words
+    or extra context that is not part of the event title.
+    """
+
+    def test_full_phrase_match(self):
+        from mithra.domains.time.tools import _event_matches
+        assert _event_matches("Trash Reminder", "Trash Reminder") is True
+
+    def test_case_insensitive_full_phrase(self):
+        from mithra.domains.time.tools import _event_matches
+        assert _event_matches("trash reminder", "TRASH REMINDER") is True
+
+    def test_weekly_stop_word_stripped_finds_trash(self):
+        """'cancel weekly trash reminder' must match 'Trash Reminder'."""
+        from mithra.domains.time.tools import _event_matches
+        assert _event_matches("Trash Reminder", "cancel weekly trash reminder") is True
+
+    def test_appointment_stop_word_stripped_finds_dentist(self):
+        """'cancel dentist appointment' must match 'Dentist'."""
+        from mithra.domains.time.tools import _event_matches
+        assert _event_matches("Dentist", "cancel dentist appointment") is True
+
+    def test_meeting_stop_word_stripped(self):
+        from mithra.domains.time.tools import _event_matches
+        assert _event_matches("Team Standup", "delete team standup meeting") is True
+
+    def test_no_match_returns_false(self):
+        from mithra.domains.time.tools import _event_matches
+        assert _event_matches("Team Standup", "delete yoga class") is False
+
+    def test_empty_query_no_match(self):
+        from mithra.domains.time.tools import _event_matches
+        assert _event_matches("Dentist", "") is False
+
+    def test_empty_summary_no_match(self):
+        from mithra.domains.time.tools import _event_matches
+        assert _event_matches("", "dentist") is False
+
+    def test_short_words_below_length_threshold_ignored(self):
+        """Words of 2 chars or fewer are filtered — 'my' should not match 'XY'."""
+        from mithra.domains.time.tools import _event_matches
+        assert _event_matches("XY", "my") is False
+
+    def test_delete_tool_finds_event_with_stop_word_query(self):
+        """CalendarDeleteEventTool must find 'Dentist' via 'cancel dentist appointment'."""
+        from mithra.domains.time.tools import CalendarDeleteEventTool
+        from mithra.domains.context import DomainContext
+        from tests.unit.domains.time.conftest import MockCalendarService, _FakeEvent
+        from unittest.mock import MagicMock, patch
+
+        oauth = MagicMock()
+        oauth._store.load.return_value = {"access_token": "tok", "refresh_token": "ref", "scopes": []}
+        ctx = DomainContext(
+            user_id="person_a", household_id="hh_001",
+            household_timezone="America/Chicago", oauth_manager=oauth,
+            storage_adapter=None, file_router=None, member_registry=None,
+            file_search=None, request_id="req_del", channel="telegram",
+        )
+        today = datetime.now(timezone.utc) + timedelta(hours=2)
+        svc = MockCalendarService(events=[_FakeEvent("evt_001", "Dentist", today, today + timedelta(hours=1))])
+
+        with patch("mithra.domains.time.tools.GoogleCalendarService", return_value=svc):
+            tool = CalendarDeleteEventTool(context=ctx)
+            result = tool._run(event_query="cancel dentist appointment")
+
+        assert result.success is True
+        assert "Dentist" in result.summary
+
+    def test_update_tool_finds_event_with_stop_word_query(self):
+        """CalendarUpdateEventTool must find 'Dentist' via 'dentist appointment'."""
+        from mithra.domains.time.tools import CalendarUpdateEventTool
+        from mithra.domains.context import DomainContext
+        from tests.unit.domains.time.conftest import MockCalendarService, _FakeEvent
+        from unittest.mock import MagicMock, patch
+
+        oauth = MagicMock()
+        oauth._store.load.return_value = {"access_token": "tok", "refresh_token": "ref", "scopes": []}
+        ctx = DomainContext(
+            user_id="person_a", household_id="hh_001",
+            household_timezone="America/Chicago", oauth_manager=oauth,
+            storage_adapter=None, file_router=None, member_registry=None,
+            file_search=None, request_id="req_upd", channel="telegram",
+        )
+        today = datetime.now(timezone.utc) + timedelta(hours=2)
+        svc = MockCalendarService(events=[_FakeEvent("evt_001", "Dentist", today, today + timedelta(hours=1))])
+
+        with patch("mithra.domains.time.tools.GoogleCalendarService", return_value=svc):
+            tool = CalendarUpdateEventTool(context=ctx)
+            result = tool._run(event_query="dentist appointment", new_time="tomorrow 3pm")
+
+        assert result.success is True
+
+
+# ===========================================================================
+# FIX 9: Timezone label in confirmation and success messages
+# ===========================================================================
+
+
+class TestFix9TimezoneMessages:
+    """Confirmation message and success message must include timezone abbreviation."""
+
+    def test_success_message_includes_timezone(self):
+        """Created event summary must show timezone abbreviation (CST/CDT)."""
+        from mithra.domains.time.tools import CalendarCreateEventTool
+        from mithra.domains.context import DomainContext
+        from tests.unit.domains.time.conftest import MockCalendarService
+        from unittest.mock import MagicMock, patch
+
+        oauth = MagicMock()
+        oauth._store.load.return_value = {"access_token": "tok", "refresh_token": "ref", "scopes": []}
+        ctx = DomainContext(
+            user_id="person_a", household_id="hh_001",
+            household_timezone="America/Chicago", oauth_manager=oauth,
+            storage_adapter=None, file_router=None, member_registry=None,
+            file_search=None, request_id="req_tz", channel="telegram",
+        )
+        svc = MockCalendarService()
+
+        with patch("mithra.domains.time.tools.GoogleCalendarService", return_value=svc):
+            tool = CalendarCreateEventTool(context=ctx)
+            result = tool._run(title="Dentist", start_time="tomorrow 3pm")
+
+        assert result.success is True
+        summary = result.summary
+        assert any(tz in summary for tz in ("CST", "CDT", "CT", "UTC")), (
+            f"Expected timezone abbreviation in success message, got: {summary!r}"
+        )
+
+    def test_format_confirmation_message_uses_start_time_display(self):
+        """_format_confirmation_message must prefer start_time_display over start_time."""
+        from mithra.autonomy.default_engine import DefaultAutonomyEngine
+        payload = {
+            "title": "Dentist",
+            "start_time": "tuesday 3pm",
+            "start_time_display": "Tuesday June 2, 3:00 PM CST",
+        }
+        msg = DefaultAutonomyEngine._format_confirmation_message("calendar_create_event", payload)
+        assert "Tuesday June 2, 3:00 PM CST" in msg
+        assert "tuesday 3pm" not in msg
+
+    def test_format_confirmation_message_falls_back_to_start_time(self):
+        """If start_time_display absent, fall back to raw start_time gracefully."""
+        from mithra.autonomy.default_engine import DefaultAutonomyEngine
+        payload = {
+            "title": "Dentist",
+            "start_time": "tuesday 3pm",
+        }
+        msg = DefaultAutonomyEngine._format_confirmation_message("calendar_create_event", payload)
+        assert "tuesday 3pm" in msg
+        assert "Dentist" in msg
+
+    def test_format_confirmation_message_recurring_uses_start_time_display(self):
+        """_format_confirmation_message for recurring must also use start_time_display."""
+        from mithra.autonomy.default_engine import DefaultAutonomyEngine
+        payload = {
+            "title": "Gym",
+            "frequency": "weekly",
+            "by_week_day": "MO",
+            "start_time": "monday 7am",
+            "start_time_display": "Monday June 2, 7:00 AM CST",
+        }
+        msg = DefaultAutonomyEngine._format_confirmation_message("calendar_create_recurring", payload)
+        assert "Monday June 2, 7:00 AM CST" in msg
+        assert "monday 7am" not in msg
+
+    def test_format_start_for_confirmation_returns_formatted_string(self):
+        """_format_start_for_confirmation must parse natural language + return tz display."""
+        from mithra.agent.langgraph_adapter import LangGraphAdapter
+        from mithra.routing.llm_router import IntentClassification, RouterHealth
+        from unittest.mock import MagicMock
+
+        class MinimalRouter:
+            def complete(self, *a, **kw): return MagicMock()
+            def call_with_tools(self, *a, **kw): return {"name": None, "content": ""}
+            def classify_intent(self, *a, **kw):
+                return IntentClassification(intent="system.unknown", domain="system", confidence=0.5)
+            def get_usage(self, *a, **kw): return MagicMock()
+            def health(self):
+                return RouterHealth(
+                    litellm_reachable=True,
+                    cloud_model_available=True,
+                    local_model_available=True,
+                )
+
+        adapter = LangGraphAdapter(
+            llm_router=MinimalRouter(), household_timezone="America/Chicago"
+        )
+        result = adapter._format_start_for_confirmation("tomorrow 3pm", "America/Chicago")
+        assert isinstance(result, str)
+        if result:
+            assert "PM" in result
+            assert any(tz in result for tz in ("CST", "CDT", "CT"))

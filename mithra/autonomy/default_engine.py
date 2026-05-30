@@ -190,13 +190,15 @@ class DefaultAutonomyEngine(AutononomyEngine):
         """
         if action_type == "calendar_create_event":
             title = payload.get("title", "event")
-            start = payload.get("start_time", "")
+            # Prefer pre-formatted display (includes timezone abbreviation);
+            # fall back to raw start_time if adapter didn't pre-format it.
+            start = payload.get("start_time_display") or payload.get("start_time", "")
             return f"create '{title}'" + (f" at {start}" if start else "")
         if action_type == "calendar_create_recurring":
             title = payload.get("title", "event")
             freq = payload.get("frequency", "recurring")
             day = payload.get("by_week_day", "")
-            time_str = payload.get("start_time", "")
+            time_str = payload.get("start_time_display") or payload.get("start_time", "")
             suffix = f" every {day}" if day else f" {freq}"
             suffix += f" at {time_str}" if time_str else ""
             return f"create '{title}'" + suffix

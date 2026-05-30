@@ -199,6 +199,32 @@ def _make_event(
     )
 
 
+def _event_matches(event_summary: str, query: str) -> bool:
+    """Match an event if any significant query word appears in the event summary.
+
+    Full-phrase match is tried first. If that fails, individual words in the
+    query are checked against the summary — after stripping common stop words
+    that describe recurrence/type rather than the event itself (e.g. "weekly",
+    "reminder"). This lets "cancel weekly trash reminder" find "Trash Reminder".
+    """
+    summary_lower = (event_summary or "").lower()
+    query_lower = query.lower().strip()
+
+    if not query_lower or not summary_lower:
+        return False
+
+    if query_lower in summary_lower:
+        return True
+
+    _STOP_WORDS = {
+        "the", "a", "an", "my", "weekly", "daily", "monthly", "yearly",
+        "recurring", "reminder", "appointment", "meeting", "event",
+        "cancel", "delete", "remove",
+    }
+    words = [w for w in query_lower.split() if w not in _STOP_WORDS and len(w) > 2]
+    return any(word in summary_lower for word in words)
+
+
 def _format_event(event: Any, tz_name: str) -> str:
     """Format a gcsa Event for human-readable summary."""
     title = getattr(event, "summary", "Untitled") or "Untitled"
@@ -385,7 +411,7 @@ class CalendarCreateEventTool(BaseTool):
         tz = pytz.timezone(ctx.household_timezone)
         local_start = start_dt.astimezone(tz)
         date_str = local_start.strftime("%A %B %-d")
-        time_str = local_start.strftime("%-I:%M %p")
+        time_str = local_start.strftime("%-I:%M %p %Z")
 
         summary = (
             f"Created '{title}' for {date_str} at {time_str} "
@@ -629,7 +655,10 @@ class CalendarUpdateEventTool(BaseTool):
             )
 
         try:
-            matches = svc.find_events_by_title(uid, event_query)
+            search_start = datetime.now(timezone.utc) - timedelta(days=7)
+            search_end = datetime.now(timezone.utc) + timedelta(days=90)
+            all_events = svc.list_events(uid, search_start, search_end)
+            matches = [e for e in all_events if _event_matches(getattr(e, "summary", ""), event_query)]
         except RuntimeError as exc:
             return ToolResult.fail(str(exc), error_code="GOOGLE_NOT_CONNECTED")
         except Exception as exc:
@@ -750,7 +779,10 @@ class CalendarDeleteEventTool(BaseTool):
             )
 
         try:
-            matches = svc.find_events_by_title(uid, event_query)
+            search_start = datetime.now(timezone.utc) - timedelta(days=7)
+            search_end = datetime.now(timezone.utc) + timedelta(days=90)
+            all_events = svc.list_events(uid, search_start, search_end)
+            matches = [e for e in all_events if _event_matches(getattr(e, "summary", ""), event_query)]
         except RuntimeError as exc:
             return ToolResult.fail(str(exc), error_code="GOOGLE_NOT_CONNECTED")
         except Exception as exc:
