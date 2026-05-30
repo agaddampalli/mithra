@@ -152,6 +152,41 @@ def _range_from_period(period: str, tz_name: str) -> tuple[datetime, datetime]:
     return today_start, today_start + timedelta(days=1)
 
 
+def _make_event(
+    title: str,
+    start_dt: datetime,
+    duration_minutes: int,
+    household_timezone: str,
+    description: str = "",
+    location: str = "",
+    reminders: list | None = None,
+    recurrence: list | None = None,
+) -> Any:
+    """Create a gcsa Event with timezone always set.
+
+    Single creation path shared by ALL event-creation tools so timezone
+    cannot be omitted by accident on new tools or during refactors.
+    """
+    import pytz
+    from gcsa.event import Event
+
+    end_dt = start_dt + timedelta(minutes=duration_minutes)
+    if start_dt.tzinfo is None:
+        tz = pytz.timezone(household_timezone)
+        start_dt = tz.localize(start_dt)
+        end_dt = tz.localize(end_dt.replace(tzinfo=None))
+    return Event(
+        summary=title,
+        start=start_dt,
+        end=end_dt,
+        timezone=household_timezone,
+        description=description or None,
+        location=location or None,
+        reminders=reminders or None,
+        recurrence=recurrence,
+    )
+
+
 def _format_event(event: Any, tz_name: str) -> str:
     """Format a gcsa Event for human-readable summary."""
     title = getattr(event, "summary", "Untitled") or "Untitled"
@@ -291,8 +326,7 @@ class CalendarCreateEventTool(BaseTool):
         user_id: str = "",
         add_reminder_minutes: int = 0,
     ) -> ToolResult:
-        from gcsa.event import Event
-        from gcsa.reminders import EmailReminder, PopupReminder
+        from gcsa.reminders import PopupReminder
 
         ctx = self._ctx
         uid = user_id or ctx.user_id
@@ -315,21 +349,16 @@ class CalendarCreateEventTool(BaseTool):
                 "Try: 'next Tuesday at 3pm' or 'tomorrow morning'.",
                 error_code="UNPARSEABLE_DATE",
             )
-        end_dt = start_dt + timedelta(minutes=duration_minutes)
 
         reminders = []
         if add_reminder_minutes > 0:
             reminders.append(PopupReminder(minutes_before_start=add_reminder_minutes))
 
-        event = Event(
-            summary=title,
-            start=start_dt,
-            end=end_dt,
-            description=description or None,
-            location=location or None,
-            reminders=reminders or None,
-            timezone=ctx.household_timezone,
+        event = _make_event(
+            title, start_dt, duration_minutes, ctx.household_timezone,
+            description=description, location=location, reminders=reminders or None,
         )
+        end_dt = start_dt + timedelta(minutes=duration_minutes)
 
         try:
             created = svc.create_event(uid, event)
@@ -430,7 +459,6 @@ class CalendarCreateRecurringTool(BaseTool):
         description: str = "",
         user_id: str = "",
     ) -> ToolResult:
-        from gcsa.event import Event
         from gcsa.recurrence import Recurrence, DAILY, WEEKLY, MONTHLY, YEARLY
 
         ctx = self._ctx
@@ -484,12 +512,9 @@ class CalendarCreateRecurringTool(BaseTool):
                 rrule_kwargs["until"] = end_dt_parsed
 
         recurrence = [Recurrence.rule(**rrule_kwargs)]
-        event = Event(
-            summary=title,
-            start=start_dt,
-            end=end_dt,
-            description=description or None,
-            recurrence=recurrence,
+        event = _make_event(
+            title, start_dt, duration_minutes, ctx.household_timezone,
+            description=description, recurrence=recurrence,
         )
 
         try:

@@ -180,15 +180,46 @@ class DefaultAutonomyEngine(AutononomyEngine):
         # Intent not found in config — safest non-blocking default
         return AutonomyLevel.SURFACE
 
+    @staticmethod
+    def _format_confirmation_message(action_type: str, payload: dict) -> str:
+        """Build a natural-language description of a pending action.
+
+        Called when action.description is not pre-set by the agent.
+        NEVER exposes internal tool names, parameter names, or raw payload dicts
+        to the user — only human-readable English.
+        """
+        if action_type == "calendar_create_event":
+            title = payload.get("title", "event")
+            start = payload.get("start_time", "")
+            return f"create '{title}'" + (f" at {start}" if start else "")
+        if action_type == "calendar_create_recurring":
+            title = payload.get("title", "event")
+            freq = payload.get("frequency", "recurring")
+            day = payload.get("by_week_day", "")
+            time_str = payload.get("start_time", "")
+            suffix = f" every {day}" if day else f" {freq}"
+            suffix += f" at {time_str}" if time_str else ""
+            return f"create '{title}'" + suffix
+        if action_type == "calendar_delete_event":
+            query = payload.get("event_query", "event")
+            return f"delete '{query}' from your calendar"
+        if action_type == "calendar_update_event":
+            query = payload.get("event_query", "event")
+            new_time = payload.get("new_time", "")
+            return f"move '{query}' to {new_time}" if new_time else f"update '{query}'"
+        # Generic fallback — replace underscores, never show raw action_type
+        return action_type.replace("_", " ")
+
     def _describe_action(self, action: "AgentAction") -> str:
         """Return a human-readable description of an action for user prompts.
 
         Prefers action.description set by the agent (OCP — engine is closed to
-        action-type changes). Falls back to a generic label so no action is silent.
+        action-type changes). Falls back to _format_confirmation_message() which
+        builds natural language from payload so the user never sees internal names.
         """
         if action.description:
             return action.description
-        return f"complete action: {action.action_type}"
+        return self._format_confirmation_message(action.action_type, action.payload)
 
     def _pending_storage_key(self, action_id: str) -> str:
         return f"pending:{action_id}"
@@ -605,6 +636,10 @@ class DefaultAutonomyEngine(AutononomyEngine):
         else:
             receipt.response_text = f"Undo failed for {entry.intent}: {undo_result.error}"
         return receipt
+
+    def has_pending(self, user_id: str) -> bool:
+        """Return True if the user has at least one non-expired pending action."""
+        return bool(self.get_pending(user_id))
 
     def get_pending(self, user_id: str) -> list[PendingAction]:
         """Return all non-expired pending actions for a user."""

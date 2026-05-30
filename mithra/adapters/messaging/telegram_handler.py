@@ -253,11 +253,14 @@ class TelegramSignalHandler:
 
         if not is_confirm and not is_reject:
             confirm_words = {
-                "yes", "confirm", "ok", "okay", "sure",
+                "yes", "y", "confirm", "ok", "okay", "sure",
                 "yes please", "go ahead", "do it",
-                "add it", "confirmed", "yep", "yup",
+                "add it", "confirmed", "yep", "yup", "yeah",
             }
-            reject_words = {"no", "cancel", "nope", "reject", "stop", "never mind"}
+            reject_words = {
+                "no", "n", "cancel", "nope", "reject",
+                "stop", "never mind", "don't", "abort",
+            }
             is_confirm = text_lower in confirm_words
             is_reject = text_lower in reject_words
 

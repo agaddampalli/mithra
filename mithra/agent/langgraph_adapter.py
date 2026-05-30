@@ -271,10 +271,29 @@ class LangGraphAdapter(AgentInterface):
             {"role": "user", "content": request.text or ""},
         ]
 
+        # Force the delete tool when user clearly intends to cancel/delete a calendar event.
+        # Without this, the LLM may skip the tool and respond with text instead.
+        _CANCEL_KEYWORDS = {"cancel", "delete", "remove", "drop", "scratch", "abort"}
+        user_text_lower = (request.text or "").lower()
+        force_tool: str | None = None
+        has_delete_tool = any(b.tool.name == "calendar_delete_event" for b in domain_bundles)
+        if has_delete_tool and any(k in user_text_lower for k in _CANCEL_KEYWORDS):
+            force_tool = "calendar_delete_event"
+            _logger.info(
+                "_node_llm_tool_selection: forcing tool=%r for cancel/delete intent", force_tool
+            )
+
+        tool_choice: Any
+        if force_tool:
+            tool_choice = {"type": "function", "function": {"name": force_tool}}
+        else:
+            tool_choice = "auto"
+
         try:
             result = self._llm_router.call_with_tools(
                 messages=messages,
                 tools=tools_schema,
+                tool_choice=tool_choice,
             )
             if result.get("name"):
                 _logger.info(
@@ -376,6 +395,26 @@ class LangGraphAdapter(AgentInterface):
         intent_str = str(state.get("intent", "")).lower()
         domain_bundles: list[Any] = state.get("domain_bundles", [])
         llm_response: str = state.get("llm_response") or ""
+
+        # Pending confirmation — build human-readable message without calling LLM.
+        # The AutononomyEngine sends Yes/No buttons separately via the receipt;
+        # this response text describes WHAT is being confirmed, not WHETHER to confirm.
+        pending_actions = state.get("pending_actions", [])
+        if pending_actions:
+            action = pending_actions[0]
+            summary = action.get("summary", "")
+            if not summary:
+                tool_name = action.get("action_type", "action")
+                payload = action.get("payload", {})
+                if "title" in payload and "start_time" in payload:
+                    summary = f"Create '{payload['title']}' at {payload['start_time']}"
+                elif "event_query" in payload:
+                    summary = f"Delete '{payload['event_query']}' from your calendar"
+                elif "title" in payload:
+                    summary = f"Confirm: {payload['title']}"
+                else:
+                    summary = f"Confirm: {tool_name.replace('_', ' ')}"
+            return {"response_text": summary}
 
         # Tool executed successfully — prefer summary (domain tools) over response (MCP tools)
         if tool_result:

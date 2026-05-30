@@ -195,12 +195,18 @@ class LLMRouter(ABC):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         model: str | None = None,
+        tool_choice: Any = "auto",
     ) -> dict[str, Any]:
         """Call the LLM with tool definitions and return the selected tool call.
 
         Uses the same model routing and fallback chain as complete().
         Returns {"name": str, "args": dict} when the LLM selected a tool,
         or {"name": None, "content": str} when it responded with text only.
+
+        tool_choice: "auto" (default) lets the LLM decide.
+          Pass {"type": "function", "function": {"name": "tool_name"}} to force
+          a specific tool — required for DESTRUCTIVE intents where the LLM might
+          skip the tool and respond with text instead.
 
         tools: OpenAI-format tool dicts:
           [{"type": "function", "function": {
@@ -599,6 +605,7 @@ class LiteLLMRouterAdapter(LLMRouter):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         model: str | None = None,
+        tool_choice: Any = "auto",
     ) -> dict[str, Any]:
         """Call LLM with tool definitions via the LiteLLM proxy HTTP API.
 
@@ -612,9 +619,10 @@ class LiteLLMRouterAdapter(LLMRouter):
         target_model = model or _CLOUD_CHAIN[0]
         raw: Any = None
         last_exc: str = ""
+        tc = None if tool_choice == "auto" else tool_choice
 
         try:
-            raw = self._call(target_model, messages, tools)
+            raw = self._call(target_model, messages, tools, tc)
         except Exception as exc:
             last_exc = str(exc)
             logger.warning(
@@ -629,7 +637,7 @@ class LiteLLMRouterAdapter(LLMRouter):
             )
             for fallback_model in _CLOUD_CHAIN[start_idx:]:
                 try:
-                    raw = self._call(fallback_model, messages, tools)
+                    raw = self._call(fallback_model, messages, tools, tc)
                     break
                 except Exception as exc:
                     last_exc = str(exc)
@@ -657,11 +665,19 @@ class LiteLLMRouterAdapter(LLMRouter):
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _call(self, model: str, messages: list[dict], tools: list[dict] | None) -> Any:
+    def _call(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        tool_choice: Any = None,
+    ) -> Any:
         url = f"{self._base_url}/v1/chat/completions"
         body: dict[str, Any] = {"model": model, "messages": messages}
         if tools:
             body["tools"] = tools
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
         headers = {"Content-Type": "application/json"}
         if self._litellm_key:
             headers["Authorization"] = f"Bearer {self._litellm_key}"
