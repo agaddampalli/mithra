@@ -16,12 +16,14 @@ SERVICES = {
     "api-gateway": {
         "url": "http://api-gateway:8000/api/v1/health",
         "headers": {},
+        "timeout": 5,
     },
     "llm-router": {
         "url": "http://llm-router:4000/health",
         "headers": {
             "Authorization": f"Bearer {os.environ.get('LITELLM_MASTER_KEY', '')}",
         },
+        "timeout": 5,  # was hardcoded 5s globally — now explicit per-service
     },
 }
 
@@ -46,7 +48,7 @@ def check_service(name: str, config: dict) -> bool:
         req = urllib.request.Request(
             config["url"],
             headers=config.get("headers", {}))
-        urllib.request.urlopen(req, timeout=5)
+        urllib.request.urlopen(req, timeout=config.get("timeout", 5))
         return True
     except Exception:
         return False

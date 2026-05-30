@@ -166,15 +166,27 @@ def _make_event(
 
     Single creation path shared by ALL event-creation tools so timezone
     cannot be omitted by accident on new tools or during refactors.
+
+    ALWAYS converts start_dt to household_timezone regardless of what tzinfo
+    it carries. dateparser 1.4.0 may return UTC despite settings (both the
+    correct-moment UTC case and the wrong-moment UTC case are handled here).
+    gcsa Event(timezone=...) labels the event but does not convert start —
+    the caller must pass a local-timezone-aware datetime.
     """
     import pytz
     from gcsa.event import Event
 
-    end_dt = start_dt + timedelta(minutes=duration_minutes)
-    if start_dt.tzinfo is None:
-        tz = pytz.timezone(household_timezone)
+    tz = pytz.timezone(household_timezone)
+
+    # Always convert to local timezone — astimezone handles aware datetimes
+    # (including UTC), localize handles naive datetimes.
+    if start_dt.tzinfo is not None:
+        start_dt = start_dt.astimezone(tz)
+    else:
         start_dt = tz.localize(start_dt)
-        end_dt = tz.localize(end_dt.replace(tzinfo=None))
+
+    end_dt = start_dt + timedelta(minutes=duration_minutes)
+
     return Event(
         summary=title,
         start=start_dt,

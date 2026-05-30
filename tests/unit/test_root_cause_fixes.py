@@ -812,3 +812,185 @@ class TestFix5ConfirmationMessages:
         assert receipt.response_text is not None
         assert "calendar_create_event" not in receipt.response_text
         assert "Dentist" in receipt.response_text
+
+
+# ===========================================================================
+# FIX 6: _make_event() always converts to household timezone (UTC input)
+# ===========================================================================
+
+
+class TestFix6TimezoneConversion:
+    """_make_event() must produce events in household local time regardless
+    of whether the input datetime is UTC-aware, locally-aware, or naive.
+    """
+
+    def test_utc_aware_datetime_converted_to_local(self):
+        """Case (b): correct moment in UTC must be converted to local time.
+
+        dateparser may return 20:00 UTC representing 3pm CDT.
+        _make_event() must convert it so the calendar event shows 3pm CDT.
+        """
+        from mithra.domains.time.tools import _make_event
+        import pytz
+        from datetime import timezone as dt_timezone
+
+        # 20:00 UTC = 15:00 CDT (America/Chicago, UTC-5 in summer)
+        utc_dt = datetime(2026, 6, 1, 20, 0, 0, tzinfo=dt_timezone.utc)
+        event = _make_event("Dentist", utc_dt, 60, "America/Chicago")
+
+        tz = pytz.timezone("America/Chicago")
+        local_start = event.start.astimezone(tz)
+        assert local_start.hour == 15, (
+            f"Expected 15:00 CDT but got {local_start} "
+            f"(input was 20:00 UTC = 15:00 CDT)"
+        )
+
+    def test_already_local_aware_datetime_unchanged(self):
+        """Already-local CDT datetime must produce correct event unchanged."""
+        from mithra.domains.time.tools import _make_event
+        import pytz
+
+        tz = pytz.timezone("America/Chicago")
+        local_dt = tz.localize(datetime(2026, 6, 1, 15, 0, 0))
+        event = _make_event("Dentist", local_dt, 60, "America/Chicago")
+
+        local_start = event.start.astimezone(tz)
+        assert local_start.hour == 15
+
+    def test_naive_datetime_localised_to_household_tz(self):
+        """Naive 15:00 must be treated as 15:00 CDT, not 15:00 UTC."""
+        from mithra.domains.time.tools import _make_event
+        import pytz
+
+        naive_dt = datetime(2026, 6, 1, 15, 0, 0)
+        event = _make_event("Dentist", naive_dt, 60, "America/Chicago")
+
+        tz = pytz.timezone("America/Chicago")
+        local_start = event.start.astimezone(tz)
+        assert local_start.hour == 15
+
+    def test_end_dt_computed_after_timezone_conversion(self):
+        """end_dt must be start_dt + duration in local time, not UTC."""
+        from mithra.domains.time.tools import _make_event
+        import pytz
+        from datetime import timezone as dt_timezone
+
+        # 20:00 UTC = 15:00 CDT
+        utc_dt = datetime(2026, 6, 1, 20, 0, 0, tzinfo=dt_timezone.utc)
+        event = _make_event("Meeting", utc_dt, 90, "America/Chicago")
+
+        tz = pytz.timezone("America/Chicago")
+        local_end = event.end.astimezone(tz)
+        # 15:00 + 90 min = 16:30 CDT
+        assert local_end.hour == 16
+        assert local_end.minute == 30
+
+    def test_event_timezone_field_always_set(self):
+        """gcsa Event.timezone must always equal the household timezone string."""
+        from mithra.domains.time.tools import _make_event
+        from datetime import timezone as dt_timezone
+
+        utc_dt = datetime(2026, 6, 1, 20, 0, 0, tzinfo=dt_timezone.utc)
+        event = _make_event("Dentist", utc_dt, 60, "America/Chicago")
+        assert event.timezone == "America/Chicago"
+
+
+# ===========================================================================
+# FIX 7: healthcheck per-service timeout
+# ===========================================================================
+
+
+class TestFix7HealthcheckTimeout:
+    """check_service() must use config['timeout'] not a hardcoded value."""
+
+    def test_check_service_uses_config_timeout(self):
+        """check_service() must pass config['timeout'] to urlopen."""
+        import sys
+        import importlib.util
+        from pathlib import Path
+
+        spec = importlib.util.spec_from_file_location(
+            "healthcheck",
+            Path(__file__).parents[2] / "scripts" / "healthcheck.py",
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["timeout"] = timeout
+
+        import urllib.request
+        original = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            mod.check_service("llm-router", {
+                "url": "http://llm-router:4000/health",
+                "headers": {},
+                "timeout": 5,
+            })
+        finally:
+            urllib.request.urlopen = original
+
+        assert captured.get("timeout") == 5
+
+    def test_llm_router_config_has_timeout_5(self):
+        """SERVICES dict must have timeout=5 for llm-router."""
+        import importlib.util
+        from pathlib import Path
+
+        spec = importlib.util.spec_from_file_location(
+            "healthcheck",
+            Path(__file__).parents[2] / "scripts" / "healthcheck.py",
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        assert "llm-router" in mod.SERVICES
+        assert mod.SERVICES["llm-router"].get("timeout") == 5
+
+    def test_api_gateway_config_has_timeout_5(self):
+        """SERVICES dict must have timeout=5 for api-gateway."""
+        import importlib.util
+        from pathlib import Path
+
+        spec = importlib.util.spec_from_file_location(
+            "healthcheck",
+            Path(__file__).parents[2] / "scripts" / "healthcheck.py",
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        assert mod.SERVICES["api-gateway"].get("timeout") == 5
+
+    def test_check_service_falls_back_to_5s_when_no_timeout_in_config(self):
+        """Omitting timeout from config must default to 5s (not error)."""
+        import importlib.util
+        from pathlib import Path
+
+        spec = importlib.util.spec_from_file_location(
+            "healthcheck",
+            Path(__file__).parents[2] / "scripts" / "healthcheck.py",
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["timeout"] = timeout
+
+        import urllib.request
+        original = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            mod.check_service("some-service", {
+                "url": "http://some-service:9999/health",
+                "headers": {},
+                # no timeout key
+            })
+        finally:
+            urllib.request.urlopen = original
+
+        assert captured.get("timeout") == 5
