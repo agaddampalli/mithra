@@ -162,42 +162,28 @@ def _make_event(
     reminders: list | None = None,
     recurrence: list | None = None,
 ) -> Any:
-    """Create a gcsa Event using the correct Google Calendar API pattern.
+    """Create a gcsa Event using an explicit UTC offset.
 
-    Google Calendar requires naive local time + timeZone parameter:
-      {"dateTime": "2026-06-02T15:00:00", "timeZone": "America/Chicago"}
-    Passing a timezone-aware datetime with an offset causes the API to
-    store the event 5 hours early (UTC offset applied twice).
-
-    Steps:
-      1. Convert start_dt to the correct local time in household_timezone.
-      2. Strip tzinfo → naive local datetime.
-      3. Pass naive start/end + timezone=household_timezone to gcsa Event.
+    Sends: {"dateTime": "2026-06-03T15:00:00-05:00"}
+    The UTC offset is unambiguous — Google Calendar cannot misinterpret it.
+    No timezone= parameter needed; the offset encodes the timezone fully.
     """
     import pytz
     from gcsa.event import Event
 
     tz = pytz.timezone(household_timezone)
 
-    if start_dt.tzinfo is not None:
-        start_dt = start_dt.astimezone(tz)
-    else:
+    if start_dt.tzinfo is None:
         start_dt = tz.localize(start_dt)
+    else:
+        start_dt = start_dt.astimezone(tz)
 
     end_dt = start_dt + timedelta(minutes=duration_minutes)
 
-    # Strip tzinfo — Google Calendar API needs naive local time + timeZone,
-    # not a timezone-aware datetime. gcsa passes whatever tzinfo is present
-    # directly to the API; a non-naive value causes the offset to be applied
-    # a second time, storing the event at the wrong UTC instant.
-    naive_start = start_dt.replace(tzinfo=None)
-    naive_end = end_dt.replace(tzinfo=None)
-
     return Event(
         summary=title,
-        start=naive_start,
-        end=naive_end,
-        timezone=household_timezone,
+        start=start_dt,
+        end=end_dt,
         description=description or None,
         location=location or None,
         reminders=reminders,
