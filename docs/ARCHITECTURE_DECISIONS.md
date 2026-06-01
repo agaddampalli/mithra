@@ -2666,105 +2666,272 @@ a scheduled job (proactive push).
 
 ---
 
-### 10.9 Implementation Order
+### 10.9 Personal vs Household Events — Classification Model
 
-    T1. Create mithra/domains/time/ package
-        __init__.py, service.py, tools.py
+#### The Core Problem
+Every calendar event has a scope: personal or household.
+Scope determines:
+  - Whether it shows on the HA shared wall dashboard
+  - Whether it appears in household briefings
+  - Whether other members can see it
 
-    T2. GoogleCalendarService
-        Wraps gcsa, accepts OAuthManager credentials
-        Methods: list_events, create, update, delete,
-                 free_busy, list_calendars
-        Runs sync (gcsa is sync) → wrap with
-        asyncio.to_thread in tools
+Personal: affects only one member
+  "add gym tomorrow morning"
+  "add dentist tuesday 3pm"
+  "add meeting with John"
 
-    T3. Time domain tools (one by one, tested)
-        calendar_read_events first (read-only, safe)
-        calendar_check_availability second
-        calendar_daily_briefing third
-        calendar_create_event fourth (wraps existing)
-        calendar_create_recurring fifth
-        calendar_update_event sixth
-        calendar_delete_event seventh
-        calendar_find_time eighth
+Household: relevant to the whole household
+  "add trash pickup every thursday"
+  "add family dinner saturday"
+  "add rent reminder 1st of month"
+  "add anniversary dinner march 15"
 
-    T4. TimeDomain class implementing Domain ABC
-        get_tools(context) → all 8 tools
-        get_dashboard_data(user_id, household_id)
-        get_event_subscriptions() → []
-        handle_event() → no-op (Time doesn't react to events)
+#### Classification Strategy
 
-    T5. Register TimeDomain in bootstrap.py
-        domain_registry.register(TimeDomain(...))
+Three phases, increasing intelligence:
 
-    T6. Test end to end:
-        "what's on today" → read_events → response
-        "am I free Saturday" → check_availability
-        "add dentist tuesday 3pm" → create_event → calendar
-        "add weekly trash tuesday 7am" → create_recurring
-        "cancel dentist" → delete_event → confirmation
+    PHASE 1 — Keyword heuristic (implemented now):
+      Household triggers (any match → household):
+        trash, recycling, rent, mortgage, utilities,
+        family, anniversary, birthday (household members),
+        both, we, us, everyone, kids, children,
+        dinner (when combined with family/us/we),
+        holiday, school, pickup, dropoff
+      Default: personal
 
-    T7. Dashboard endpoint test:
-        GET /api/v1/dashboard/time → 200 with today's events
+      Recurring events default to household if
+      they match household triggers.
+      Single medical/personal events always personal.
 
----
+    PHASE 2 — LLM classification (future):
+      For ambiguous events not matched by keywords,
+      LLM classifies:
+        "add dentist" → personal (medical)
+        "add car service" → personal
+        "add anniversary dinner" → household
+        "add school pickup" → household
+      LLM result stored in scope field.
 
-### 10.10 Alternatives Considered
+    PHASE 3 — User correction (future):
+      "make dentist appointment household"
+      → updates scope in SQLite + Google extended property
+      User has final authority over classification.
 
-#### Raw Google Calendar API (no gcsa)
-    Rejected: raw API returns JSON dicts requiring
-    manual parsing of start/end (dateTime vs date),
-    timezone handling, pagination, and recurrence rules.
-    gcsa handles all of this in Pythonic objects.
-    gcsa accepts our existing OAuth credentials directly.
+#### Source of Truth
+    Mithra SQLite (calendar_events table) = source of truth
+    Google Calendar extended properties = mirror/cache
+    (extended properties added in Phase 3 via raw API)
 
-#### LLM-only time parsing (no dateparser)
-    Rejected: non-deterministic. Same input can produce
-    different ISO8601 outputs. Edge cases like
-    "first Tuesday of next month" fail silently.
-    Not unit-testable. dateparser is 100% deterministic
-    given same input and timezone settings.
-
-#### gcal-sync for calendar operations
-    Deferred to Home Assistant phase:
-      gcal-sync is designed for syncing events to local
-      storage — the pattern Home Assistant uses internally.
-      When Mithra integrates with HA for the dashboard,
-      gcal-sync provides efficient incremental sync.
-      For Phase 1 (direct API calls), gcsa is sufficient.
-
-#### beautiful_date companion library
-    Deferred to scheduled jobs phase:
-      Makes date code more readable in Python scripts.
-      Useful when writing scheduled briefing jobs and
-      test fixtures. Not needed for async tool code
-      where datetime objects work cleanly.
-
-#### Apple Calendar / CalDAV
-    Deferred: requires CalDAV server setup.
-    Neither household member uses Apple Calendar as primary.
-    Add when household member requests it.
-    CalDAV protocol support via caldav Python library.
-
-#### Microsoft Outlook Calendar
-    Deferred to Phase 2:
-    Neither household member uses Outlook as primary.
-    Microsoft OAuth already configured.
-    Add Outlook read via Microsoft Graph when needed.
-    GoogleCalendarService pattern repeats for Outlook.
+    This means:
+      Classification survives even if Google Calendar
+      extended properties are not yet implemented.
+      Phase 3 sync is additive, not a migration.
 
 ---
 
-### 10.11 Dependencies to Add
+### 10.10 Calendar Data Architecture
 
-    requirements.txt:
-      gcsa>=2.0.0          Google Calendar CRUD
-      dateparser>=1.4.0    Natural language → datetime
+#### Phase 1 — Live queries + local event index (NOW)
 
-    Note: gcsa requires google-auth which is already
-    in requirements.txt. dateparser requires dateutil
-    which is also already installed.
-    No major new dependencies.
+    Writes: gcsa creates events in Google Calendar.
+    Reads: live Google Calendar API calls via gcsa.
+    Index: every Mithra-created event recorded in
+           calendar_events SQLite table with scope.
+
+    Why index now:
+      Events created TODAY lose their scope context
+      if not recorded. Adding the table now costs
+      nothing and means Phase 2 sync is additive.
+
+    Dashboard (Phase 1):
+      Live query Google Calendar for today's events.
+      Returns all events for the owner user.
+      No scope filtering yet (all events shown).
+
+#### Phase 2 — Incremental sync + cached reads (HA phase)
+
+    WHY sync at all:
+      External events (flights auto-added by Gmail,
+      restaurant reservations, meeting invites) need
+      to appear on dashboard and in briefings.
+      syncToken approach gets ALL events regardless
+      of how they were created.
+
+    HOW — Native Google Calendar syncToken:
+      50 lines of code. No new library.
+      Google returns only changes since last sync.
+      Efficient: 24 API calls/day for 2-member household.
+
+      Sync token stored in household_config:
+        key:   "calendar_sync_token_{user_id}"
+        value: opaque token string from Google
+
+      Sync flow (triggered on dashboard poll):
+        1. Load syncToken from household_config
+        2. GET events?syncToken=xxx → only changes
+        3. Upsert changes into calendar_events table
+        4. Classify new external events (keyword heuristic)
+        5. Store new syncToken
+        6. On 410 Gone: full resync (token expired)
+
+      Dashboard reads from local cache (fast).
+      Tool reads (briefing, availability) still use
+      live API for freshness.
+
+    WHY NOT gcal-sync library:
+      gcal-sync is correct at product scale (100+
+      households, multiple calendar providers).
+      For household of 2, Google Calendar only:
+      native syncToken = 50 lines vs full library.
+      Revisit when Mithra supports multiple calendar
+      providers simultaneously.
+
+#### Phase 3 — Categorization + extended properties
+
+    LLM classifies new external events:
+      "Delta flight NYC" → scope=household
+      "Dentist"          → scope=personal
+
+    Extended properties via raw Google API:
+      PATCH event body:
+        {extendedProperties: {shared: {
+          mithra_scope: "household",
+          mithra_household_id: "hh_b76fef08"
+        }}}
+
+    Dashboard scope filtering:
+      GET /api/v1/dashboard/time?scope=household
+      Returns household-tagged events from ALL members.
+
+#### Product Scale
+    SQLite per household (self-hosted): scales infinitely.
+    Each household has isolated SQLite — no contention.
+    Cloud product: StorageAdapter swap (SQLite → Postgres).
+    Schema is identical. Zero domain code changes.
+    This is the existing StorageAdapter contract (section 7).
+
+---
+
+### 10.11 calendar_events Table Schema
+
+Added to SQLite in Phase 1. Schema designed for all phases.
+
+    CREATE TABLE calendar_events (
+        event_id      TEXT PRIMARY KEY,
+        user_id       TEXT NOT NULL,
+        household_id  TEXT NOT NULL,
+        summary       TEXT,
+        start_time    TEXT,         -- ISO8601 with offset
+        end_time      TEXT,         -- ISO8601 with offset
+        is_recurring  INTEGER DEFAULT 0,
+        source        TEXT DEFAULT 'mithra',
+                                    -- 'mithra' | 'external'
+        scope         TEXT DEFAULT 'personal',
+                                    -- 'personal' | 'household'
+        calendar_id   TEXT DEFAULT 'primary',
+        raw_json      TEXT,         -- full event JSON
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL
+    );
+
+    CREATE INDEX idx_cal_events_household
+        ON calendar_events(household_id, start_time);
+    CREATE INDEX idx_cal_events_user
+        ON calendar_events(user_id, start_time);
+    CREATE INDEX idx_cal_events_scope
+        ON calendar_events(household_id, scope, start_time);
+
+    source field:
+      'mithra'   → created by Mithra tools
+      'external' → synced from Google (Phase 2)
+
+    scope field:
+      'personal'  → affects one member only
+      'household' → relevant to whole household
+      null        → not yet classified (external events
+                    before Phase 2 classification)
+
+---
+
+### 10.12 Scope Classification Helper
+
+Used at event creation time in all calendar tools.
+
+    HOUSEHOLD_KEYWORDS = {
+        # Household chores
+        "trash", "recycling", "garbage", "bins",
+        "rent", "mortgage", "utilities", "bills",
+        # Family
+        "family", "anniversary", "birthday",
+        "kids", "children", "school", "pickup",
+        "dropoff", "daycare",
+        # Inclusive pronouns
+        "both", "we", "us", "everyone", "together",
+        # Household events
+        "dinner" (only with family/us/we context),
+        "holiday", "vacation", "trip",
+        "hoa", "neighborhood",
+    }
+
+    def classify_event_scope(
+        title: str,
+        user_text: str,
+        is_recurring: bool,
+    ) -> str:
+        """Classify event as 'personal' or 'household'.
+        Phase 1: keyword heuristic.
+        Returns 'household' or 'personal'.
+        """
+        text = (title + " " + user_text).lower()
+        for keyword in HOUSEHOLD_KEYWORDS:
+            if keyword in text:
+                return "household"
+        # Recurring events with no personal keywords
+        # tend to be household (trash, reminders etc)
+        personal_recurring = {
+            "gym", "workout", "medication", "therapy",
+            "commute", "lunch", "standup", "meeting"
+        }
+        if is_recurring:
+            for kw in personal_recurring:
+                if kw in text:
+                    return "personal"
+            # Ambiguous recurring → household by default
+            return "household"
+        return "personal"
+
+---
+
+### 10.13 Managed Members (Children)
+
+    Children are managed members — no Telegram required.
+    Parent manages their calendar on their behalf.
+
+    Schema additions to members table (added now):
+      managed_by     TEXT  nullable FK → members.id
+      date_of_birth  TEXT  nullable ISO8601 date
+
+    Parent connects child's Google account:
+      "connect Emma's Google calendar"
+      → OAuth in parent's browser
+      → token stored for child's user_id
+
+    Phase 1: children added as regular members.
+             Parent manages via Mithra commands.
+    Phase 2: "for Emma" natural language routing.
+    Phase 3: age-based auto-transition at 18.
+
+---
+
+### 10.14 Multiple Google Accounts Per Person
+
+    Phase 1: one Google account per user_id.
+
+    Phase 2 when needed:
+      member_preferences:
+        google_calendar_primary → personal account
+        google_calendar_work    → work account
+      OAuthManager key: "google_work:{user_id}"
 
 ---
 

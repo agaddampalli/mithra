@@ -282,6 +282,7 @@ def _register_domain_tool_adapter(state: dict) -> None:
         member_registry=state.get("member_registry"),
         file_router=state.get("file_router"),
         file_search=state.get("file_search"),
+        local_db_path=getattr(state.get("local_adapter"), "db_path", ""),
     )
     executor.register_fallback(adapter)
     _logger.info("DomainToolAdapter registered as executor fallback")

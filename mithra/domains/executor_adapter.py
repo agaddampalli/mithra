@@ -30,6 +30,7 @@ class DomainToolAdapter:
         member_registry: Any,
         file_router: Any,
         file_search: Any,
+        local_db_path: str = "",
     ) -> None:
         self._domain_registry = domain_registry
         self._household_id = household_id
@@ -39,6 +40,7 @@ class DomainToolAdapter:
         self._member_registry = member_registry
         self._file_router = file_router
         self._file_search = file_search
+        self._local_db_path = local_db_path
 
     async def execute(self, action: Any) -> Any:
         import asyncio
@@ -83,6 +85,7 @@ class DomainToolAdapter:
             file_search=self._file_search,
             request_id=str(uuid.uuid4()),
             channel="telegram",
+            local_db_path=self._local_db_path,
         )
 
         try:

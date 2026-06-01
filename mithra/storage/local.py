@@ -88,6 +88,30 @@ CREATE TABLE IF NOT EXISTS household_config (
 """
 
 
+_CALENDAR_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS calendar_events (
+    event_id     TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    household_id TEXT NOT NULL,
+    summary      TEXT,
+    start_time   TEXT,
+    end_time     TEXT,
+    is_recurring INTEGER DEFAULT 0,
+    source       TEXT DEFAULT 'mithra',
+    scope        TEXT DEFAULT 'personal',
+    calendar_id  TEXT DEFAULT 'primary',
+    raw_json     TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cal_events_household
+    ON calendar_events(household_id, start_time);
+CREATE INDEX IF NOT EXISTS idx_cal_events_user
+    ON calendar_events(user_id, start_time);
+CREATE INDEX IF NOT EXISTS idx_cal_events_scope
+    ON calendar_events(household_id, scope, start_time);
+"""
+
 _FILES_DDL = """
 CREATE TABLE IF NOT EXISTS files (
     id           TEXT PRIMARY KEY,
@@ -180,6 +204,17 @@ class LocalStorageAdapter(StorageAdapter):
         self._conn.commit()
         self._conn.executescript(_FILES_DDL)
         self._conn.commit()
+        self._conn.executescript(_CALENDAR_EVENTS_DDL)
+        self._conn.commit()
+        # Additive migrations for existing installs
+        for _col, _type in [("managed_by", "TEXT"), ("date_of_birth", "TEXT")]:
+            try:
+                self._conn.execute(
+                    f"ALTER TABLE members ADD COLUMN {_col} {_type}"
+                )
+                self._conn.commit()
+            except Exception:
+                pass  # Column already exists
 
     def read(
         self, domain: str, key: str, layer: str, user_id: str, household_id: str = ""

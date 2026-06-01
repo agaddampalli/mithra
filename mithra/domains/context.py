@@ -29,5 +29,8 @@ class DomainContext:
     channel: str                # "telegram" | "voice" | "dashboard"
     language: str = "en-US"
 
+    # Path to the local SQLite database (for domain-owned tables like calendar_events)
+    local_db_path: str = ""
+
     # Autonomy override — set when user explicitly said "just do it"
     autonomy_override: int | None = None

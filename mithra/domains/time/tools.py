@@ -218,6 +218,89 @@ def _event_matches(event_summary: str, query: str) -> bool:
     return any(word in summary_lower for word in words)
 
 
+HOUSEHOLD_KEYWORDS: frozenset[str] = frozenset({
+    "trash", "recycling", "garbage", "bins",
+    "rent", "mortgage", "utilities", "bills",
+    "family", "anniversary",
+    "kids", "children", "school", "pickup",
+    "dropoff", "daycare",
+    "both", "we", "us", "everyone", "together",
+    "holiday", "vacation", "trip",
+    "hoa", "neighborhood", "household",
+    "weekly", "monthly",
+})
+
+PERSONAL_RECURRING_KEYWORDS: frozenset[str] = frozenset({
+    "gym", "workout", "run", "yoga", "meditation",
+    "medication", "therapy", "commute",
+    "standup", "1on1", "one on one",
+})
+
+
+def classify_event_scope(
+    title: str,
+    user_text: str = "",
+    is_recurring: bool = False,
+) -> str:
+    """Classify event as 'personal' or 'household'.
+
+    Phase 1 keyword heuristic.
+    Phase 2 will add LLM classification for ambiguous cases.
+    """
+    text = (title + " " + user_text).lower()
+    for kw in HOUSEHOLD_KEYWORDS:
+        if kw in text:
+            return "household"
+    if is_recurring:
+        for kw in PERSONAL_RECURRING_KEYWORDS:
+            if kw in text:
+                return "personal"
+        return "household"
+    return "personal"
+
+
+def _record_calendar_event(
+    db_path: str,
+    event_id: str,
+    user_id: str,
+    household_id: str,
+    title: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    is_recurring: bool,
+    scope: str,
+) -> None:
+    """Write a row to calendar_events. Non-fatal — logs warning on failure."""
+    import json
+    import sqlite3
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO calendar_events
+                   (event_id, user_id, household_id,
+                    summary, start_time, end_time,
+                    is_recurring, source, scope,
+                    calendar_id, raw_json,
+                    created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    event_id, user_id, household_id,
+                    title, start_dt.isoformat(), end_dt.isoformat(),
+                    1 if is_recurring else 0,
+                    "mithra", scope,
+                    "primary",
+                    json.dumps({"summary": title}),
+                    now, now,
+                ),
+            )
+        _logger.info(
+            "Recorded event %s scope=%s in calendar_events", event_id, scope
+        )
+    except Exception as exc:
+        _logger.warning("Could not record event in calendar_events: %s", exc)
+
+
 def _format_event(event: Any, tz_name: str) -> str:
     """Format a gcsa Event for human-readable summary."""
     title = getattr(event, "summary", "Untitled") or "Untitled"
@@ -400,6 +483,14 @@ class CalendarCreateEventTool(BaseTool):
             return ToolResult.fail(f"Could not create event: {exc}", error_code="CALENDAR_ERROR")
 
         event_id = getattr(created, "id", "")
+
+        if ctx.local_db_path:
+            scope = classify_event_scope(title, is_recurring=False)
+            _record_calendar_event(
+                ctx.local_db_path, event_id, uid, ctx.household_id,
+                title, start_dt, end_dt, False, scope,
+            )
+
         import pytz
         tz = pytz.timezone(ctx.household_timezone)
         local_start = start_dt.astimezone(tz)
@@ -557,6 +648,14 @@ class CalendarCreateRecurringTool(BaseTool):
             return ToolResult.fail(f"Could not create recurring event: {exc}", error_code="CALENDAR_ERROR")
 
         event_id = getattr(created, "id", "")
+
+        if ctx.local_db_path:
+            scope = classify_event_scope(title, is_recurring=True)
+            _record_calendar_event(
+                ctx.local_db_path, event_id, uid, ctx.household_id,
+                title, start_dt, end_dt, True, scope,
+            )
+
         import pytz
         tz = pytz.timezone(ctx.household_timezone)
         local_start = start_dt.astimezone(tz)

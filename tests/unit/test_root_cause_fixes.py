@@ -1208,3 +1208,142 @@ class TestFix9TimezoneMessages:
         if result:
             assert "PM" in result
             assert any(tz in result for tz in ("CST", "CDT", "CT"))
+
+
+# ===========================================================================
+# Scope classification and calendar_events table
+# ===========================================================================
+
+
+class TestClassifyEventScope:
+    """classify_event_scope() keyword heuristic — Phase 1."""
+
+    def test_trash_is_household(self):
+        from mithra.domains.time.tools import classify_event_scope
+        assert classify_event_scope("trash reminder", is_recurring=True) == "household"
+
+    def test_recurring_trash_is_household(self):
+        from mithra.domains.time.tools import classify_event_scope
+        assert classify_event_scope("Take out trash", is_recurring=True) == "household"
+
+    def test_dentist_single_is_personal(self):
+        from mithra.domains.time.tools import classify_event_scope
+        assert classify_event_scope("dentist appointment", is_recurring=False) == "personal"
+
+    def test_family_dinner_is_household(self):
+        from mithra.domains.time.tools import classify_event_scope
+        assert classify_event_scope("family dinner", is_recurring=False) == "household"
+
+    def test_rent_is_household(self):
+        from mithra.domains.time.tools import classify_event_scope
+        assert classify_event_scope("Rent payment", is_recurring=True) == "household"
+
+    def test_gym_recurring_is_personal(self):
+        from mithra.domains.time.tools import classify_event_scope
+        assert classify_event_scope("Gym session", is_recurring=True) == "personal"
+
+    def test_workout_recurring_is_personal(self):
+        from mithra.domains.time.tools import classify_event_scope
+        assert classify_event_scope("Morning workout", is_recurring=True) == "personal"
+
+    def test_ambiguous_recurring_defaults_household(self):
+        from mithra.domains.time.tools import classify_event_scope
+        # No personal or household keywords → recurring defaults to household
+        assert classify_event_scope("Date night", is_recurring=True) == "household"
+
+    def test_anniversary_is_household(self):
+        from mithra.domains.time.tools import classify_event_scope
+        assert classify_event_scope("Anniversary dinner", is_recurring=False) == "household"
+
+    def test_user_text_contributes(self):
+        from mithra.domains.time.tools import classify_event_scope
+        # Title alone is neutral, but user_text contains keyword
+        assert classify_event_scope("Pickup", user_text="school pickup today") == "household"
+
+    def test_single_event_defaults_personal(self):
+        from mithra.domains.time.tools import classify_event_scope
+        assert classify_event_scope("Call John", is_recurring=False) == "personal"
+
+    def test_vacation_is_household(self):
+        from mithra.domains.time.tools import classify_event_scope
+        assert classify_event_scope("vacation", is_recurring=False) == "household"
+
+
+class TestCalendarEventsTable:
+    """calendar_events table created by LocalStorageAdapter.__init__."""
+
+    def test_table_created_on_init(self, tmp_path):
+        import sqlite3
+        from mithra.storage.local import LocalStorageAdapter
+        db = str(tmp_path / "test.db")
+        LocalStorageAdapter(str(tmp_path / "files"), db)
+        conn = sqlite3.connect(db)
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        assert "calendar_events" in tables
+
+    def test_indexes_created(self, tmp_path):
+        import sqlite3
+        from mithra.storage.local import LocalStorageAdapter
+        db = str(tmp_path / "test.db")
+        LocalStorageAdapter(str(tmp_path / "files"), db)
+        conn = sqlite3.connect(db)
+        indexes = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()}
+        assert "idx_cal_events_household" in indexes
+        assert "idx_cal_events_user" in indexes
+        assert "idx_cal_events_scope" in indexes
+
+    def test_members_managed_by_column(self, tmp_path):
+        import sqlite3
+        from mithra.storage.local import LocalStorageAdapter
+        db = str(tmp_path / "test.db")
+        LocalStorageAdapter(str(tmp_path / "files"), db)
+        conn = sqlite3.connect(db)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()}
+        assert "managed_by" in cols
+        assert "date_of_birth" in cols
+
+    def test_record_calendar_event_writes_row(self, tmp_path):
+        import sqlite3
+        from datetime import datetime, timezone
+        from mithra.storage.local import LocalStorageAdapter
+        from mithra.domains.time.tools import _record_calendar_event
+        db = str(tmp_path / "test.db")
+        LocalStorageAdapter(str(tmp_path / "files"), db)
+        start = datetime(2026, 6, 1, 15, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 6, 1, 16, 0, 0, tzinfo=timezone.utc)
+        _record_calendar_event(
+            db, "evt_123", "person_a", "hh_001",
+            "Dentist", start, end, False, "personal",
+        )
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT * FROM calendar_events WHERE event_id=?", ("evt_123",)
+        ).fetchone()
+        assert row is not None
+        assert row[3] == "Dentist"   # summary
+        assert row[8] == "personal"  # scope
+
+    def test_record_recurring_sets_is_recurring(self, tmp_path):
+        import sqlite3
+        from datetime import datetime, timezone
+        from mithra.storage.local import LocalStorageAdapter
+        from mithra.domains.time.tools import _record_calendar_event
+        db = str(tmp_path / "test.db")
+        LocalStorageAdapter(str(tmp_path / "files"), db)
+        start = datetime(2026, 6, 5, 20, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 6, 5, 20, 30, 0, tzinfo=timezone.utc)
+        _record_calendar_event(
+            db, "evt_456", "person_a", "hh_001",
+            "Trash", start, end, True, "household",
+        )
+        conn = sqlite3.connect(db)
+        row = conn.execute(
+            "SELECT is_recurring, scope FROM calendar_events WHERE event_id=?",
+            ("evt_456",),
+        ).fetchone()
+        assert row[0] == 1          # is_recurring
+        assert row[1] == "household"
