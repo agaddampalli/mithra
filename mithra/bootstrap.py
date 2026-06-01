@@ -323,12 +323,37 @@ async def build_state(
     state["member_registry"] = member_registry
 
     import sqlite3 as _sqlite3
+    import logging as _logging
     with _sqlite3.connect(local_adapter.db_path) as _conn:
         _row = _conn.execute(
             "SELECT value FROM household_config WHERE household_id=? AND key=?",
             (household_id, "timezone"),
         ).fetchone()
-    household_tz = _row[0] if _row else "UTC"
+
+    if _row:
+        household_tz = _row[0]
+    else:
+        household_tz = os.environ.get("HOUSEHOLD_TIMEZONE", "America/Chicago")
+        with _sqlite3.connect(local_adapter.db_path) as _conn:
+            _conn.execute(
+                "INSERT OR REPLACE INTO household_config "
+                "(household_id, key, value, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    household_id,
+                    "timezone",
+                    household_tz,
+                    __import__("datetime").datetime.now(
+                        __import__("datetime").timezone.utc
+                    ).isoformat(),
+                ),
+            )
+        _logging.getLogger(__name__).warning(
+            "household_config timezone missing — seeded with '%s'. "
+            "Update via: UPDATE household_config SET value='Your/Timezone' "
+            "WHERE key='timezone'",
+            household_tz,
+        )
     state["household_timezone"] = household_tz
 
     domain_router, cache = _build_domain_router(storage_router, household_config)
