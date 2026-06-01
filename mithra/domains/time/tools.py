@@ -162,11 +162,11 @@ def _make_event(
     reminders: list | None = None,
     recurrence: list | None = None,
 ) -> Any:
-    """Create a gcsa Event using an explicit UTC offset.
+    """Create a gcsa Event with tz-aware datetime AND timezone= parameter.
 
-    Sends: {"dateTime": "2026-06-03T15:00:00-05:00"}
-    The UTC offset is unambiguous — Google Calendar cannot misinterpret it.
-    No timezone= parameter needed; the offset encodes the timezone fully.
+    Sends: {"dateTime": "2026-06-03T15:00:00-05:00", "timeZone": "America/Chicago"}
+    The UTC offset prevents misinterpretation; the timeZone field is required
+    by Google Calendar for recurring events (API rejects without it).
     """
     import pytz
     from gcsa.event import Event
@@ -184,6 +184,7 @@ def _make_event(
         summary=title,
         start=start_dt,
         end=end_dt,
+        timezone=household_timezone,
         description=description or None,
         location=location or None,
         reminders=reminders,

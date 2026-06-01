@@ -252,6 +252,7 @@ def _register_domains(state: dict) -> None:
             oauth_manager=state.get("oauth_manager"),
             household_id=state.get("household_id", ""),
             household_timezone=state.get("household_timezone", "UTC"),
+            default_user_id=state.get("default_user_id", ""),
         )
     )
 
@@ -321,6 +322,12 @@ async def build_state(
     from mithra.identity.member_registry import MemberRegistry
     member_registry = MemberRegistry(local_adapter.db_path, household_id)
     state["member_registry"] = member_registry
+
+    try:
+        _admin = member_registry.get_admin()
+        state["default_user_id"] = _admin.id if _admin else ""
+    except Exception:
+        state["default_user_id"] = ""
 
     import sqlite3 as _sqlite3
     import logging as _logging

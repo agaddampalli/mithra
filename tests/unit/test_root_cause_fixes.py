@@ -209,12 +209,14 @@ class TestFix2MakeEventHelper:
         import json
         start = datetime(2026, 6, 1, 15, 0, tzinfo=timezone.utc)
         event = _make_event("Dentist", start, 60, "America/Chicago")
-        # tz-aware datetime without timezone= param — UTC offset carries tz info
+        # tz-aware datetime WITH timezone= param — both offset and timeZone present
         assert event.start.tzinfo is not None
+        assert event.timezone == "America/Chicago"
         body = EventSerializer.to_json(event)
-        # Wire format must include an offset (e.g. -05:00), not a separate timeZone key
+        # Wire format must include explicit offset AND timeZone (required for recurring)
         assert "dateTime" in body["start"]
         assert body["start"]["dateTime"].endswith("-05:00")
+        assert body["start"].get("timeZone") == "America/Chicago"
 
     def test_make_event_end_is_start_plus_duration(self):
         from mithra.domains.time.tools import _make_event
@@ -892,8 +894,8 @@ class TestFix6TimezoneConversion:
         assert event.end.hour == 16
         assert event.end.minute == 30
 
-    def test_event_timezone_embedded_in_offset(self):
-        """gcsa Event sends tz-aware datetime with UTC offset — no separate timeZone key."""
+    def test_event_timezone_in_offset_and_timezone_field(self):
+        """gcsa Event sends tz-aware datetime with both UTC offset and timeZone field."""
         from mithra.domains.time.tools import _make_event
         from gcsa.serializers.event_serializer import EventSerializer
         from datetime import timezone as dt_timezone
@@ -901,9 +903,10 @@ class TestFix6TimezoneConversion:
         utc_dt = datetime(2026, 6, 1, 20, 0, 0, tzinfo=dt_timezone.utc)
         event = _make_event("Dentist", utc_dt, 60, "America/Chicago")
         body = EventSerializer.to_json(event)
-        # Wire format encodes tz via offset — no separate timeZone field needed
+        # Explicit offset prevents misinterpretation; timeZone required for recurring events
         assert "dateTime" in body["start"]
         assert body["start"]["dateTime"].endswith("-05:00")
+        assert body["start"].get("timeZone") == "America/Chicago"
 
 
 # ===========================================================================
