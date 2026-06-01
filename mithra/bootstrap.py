@@ -253,6 +253,8 @@ def _register_domains(state: dict) -> None:
             household_id=state.get("household_id", ""),
             household_timezone=state.get("household_timezone", "UTC"),
             default_user_id=state.get("default_user_id", ""),
+            client_id=os.environ.get("GOOGLE_CLIENT_ID", ""),
+            client_secret=os.environ.get("GOOGLE_CLIENT_SECRET", ""),
         )
     )
 

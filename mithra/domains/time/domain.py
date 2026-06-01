@@ -37,11 +37,15 @@ class TimeDomain(Domain):
         household_id: str = "",
         household_timezone: str = "UTC",
         default_user_id: str = "",
+        client_id: str = "",
+        client_secret: str = "",
     ) -> None:
         self._oauth_manager = oauth_manager
         self._household_id = household_id
         self._household_timezone = household_timezone
         self._default_user_id = default_user_id
+        self._client_id = client_id
+        self._client_secret = client_secret
 
     # ------------------------------------------------------------------
     # Domain identity
@@ -101,13 +105,15 @@ class TimeDomain(Domain):
             svc = GoogleCalendarService(
                 oauth_manager=self._oauth_manager,
                 household_id=household_id or self._household_id,
+                client_id=self._client_id,
+                client_secret=self._client_secret,
                 household_timezone=self._household_timezone,
             )
 
             start, end = _range_from_period("today", self._household_timezone)
             events = await asyncio.to_thread(svc.list_events, uid, start, end)
         except Exception as exc:
-            _logger.warning("TimeDomain dashboard error: %s", exc)
+            _logger.error("TimeDomain dashboard error: %s", exc, exc_info=True)
             return DashboardData(
                 domain="time",
                 updated_at=updated_at,
