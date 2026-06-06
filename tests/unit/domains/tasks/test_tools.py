@@ -22,7 +22,7 @@ from mithra.domains.tasks.tools import (
 
 class TestClassifyTaskScope:
     def test_personal_by_default(self):
-        assert classify_task_scope("fix ceiling fan") == "personal"
+        assert classify_task_scope("finish quarterly report") == "personal"
 
     def test_personal_no_keywords(self):
         assert classify_task_scope("call insurance") == "personal"

@@ -34,13 +34,25 @@ _logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _HOUSEHOLD_KEYWORDS: frozenset[str] = frozenset({
+    # People / relationships
     "household", "family", "both", "we", "us",
-    "everyone", "kids", "children", "baby", "shared",
+    "everyone", "kids", "children", "baby", "shared", "together",
+    # Waste / recycling
     "trash", "recycling", "garbage", "bins",
+    # Finances
     "rent", "mortgage", "utilities", "bills",
+    # School / childcare
     "school", "pickup", "dropoff", "daycare",
-    "pest", "plumber", "contractor", "lawn",
-    "yard", "garden", "together",
+    # Tradespeople
+    "pest", "plumber", "contractor",
+    # Outdoor
+    "lawn", "yard", "garden",
+    # Outdoor structures
+    "roof", "gutter", "driveway", "garage", "fence", "gate",
+    # HVAC / mechanical
+    "ceiling", "fan", "hvac", "furnace", "water heater",
+    # Kitchen / laundry appliances
+    "dishwasher", "washer", "dryer", "fridge", "refrigerator",
 })
 
 _PERSONAL_RECURRING_KEYWORDS: frozenset[str] = frozenset({
