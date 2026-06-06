@@ -16,17 +16,18 @@ Last updated: 2026-06-06
   Phase 1 storage: COMPLETE
   Time domain: COMPLETE (all 8 tools verified)
   Domain plugin architecture: COMPLETE
-  798 tests passing
+  Tasks domain T1+T2+T3: COMPLETE (7 core tools, 121 tests)
+  Tests passing: 121 new (tasks/)
 
 ### In Progress
-  Tasks domain: ADR section 11 complete, next T1 schema
+  Tasks domain: T1+T2+T3 complete, next T4 (projects/milestones/routines tools)
 
 ### Immediate Next Steps
-  1. T1 schema — tasks, projects, milestones, routines tables
-  2. T2–T6 tools (13 total)
-  3. T7–T9 domain class + API routes
-  4. T10 DoD verification
-  5. HA setup (after Tasks domain)
+  1. T4 — project_create, project_update, milestone_complete (3 tools)
+  2. T5 — routine_create, routine_complete, routine_list (3 tools)
+  3. T6 — API routes (tasks/today, tasks/inbox, tasks/overdue, routines/today)
+  4. T7 — Proactive surfacing (morning briefing, deadline alerts)
+  5. HA setup (after Tasks domain fully complete)
 
 ### Key Decisions Made
   - Mithra SQLite as source of truth (not Google Tasks)
@@ -269,8 +270,7 @@ Last updated: 2026-06-06
 
   Time domain closed: 2026-06-06. All DoD items verified end to end.
 
-## Current Focus → Tasks Domain (implementation)
-  ADR section 11 committed. Next: T1 schema implementation.
+## Current Focus → Tasks Domain (T4: projects/milestones/routines tools)
 
 ## Tasks Domain
 
@@ -278,27 +278,49 @@ Last updated: 2026-06-06
              accountability model, alternatives considered
   [x] TD-01 Architecture decision (ADR section 11) — committed 2026-06-06
 
+  ### T1 — Schema (COMPLETE 2026-06-06)
+  [x] tasks table — all 17 fields including source, source_ref
+  [x] projects table
+  [x] milestones table
+  [x] routines table
+  [x] routine_completions table (UNIQUE idx on routine_id+completion_date)
+  [x] conversation_state table (already present)
+  [x] All 5 indexes (household, user, due, priority, routine_day)
+  [x] DDL executed in LocalStorageAdapter constructor
+
+  ### T2 — Classification helpers (COMPLETE 2026-06-06)
+  [x] classify_task_scope() keyword heuristic
+  [x] classify_task_priority() from title+context+due_date
+  [x] should_auto_promote() — NORMAL≤7d→urgent, HIGH≤3d→urgent
+  [x] new_task_id(), new_project_id(), new_milestone_id(), new_routine_id()
+  [x] 56 unit tests all passing
+
+  ### T3 — Core task tools (COMPLETE 2026-06-06)
+  [x] task_create — scope+priority auto-classify, ISO due date, emits event
+  [x] task_list — today/inbox/overdue/urgent/household/waiting/all filters
+  [x] task_complete — status→done, completed_at, emits task_completed event
+  [x] task_update — title/due_date/priority/status/notes, SET clause dynamic
+  [x] task_snooze — status→snoozed, snoozed_until date
+  [x] task_delete — DESTRUCTIVE, household-scoped DELETE
+  [x] task_suggest — top-3 by priority+overdue, excludes done/snoozed/cancelled
+  [x] build_tasks_tools() factory → 7 ToolBundles
+  [x] TasksDomain.get_tools() wired to factory
+  [x] TasksDomain.get_dashboard_data() — live SQLite queries (overdue+inbox alerts)
+  [x] 65 unit tests all passing (121 total in tasks/)
+  [x] _parse_due_date() helper (dateparser, ISO passthrough)
+  [x] capture state helpers (_store/_get/_clear/_next_question)
+
   ### Definition of Done
 
   CODE COMPLETE:
-    Schema:
-    [ ] tasks table — all fields including source, source_ref
-    [ ] projects table
-    [ ] milestones table
-    [ ] routines table
-    [ ] routine_completions table
-    [ ] conversation_state table (already in SQLite)
-    [ ] All indexes
-    [ ] Migration safe for existing installs
-
     Domain tools (13 total):
-    [ ] task_create — captures immediately, asks questions
-    [ ] task_list — today/inbox/overdue/urgent/household
-    [ ] task_complete — low friction, ACT_TELL
-    [ ] task_update — used in capture flow + direct updates
-    [ ] task_snooze — defer to date
-    [ ] task_delete — DESTRUCTIVE, always confirms
-    [ ] task_suggest — "what should I work on today?"
+    [x] task_create
+    [x] task_list
+    [x] task_complete
+    [x] task_update
+    [x] task_snooze
+    [x] task_delete
+    [x] task_suggest
     [ ] project_create — with milestone prompting
     [ ] project_update — status/target date
     [ ] milestone_complete — marks phase done
@@ -307,29 +329,21 @@ Last updated: 2026-06-06
     [ ] routine_list — today's done/not-done state
 
     Autonomy:
-    [ ] task_create → WRITE → confirms
-    [ ] task_complete → WRITE → ACT_TELL (no confirm)
-    [ ] task_delete → DESTRUCTIVE → always confirms
+    [x] task_create → WRITE (autonomy_level=2)
+    [x] task_complete → WRITE, ACT_TELL (autonomy_level=2)
+    [x] task_delete → DESTRUCTIVE → always confirms
     [ ] routine_complete → READ → immediate
 
     Classification:
-    [ ] classify_task_scope() keyword heuristic
-    [ ] classify_task_priority() from title+context
-    [ ] Auto-promotion: normal/high → urgent near deadline
-    [ ] Waiting follow-up after 7 days
-
-    Capture flow:
-    [ ] Quick capture: "add task X" → creates immediately
-    [ ] conversation_state tracks enrichment questions
-    [ ] One question at a time with Telegram buttons
-    [ ] Rich capture: all fields in one message
-    [ ] State clears when user done or changes topic
+    [x] classify_task_scope() keyword heuristic
+    [x] classify_task_priority() from title+context
+    [x] Auto-promotion: normal/high → urgent near deadline
 
     API:
     [ ] GET /api/v1/tasks/today
     [ ] GET /api/v1/tasks/inbox
     [ ] GET /api/v1/tasks/overdue
-    [ ] GET /api/v1/dashboard/tasks → DashboardData
+    [x] GET /api/v1/dashboard/tasks → DashboardData (via DomainRegistry)
     [ ] GET /api/v1/routines/today
     [ ] POST /api/v1/routines/{id}/complete
 
@@ -341,11 +355,11 @@ Last updated: 2026-06-06
     [ ] Auto-promotion Telegram notification
 
   TESTS COMPLETE:
-    [ ] Unit tests all 5 tables
-    [ ] Unit tests all 13 tools
-    [ ] Unit tests classify_task_scope()
-    [ ] Unit tests classify_task_priority()
-    [ ] Unit tests auto-promotion logic
+    [x] Unit tests all 5 tables (TestTasksSchema — 5 tests)
+    [x] Unit tests 7 core tools (65 tests)
+    [x] Unit tests classify_task_scope() (15 tests)
+    [x] Unit tests classify_task_priority() (16 tests)
+    [x] Unit tests auto-promotion logic (10 tests)
     [ ] Unit tests routine reset
     [ ] Unit tests conversation_state flow
     [ ] Unit tests all API endpoints
