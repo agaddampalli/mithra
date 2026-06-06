@@ -425,6 +425,7 @@ async def build_state(
         agent._file_router = state.get("file_router")
         agent._member_registry = state.get("member_registry")
         agent._file_search = state.get("file_search")
+        agent._local_db_path = getattr(state.get("local_adapter"), "db_path", "")
 
     if state.get("telegram_output"):
         _build_telegram_handler(state, household_config, base_url)

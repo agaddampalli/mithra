@@ -124,6 +124,7 @@ class LangGraphAdapter(AgentInterface):
         self._file_router = file_router
         self._member_registry = member_registry
         self._file_search = file_search
+        self._local_db_path = ""
         self._tools: dict[str, MCPTool] = {}
         self._graph = self._build_graph()
 
@@ -755,6 +756,7 @@ class LangGraphAdapter(AgentInterface):
             channel=channel,
             language="en-US",
             autonomy_override=None,
+            local_db_path=self._local_db_path,
         )
 
     def _extract_domain_ids(self, intent: str) -> list[str]:
