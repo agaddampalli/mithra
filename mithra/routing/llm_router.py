@@ -507,7 +507,8 @@ class LiteLLMRouterAdapter(LLMRouter):
                     "reminder.* → time domain (timed reminders), "
                     "task.* → tasks domain, "
                     "routine.* → tasks domain, "
-                    "project.* → tasks domain."
+                    "project.* → tasks domain, "
+                    "inbox.* → tasks domain."
                 ),
             },
             {"role": "user", "content": text},

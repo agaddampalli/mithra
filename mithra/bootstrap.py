@@ -242,6 +242,7 @@ def _register_domains(state: dict) -> None:
     are visible without re-patching.
     """
     from mithra.domains.time.domain import TimeDomain
+    from mithra.domains.tasks.domain import TasksDomain
 
     registry = state.get("domain_registry")
     if registry is None:
@@ -255,6 +256,15 @@ def _register_domains(state: dict) -> None:
             default_user_id=state.get("default_user_id", ""),
             client_id=os.environ.get("GOOGLE_CLIENT_ID", ""),
             client_secret=os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+        )
+    )
+
+    registry.register(
+        TasksDomain(
+            household_id=state.get("household_id", ""),
+            household_timezone=state.get("household_timezone", "UTC"),
+            default_user_id=state.get("default_user_id", ""),
+            local_db_path=getattr(state.get("local_adapter"), "db_path", ""),
         )
     )
 
