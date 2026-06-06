@@ -342,16 +342,25 @@ class TaskCreateTool(BaseTool):
             return ToolResult.fail("Could not save task.", error=str(exc))
 
         _logger.info("task_create: %s scope=%s priority=%s", task_id, task_scope, task_priority)
-        parts = [f'Task added: "{title}"']
+
+        # Build summary line
+        summary_parts = [f'Added: "{title}"']
         if parsed_due:
-            parts.append(f"due {parsed_due}")
-        if task_priority != "normal":
-            parts.append(f"priority: {task_priority}")
+            summary_parts.append(f"due {parsed_due}")
+        if task_priority not in ("normal", ""):
+            summary_parts.append(task_priority)
         if task_scope == "household":
-            parts.append("(household)")
+            summary_parts.append("(household)")
+        summary = " · ".join(summary_parts)
+
+        # Append one enrichment question when key info is missing
+        if not parsed_due:
+            summary += "\n\nAny deadline?"
+        elif not priority:
+            summary += "\n\nPriority? (urgent / high / normal / someday)"
 
         return ToolResult.ok(
-            " — ".join(parts) if len(parts) > 1 else parts[0],
+            summary,
             data={
                 "task_id": task_id,
                 "scope": task_scope,
@@ -738,6 +747,11 @@ class TaskSnoozeTool(BaseTool):
 
 class _TaskDeleteArgs(BaseModel):
     task_id: str = Field(description="Task ID to permanently delete (tsk_...).")
+    title_hint: str = Field(
+        default="",
+        description="Human-readable task title for the confirmation prompt (e.g. 'Fix ceiling fan'). "
+                    "Fill from task_list results when available.",
+    )
 
 
 class TaskDeleteTool(BaseTool):
@@ -753,7 +767,7 @@ class TaskDeleteTool(BaseTool):
         super().__init__(**kwargs)
         object.__setattr__(self, "_ctx", context)
 
-    def _run(self, task_id: str) -> ToolResult:
+    def _run(self, task_id: str, title_hint: str = "") -> ToolResult:
         import sqlite3
 
         ctx = self._ctx
@@ -875,9 +889,9 @@ def build_tasks_tools(context: DomainContext) -> list[ToolBundle]:
             metadata=ToolMetadata(
                 name="task_create",
                 domain_id="tasks",
-                permission=PermissionTier.WRITE,
+                permission=PermissionTier.READ,   # low-friction capture: no confirmation
                 is_reversible=True,
-                autonomy_level=2,
+                autonomy_level=3,
                 event_emitted="task_created",
             ),
         ),

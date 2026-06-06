@@ -210,6 +210,16 @@ class DefaultAutonomyEngine(AutononomyEngine):
             query = payload.get("event_query", "event")
             new_time = payload.get("new_time", "")
             return f"move '{query}' to {new_time}" if new_time else f"update '{query}'"
+        # Task domain actions
+        if action_type == "task_delete":
+            label = payload.get("title_hint") or payload.get("task_id", "task")
+            return f"delete '{label}'"
+        if action_type == "task_complete":
+            label = payload.get("title_match") or payload.get("task_id", "task")
+            return f"mark '{label}' as done"
+        if action_type == "task_update":
+            label = payload.get("task_id", "task")
+            return f"update task '{label}'"
         # Generic fallback — replace underscores, never show raw action_type
         return action_type.replace("_", " ")
 

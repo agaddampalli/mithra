@@ -168,6 +168,20 @@ class TestTaskCreateTool:
         assert "Fix ceiling fan" in result.summary
         assert result.data["task_id"].startswith("tsk_")
 
+    def test_no_deadline_asks_question(self, create_tool):
+        result = create_tool._run(title="Buy milk")
+        assert "Any deadline?" in result.summary
+
+    def test_deadline_given_asks_priority(self, create_tool):
+        result = create_tool._run(title="Submit report", due_date="2026-12-01")
+        assert "Priority?" in result.summary
+        assert "Any deadline?" not in result.summary
+
+    def test_both_given_no_followup(self, create_tool):
+        result = create_tool._run(title="Call doctor", due_date="2026-12-01", priority="urgent")
+        assert "Any deadline?" not in result.summary
+        assert "Priority?" not in result.summary
+
     def test_returns_task_id(self, create_tool):
         result = create_tool._run(title="Buy milk")
         assert "task_id" in result.data
@@ -552,6 +566,12 @@ class TestBuildTasksTools:
         bundles = build_tasks_tools(ctx)
         delete = next(b for b in bundles if b.metadata.name == "task_delete")
         assert delete.metadata.permission == PermissionTier.DESTRUCTIVE
+
+    def test_create_is_read(self, ctx):
+        from mithra.domains.bundle import PermissionTier
+        bundles = build_tasks_tools(ctx)
+        create = next(b for b in bundles if b.metadata.name == "task_create")
+        assert create.metadata.permission == PermissionTier.READ
 
     def test_list_is_read(self, ctx):
         from mithra.domains.bundle import PermissionTier
