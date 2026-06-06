@@ -1,4 +1,4 @@
-# Mithra — Work Tracker (Updated 2026-05-29)
+# Mithra — Work Tracker (Updated 2026-06-06)
 
 ## Current IDs (generated 2026-05-24, never change)
   household_id: hh_b76fef08
@@ -185,7 +185,7 @@
 ## End-to-End Tests (pending domains)
   [ ] ET-01 to ET-15
 
-## Time Domain — Complete (2026-05-28)
+## Time Domain — Complete (2026-06-06)
 
   [x] T1 mithra/domains/time/ package — __init__.py, service.py, tools.py, domain.py
   [x] T2 GoogleCalendarService (gcsa wrapper, OAuthManager cred injection, cache)
@@ -197,21 +197,34 @@
   [x] T4 TimeDomain class implementing Domain ABC
   [x] T5 Registered in bootstrap.py (_register_domains after oauth build)
   [x] T6 67 tests passing (parsing, tools, domain, service)
-  [x] ADR Section 10 — Time domain architecture documented
+  [x] ADR Section 10 — Time domain architecture documented (sections 10.9–10.14)
   [x] requirements.txt: gcsa>=2.0.0, dateparser>=1.4.0 added
-  [ ] T6b End-to-end test: "add dentist tuesday 3pm" → Google Calendar (needs hardware)
-  [ ] T7 Dashboard endpoint test: GET /api/v1/dashboard/time (needs running stack)
+  [x] gcsa Event format: tz-aware datetimes + timezone= param (required for recurring)
+  [x] Token expiry handling: invalid_grant detected, TOKEN_EXPIRED surfaced to gateway
+  [x] Reconnect flow: expired token → reconnect button in Telegram
+  [x] "reconnect google" / "reauth google" bypass is_connected() check
+  [x] Dashboard: client_id/secret passed to GoogleCalendarService
+  [x] Dashboard: default_user_id fallback (owner uid, not household_id)
+  [x] calendar_events table in SQLite (scope, source, indexes)
+  [x] classify_event_scope() keyword heuristic (personal / household)
+  [x] _record_calendar_event() persists Mithra-created events
+  [x] household_config timezone seeded from HOUSEHOLD_TIMEZONE env var
+  [x] members table: managed_by + date_of_birth columns (additive migration)
+  [x] local_db_path threaded through DomainContext → DomainToolAdapter
+  [x] T6b End-to-end verified: "add dentist tuesday 3pm" → Google Calendar
+  [x] T7 Dashboard endpoint: GET /api/v1/dashboard/time — returning events
 
-  7-day stability run (started 2026-05-25) — ongoing
-  Daily: send "hi" to bot, verify response
+  DoD gate: all items verified. Stability run ongoing.
+  Daily: send "hi" to bot, verify response.
 
-## Current Focus → People Domain (next domain)
-  mithra/domains/people/
-  Unblocked by Time domain
+## Current Focus → Stability run
+  Monitor for 7 days before starting People domain.
+  Daily check: send "hi" to bot, verify Telegram response.
+  Watch logs for token refresh errors, dashboard failures, agent errors.
+  Next domain: mithra/domains/people/ — unblocked after stability confirmed.
 
 ## Test Baseline
-  901 tests passing (2026-05-28)
-  (834 + 67 Time domain tests)
+  798 tests passing (2026-06-06)
 
 ## Infra Cleanup (deferred to end of Phase 1)
   Automate as part of closing infrastructure phases.
