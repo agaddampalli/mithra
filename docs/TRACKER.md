@@ -1,5 +1,50 @@
 # Mithra — Work Tracker (Updated 2026-06-06)
 
+## SESSION HANDOFF (update after each session)
+
+Last updated: 2026-06-06
+
+### Current State
+  Stack: Docker Compose on Windows laptop
+  Household: hh_b76fef08
+  Owner: usr_ba6d9199 (Abhiram)
+  Wife: usr_4d03f6ea
+  Tunnel: assistant.mithra-app.com
+  Timezone: America/Chicago
+
+### Completed
+  Phase 1 storage: COMPLETE
+  Time domain: COMPLETE (all 8 tools verified)
+  Domain plugin architecture: COMPLETE
+  798 tests passing
+
+### In Progress
+  Tasks domain: starting ADR section 11
+
+### Immediate Next Steps
+  1. Document Tasks domain ADR (section 11)
+  2. Implement Tasks domain
+  3. Verify DoD
+  4. HA setup (after Tasks domain)
+
+### Key Decisions Made
+  - Mithra SQLite as source of truth (not Google Tasks)
+  - Tasks domain separate from Time domain
+  - Three entity types: tasks, projects+milestones, routines
+  - Routines = daily-reset checklists (separate from tasks)
+  - Priority: urgent|high|normal|someday
+  - Capture: ask questions to make actionable
+  - Baby routines = household scope, both mark done
+  - No external task app (Vikunja rejected — wrong use case)
+  - Calendar blocking opt-in not automatic
+  - HA tablet = primary display (Scenario B)
+
+### Known Open Issues
+  - llm-router health check flapping (low priority)
+  - Docker cleanup automation (deferred to phase close)
+
+---
+
 ## Current IDs (generated 2026-05-24, never change)
   household_id: hh_b76fef08
   Abhiram:      usr_ba6d9199  (owner)
@@ -215,10 +260,16 @@
   [x] household_config timezone seeded from HOUSEHOLD_TIMEZONE env var
   [x] members table: managed_by + date_of_birth columns (additive migration)
   [x] local_db_path threaded through DomainContext → DomainToolAdapter
+  [x] local_db_path also wired in DefaultAutonomyEngine._build_execution_context
+  [x] calendar_events recording verified end to end:
+      ('Dentist Appointment', 'personal', 0, 'mithra') confirmed in SQLite
   [x] T6b End-to-end verified: "add dentist tuesday 3pm" → Google Calendar
   [x] T7 Dashboard endpoint: GET /api/v1/dashboard/time — returning events
 
-## Current Focus → Tasks Domain (deep dive)
+  Time domain closed: 2026-06-06. All DoD items verified end to end.
+
+## Current Focus → Tasks Domain (ADR section 11)
+  Next step: ADR section 11 — Tasks domain design.
   Tasks domain inserted before People — highest daily use value.
   Rationale: Google Keep replacement, enables accountability + deadlines,
   required for meaningful HA dashboard, deep dive needed before implementation.
