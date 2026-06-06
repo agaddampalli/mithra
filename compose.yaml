@@ -127,8 +127,18 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Watchtower removed — old app watchtower handles updates
-  # Re-add when ai-home-assistant stack is retired
+  # ── Watchtower (auto-update + image cleanup) ────────────
+  watchtower:
+    image: containrrr/watchtower:latest
+    command: --interval 86400 --cleanup
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ── Health monitor ──────────────────────────────────────
   healthmonitor:
