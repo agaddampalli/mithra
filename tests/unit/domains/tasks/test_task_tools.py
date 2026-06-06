@@ -142,6 +142,20 @@ class TestParseDueDate:
         assert result is not None
         assert len(result) == 10  # YYYY-MM-DD
 
+    def test_next_friday_parses(self):
+        result = _parse_due_date("next friday")
+        assert result is not None
+        assert len(result) == 10
+
+    def test_this_friday_parses(self):
+        result = _parse_due_date("this friday")
+        assert result is not None
+        assert len(result) == 10
+
+    def test_next_week_parses(self):
+        result = _parse_due_date("next week")
+        assert result is not None
+
 
 # ---------------------------------------------------------------------------
 # TaskCreateTool
@@ -238,6 +252,20 @@ class TestTaskListTool:
         assert result.success
         titles = [t["title"] for t in result.data["tasks"]]
         assert "Today task" in titles
+
+    def test_today_filter_includes_urgent(self, list_tool, db):
+        _seed_task(db, task_id="tsk_today_urg", title="Urgent no-deadline task", priority="urgent")
+        result = list_tool._run(filter="today")
+        titles = [t["title"] for t in result.data["tasks"]]
+        assert "Urgent no-deadline task" in titles
+
+    def test_today_filter_includes_overdue(self, list_tool, db):
+        from datetime import date, timedelta
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        _seed_task(db, task_id="tsk_today_over", title="Overdue task", due_date=yesterday)
+        result = list_tool._run(filter="today")
+        titles = [t["title"] for t in result.data["tasks"]]
+        assert "Overdue task" in titles
 
     def test_urgent_filter(self, list_tool, db):
         _seed_task(db, task_id="tsk_urg1", title="Urgent task", priority="urgent")

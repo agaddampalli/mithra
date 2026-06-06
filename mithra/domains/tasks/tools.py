@@ -153,26 +153,53 @@ def _is_iso_date(text: str) -> bool:
     return bool(re.match(r"^\d{4}-\d{2}-\d{2}$", text.strip()))
 
 
+_DAY_NAMES = (
+    "monday", "tuesday", "wednesday", "thursday",
+    "friday", "saturday", "sunday",
+)
+
+_SETTINGS = {"PREFER_DATES_FROM": "future", "RETURN_AS_TIMEZONE_AWARE": False}
+
+
 def _parse_due_date(text: str) -> Optional[str]:
-    """Parse natural-language or ISO date to YYYY-MM-DD. Returns None on failure."""
+    """Parse natural-language or ISO date to YYYY-MM-DD. Returns None on failure.
+
+    dateparser doesn't handle "next <day>" or "this <day>" phrases. When the
+    first attempt fails and the text starts with "next"/"this" followed by a
+    day name, strip the prefix and retry — PREFER_DATES_FROM=future keeps it
+    in the future.
+    """
     if not text:
         return None
     stripped = text.strip()
     if _is_iso_date(stripped):
         return stripped
-    try:
-        import dateparser
-        result = dateparser.parse(
-            stripped,
-            settings={
-                "PREFER_DATES_FROM": "future",
-                "RETURN_AS_TIMEZONE_AWARE": False,
-            },
-        )
-        if result:
-            return result.date().isoformat()
-    except Exception as exc:
-        _logger.debug("_parse_due_date failed for %r: %s", text, exc)
+
+    import dateparser
+
+    def _try(s: str) -> Optional[str]:
+        try:
+            result = dateparser.parse(s, settings=_SETTINGS)
+            if result:
+                return result.date().isoformat()
+        except Exception as exc:
+            _logger.debug("_parse_due_date failed for %r: %s", s, exc)
+        return None
+
+    result = _try(stripped)
+    if result:
+        return result
+
+    # Retry: strip "next"/"this" before a day name
+    lower = stripped.lower()
+    for prefix in ("next ", "this "):
+        if lower.startswith(prefix):
+            remainder = stripped[len(prefix):]
+            if remainder.lower() in _DAY_NAMES:
+                result = _try(remainder)
+                if result:
+                    return result
+
     return None
 
 
@@ -311,9 +338,10 @@ class TaskCreateTool(BaseTool):
                     ),
                 )
         except Exception as exc:
-            _logger.error("task_create DB error: %s", exc)
+            _logger.error("task_create DB error", exc_info=True)
             return ToolResult.fail("Could not save task.", error=str(exc))
 
+        _logger.info("task_create: %s scope=%s priority=%s", task_id, task_scope, task_priority)
         parts = [f'Task added: "{title}"']
         if parsed_due:
             parts.append(f"due {parsed_due}")
@@ -391,9 +419,16 @@ class TaskListTool(BaseTool):
             with sqlite3.connect(ctx.local_db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 if filter == "today":
+                    # "today" = tasks due today + all urgent + all overdue
                     rows = conn.execute(
-                        "SELECT * FROM tasks WHERE household_id=? AND due_date=? AND status NOT IN ('done','cancelled') ORDER BY priority DESC",
-                        (ctx.household_id, today),
+                        """SELECT * FROM tasks
+                           WHERE household_id=? AND status NOT IN ('done','cancelled')
+                             AND (due_date=? OR priority='urgent'
+                                  OR (due_date IS NOT NULL AND due_date<?))
+                           ORDER BY
+                             CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END ASC,
+                             due_date ASC""",
+                        (ctx.household_id, today, today),
                     ).fetchall()
                 elif filter == "overdue":
                     rows = conn.execute(
@@ -426,7 +461,7 @@ class TaskListTool(BaseTool):
                         (ctx.household_id,),
                     ).fetchall()
         except Exception as exc:
-            _logger.error("task_list DB error: %s", exc)
+            _logger.error("task_list DB error", exc_info=True)
             return ToolResult.fail("Could not read tasks.", error=str(exc))
 
         tasks = [dict(r) for r in rows]
@@ -510,9 +545,10 @@ class TaskCompleteTool(BaseTool):
                     (now, now, tid),
                 )
         except Exception as exc:
-            _logger.error("task_complete DB error: %s", exc)
+            _logger.error("task_complete DB error", exc_info=True)
             return ToolResult.fail("Could not complete task.", error=str(exc))
 
+        _logger.info("task_complete: %s title=%r", tid, title)
         return ToolResult.ok(
             f'Done: "{title}"',
             data={"task_id": tid, "title": title, "completed_at": now},
@@ -619,9 +655,10 @@ class TaskUpdateTool(BaseTool):
                 if cur.rowcount == 0:
                     return ToolResult.fail(f"Task not found: {task_id}")
         except Exception as exc:
-            _logger.error("task_update DB error: %s", exc)
+            _logger.error("task_update DB error", exc_info=True)
             return ToolResult.fail("Could not update task.", error=str(exc))
 
+        _logger.info("task_update: %s fields=%s", task_id, [c for c, _ in updates])
         changed = ", ".join(f"{col}→{val}" for col, val in updates)
         return ToolResult.ok(
             f'Updated "{old_title}": {changed}',
@@ -685,9 +722,10 @@ class TaskSnoozeTool(BaseTool):
                     (snooze_date, now, task_id, ctx.household_id),
                 )
         except Exception as exc:
-            _logger.error("task_snooze DB error: %s", exc)
+            _logger.error("task_snooze DB error", exc_info=True)
             return ToolResult.fail("Could not snooze task.", error=str(exc))
 
+        _logger.info("task_snooze: %s until=%s", task_id, snooze_date)
         return ToolResult.ok(
             f'Snoozed "{title}" until {snooze_date}.',
             data={"task_id": task_id, "snoozed_until": snooze_date},
@@ -738,9 +776,10 @@ class TaskDeleteTool(BaseTool):
                     (task_id, ctx.household_id),
                 )
         except Exception as exc:
-            _logger.error("task_delete DB error: %s", exc)
+            _logger.error("task_delete DB error", exc_info=True)
             return ToolResult.fail("Could not delete task.", error=str(exc))
 
+        _logger.info("task_delete: %s title=%r", task_id, title)
         return ToolResult.ok(
             f'Deleted task: "{title}".',
             data={"task_id": task_id, "title": title},
@@ -800,7 +839,7 @@ class TaskSuggestTool(BaseTool):
                     (ctx.household_id, ctx.user_id, today),
                 ).fetchall()
         except Exception as exc:
-            _logger.error("task_suggest DB error: %s", exc)
+            _logger.error("task_suggest DB error", exc_info=True)
             return ToolResult.fail("Could not retrieve task suggestions.", error=str(exc))
 
         tasks = [dict(r) for r in rows]
