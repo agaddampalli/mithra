@@ -160,6 +160,7 @@ class DefaultAutonomyEngine(AutononomyEngine):
             file_search=self._file_search,
             request_id=_uuid.uuid4().hex,
             channel="telegram",
+            local_db_path=getattr(self._storage, "db_path", ""),
         )
 
     def _resolve_level(self, action: "AgentAction") -> AutonomyLevel:
