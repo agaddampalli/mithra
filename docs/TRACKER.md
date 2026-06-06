@@ -282,6 +282,14 @@ Last updated: 2026-06-06
   [ ] TD-03 DoD verification
   [ ] TD-04 HA dashboard card (deferred — after HA setup)
 
+## Travel Domain (Phase 3 — after Documents)
+  [ ] Gmail FlightReservation JSON-LD parsing
+  [ ] Gmail LodgingReservation JSON-LD parsing
+  [ ] Auto-create calendar events from reservations
+  [ ] Auto-create pre-trip task templates
+  [ ] Packing list generation
+  [ ] Check-in reminder automation
+
 ## Test Baseline
   798 tests passing (2026-06-06)
 

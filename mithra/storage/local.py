@@ -112,6 +112,16 @@ CREATE INDEX IF NOT EXISTS idx_cal_events_scope
     ON calendar_events(household_id, scope, start_time);
 """
 
+_CONVERSATION_STATE_DDL = """
+CREATE TABLE IF NOT EXISTS conversation_state (
+    user_id      TEXT PRIMARY KEY,
+    last_task_id TEXT,
+    capture_step TEXT,
+    context_json TEXT,
+    updated_at   TEXT NOT NULL
+);
+"""
+
 _FILES_DDL = """
 CREATE TABLE IF NOT EXISTS files (
     id           TEXT PRIMARY KEY,
@@ -205,6 +215,8 @@ class LocalStorageAdapter(StorageAdapter):
         self._conn.executescript(_FILES_DDL)
         self._conn.commit()
         self._conn.executescript(_CALENDAR_EVENTS_DDL)
+        self._conn.commit()
+        self._conn.executescript(_CONVERSATION_STATE_DDL)
         self._conn.commit()
         # Additive migrations for existing installs
         for _col, _type in [("managed_by", "TEXT"), ("date_of_birth", "TEXT")]:

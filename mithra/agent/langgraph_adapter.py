@@ -70,12 +70,14 @@ INTENT_DOMAIN_MAP: dict[str, str] = {
     "task":             "tasks",
     "tasks":            "tasks",
     "todo":             "tasks",
+    "todos":            "tasks",
     "routine":          "tasks",
     "routines":         "tasks",
     "project":          "tasks",
     "projects":         "tasks",
     "checklist":        "tasks",
     "habit":            "tasks",
+    "inbox":            "tasks",
 
     # Other domains
     "people":           "people",
