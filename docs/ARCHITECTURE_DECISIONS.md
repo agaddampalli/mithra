@@ -2935,6 +2935,95 @@ Used at event creation time in all calendar tools.
 
 ---
 
+## 10.15 Time Domain vs Tasks Domain — Boundary Rules
+
+### The One-Question Test
+Ask: "Does this need a specific clock time to exist?"
+
+  YES → Time domain (calendar event or reminder)
+  NO  → Tasks domain (action item or routine)
+
+This question resolves all ambiguity.
+
+### Definitive Examples
+
+  TIME DOMAIN:
+    "Dentist tuesday 3pm" → fixed time
+    "Trash reminder every thursday 8pm" → fixed time
+    "Medication reminder daily 8am" → fixed time
+    "Flight thursday 6am" → fixed time
+    "Team standup every monday 9am" → fixed time
+    "Remind me 30min before dentist" → relative to fixed time
+
+  TASKS DOMAIN:
+    "Fix ceiling fan" → no fixed time
+    "Call insurance" → no fixed time
+    "Return Amazon package by Friday" → deadline, not clock time
+    "Mix baby formula" (routine checklist) → no clock time
+    "Woodworking project phase 1" → no fixed time
+    "Clean garage this month" → no fixed time
+
+### The Bridge (opt-in, never automatic)
+  When a task needs a calendar block:
+    User: "find time this week for ceiling fan repair"
+    Mithra: suggests free slots
+    User: confirms → Time domain creates calendar block
+    Task status → "scheduled"
+
+  Time domain NEVER auto-creates blocks for tasks.
+  Tasks domain NEVER creates calendar events directly.
+  Bridge is always user-initiated.
+
+### Reminder Classification
+  "Remind me to X" requires disambiguation:
+    + at specific time → Time domain
+      "Remind me to call mom Sunday at 3pm"
+      → calendar event with notification
+
+    + without specific time → Tasks domain
+      "Remind me to call mom this week"
+      → task with due date, no clock time
+
+    + daily checklist → Tasks domain (routine)
+      "Remind me to mix baby formula daily"
+      → routine checklist item, daily reset
+
+### Recurrence Classification
+  Recurring WITH fixed time → Time domain
+    "Every thursday 8pm trash"
+    "Every monday 9am standup"
+    "Every 1st of month rent reminder at 9am"
+
+  Recurring WITHOUT fixed time → Tasks domain (routine)
+    "Mix baby formula daily" (checklist)
+    "Soak lentils night before dosa" (checklist)
+    "Water plants every 3 days" (task with recurrence)
+
+### Intent Routing
+  classify_intent() maps to domain:
+
+  calendar.*   → Time domain
+  reminder.*   → Time domain (if time specified)
+               → Tasks domain (if no time)
+  task.*       → Tasks domain
+  routine.*    → Tasks domain
+  project.*    → Tasks domain
+  todo.*       → Tasks domain
+
+  LLM resolves ambiguous "remind me" intents by
+  checking if a specific time was mentioned.
+  If yes → calendar reminder. If no → task.
+
+### What This Means for Implementation
+  Time domain tools NEVER write to tasks table.
+  Tasks domain tools NEVER write to calendar_events.
+  Cross-domain bridge ONLY via explicit user request.
+  classify_intent() is the routing authority —
+  it must correctly route to the right domain.
+  Any ambiguity in intent → ask user to clarify.
+
+---
+
 ## 11. Design Principles
 
 These apply to ALL future decisions.
