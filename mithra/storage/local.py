@@ -122,6 +122,82 @@ CREATE TABLE IF NOT EXISTS conversation_state (
 );
 """
 
+_TASKS_DDL = """
+CREATE TABLE IF NOT EXISTS tasks (
+    id           TEXT PRIMARY KEY,
+    household_id TEXT NOT NULL,
+    user_id      TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    notes        TEXT,
+    scope        TEXT DEFAULT 'personal',
+    priority     TEXT DEFAULT 'normal',
+    status       TEXT DEFAULT 'inbox',
+    due_date     TEXT,
+    project_id   TEXT,
+    milestone_id TEXT,
+    snoozed_until TEXT,
+    source       TEXT DEFAULT 'manual',
+    source_ref   TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_household
+    ON tasks(household_id, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_user
+    ON tasks(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_due
+    ON tasks(household_id, due_date);
+CREATE INDEX IF NOT EXISTS idx_tasks_priority
+    ON tasks(household_id, priority, status);
+
+CREATE TABLE IF NOT EXISTS projects (
+    id           TEXT PRIMARY KEY,
+    household_id TEXT NOT NULL,
+    user_id      TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    description  TEXT,
+    scope        TEXT DEFAULT 'personal',
+    status       TEXT DEFAULT 'active',
+    target_date  TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS milestones (
+    id           TEXT PRIMARY KEY,
+    project_id   TEXT NOT NULL,
+    household_id TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    order_index  INTEGER NOT NULL,
+    status       TEXT DEFAULT 'pending',
+    target_date  TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS routines (
+    id           TEXT PRIMARY KEY,
+    household_id TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    scope        TEXT DEFAULT 'household',
+    reset_time   TEXT DEFAULT '00:00',
+    active       INTEGER DEFAULT 1,
+    created_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS routine_completions (
+    id              TEXT PRIMARY KEY,
+    routine_id      TEXT NOT NULL,
+    household_id    TEXT NOT NULL,
+    completed_by    TEXT NOT NULL,
+    completion_date TEXT NOT NULL,
+    completed_at    TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_routine_day
+    ON routine_completions(routine_id, completion_date);
+"""
+
 _FILES_DDL = """
 CREATE TABLE IF NOT EXISTS files (
     id           TEXT PRIMARY KEY,
@@ -217,6 +293,8 @@ class LocalStorageAdapter(StorageAdapter):
         self._conn.executescript(_CALENDAR_EVENTS_DDL)
         self._conn.commit()
         self._conn.executescript(_CONVERSATION_STATE_DDL)
+        self._conn.commit()
+        self._conn.executescript(_TASKS_DDL)
         self._conn.commit()
         # Additive migrations for existing installs
         for _col, _type in [("managed_by", "TEXT"), ("date_of_birth", "TEXT")]:
