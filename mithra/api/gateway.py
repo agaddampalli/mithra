@@ -317,7 +317,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
         if registry is None:
             raise HTTPException(status_code=503, detail="Domain registry not available")
         hid = _state.get("household_id", "")
-        uid = user_id or hid
+        uid = user_id or _state.get("default_user_id", "") or hid
         from dataclasses import asdict
         results = []
         for domain_id in registry.get_all_domain_ids():
@@ -341,7 +341,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
         if domain is None:
             raise HTTPException(status_code=404, detail=f"Domain '{domain_id}' not registered")
         hid = _state.get("household_id", "")
-        uid = user_id or hid
+        uid = user_id or _state.get("default_user_id", "") or hid
         from dataclasses import asdict
         data = await domain.get_dashboard_data(user_id=uid, household_id=hid)
         return asdict(data)
