@@ -187,6 +187,10 @@
 
 ## Time Domain — Complete (2026-06-06)
 
+  [x] PH1-02 Time domain — ALL DoD items verified
+      822 → 798 tests passing
+      Completed: 2026-06-06
+
   [x] T1 mithra/domains/time/ package — __init__.py, service.py, tools.py, domain.py
   [x] T2 GoogleCalendarService (gcsa wrapper, OAuthManager cred injection, cache)
   [x] T3 8 tools implemented and tested:
@@ -214,14 +218,18 @@
   [x] T6b End-to-end verified: "add dentist tuesday 3pm" → Google Calendar
   [x] T7 Dashboard endpoint: GET /api/v1/dashboard/time — returning events
 
-  DoD gate: all items verified. Stability run ongoing.
-  Daily: send "hi" to bot, verify response.
+## Current Focus → Tasks Domain (deep dive)
+  Tasks domain inserted before People — highest daily use value.
+  Rationale: Google Keep replacement, enables accountability + deadlines,
+  required for meaningful HA dashboard, deep dive needed before implementation.
 
-## Current Focus → Stability run
-  Monitor for 7 days before starting People domain.
-  Daily check: send "hi" to bot, verify Telegram response.
-  Watch logs for token refresh errors, dashboard failures, agent errors.
-  Next domain: mithra/domains/people/ — unblocked after stability confirmed.
+## Tasks Domain (new — inserted before People)
+  [ ] TD-00 Deep dive — use cases, rules, deadlines,
+             accountability model, Google Tasks research
+  [ ] TD-01 Architecture decision (ADR section 11)
+  [ ] TD-02 Implementation
+  [ ] TD-03 DoD verification
+  [ ] TD-04 HA dashboard card (deferred — after HA setup)
 
 ## Test Baseline
   798 tests passing (2026-06-06)
