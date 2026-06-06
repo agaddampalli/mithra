@@ -462,6 +462,12 @@ async def _process_request(agent_request) -> None:
         actions = None
         if receipt and receipt.pending:
             actions = handler.make_confirmation_buttons(receipt.pending[0])
+        elif (
+            result.error
+            and result.error.code.value == "token_expired"
+            and hasattr(handler, "make_reconnect_button")
+        ):
+            actions = [handler.make_reconnect_button(agent_request.user_id)]
         await handler.send(agent_request, result.response_text, actions=actions)
 
 

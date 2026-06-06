@@ -218,6 +218,25 @@ def _event_matches(event_summary: str, query: str) -> bool:
     return any(word in summary_lower for word in words)
 
 
+def _is_token_expired(exc: Exception) -> bool:
+    """Return True if the exception indicates a revoked or expired OAuth token."""
+    s = str(exc).lower()
+    return any(k in s for k in (
+        "invalid_grant",
+        "token has been expired",
+        "token has been revoked",
+        "token_expired",
+        "revoked",
+    ))
+
+
+_TOKEN_EXPIRED_RESULT = ToolResult.fail(
+    "Google Calendar connection expired. "
+    "Please reconnect: send 'connect google' to Mithra.",
+    error_code="TOKEN_EXPIRED",
+)
+
+
 HOUSEHOLD_KEYWORDS: frozenset[str] = frozenset({
     "trash", "recycling", "garbage", "bins",
     "rent", "mortgage", "utilities", "bills",
@@ -370,6 +389,8 @@ class CalendarReadEventsTool(BaseTool):
         except RuntimeError as exc:
             return ToolResult.fail(str(exc), error_code="GOOGLE_NOT_CONNECTED")
         except Exception as exc:
+            if _is_token_expired(exc):
+                return _TOKEN_EXPIRED_RESULT
             _logger.error("calendar_read_events failed: %s", exc, exc_info=True)
             return ToolResult.fail(f"Could not read calendar: {exc}", error_code="CALENDAR_ERROR")
 
@@ -479,6 +500,8 @@ class CalendarCreateEventTool(BaseTool):
         except RuntimeError as exc:
             return ToolResult.fail(str(exc), error_code="GOOGLE_NOT_CONNECTED")
         except Exception as exc:
+            if _is_token_expired(exc):
+                return _TOKEN_EXPIRED_RESULT
             _logger.error("calendar_create_event failed: %s", exc, exc_info=True)
             return ToolResult.fail(f"Could not create event: {exc}", error_code="CALENDAR_ERROR")
 
@@ -644,6 +667,8 @@ class CalendarCreateRecurringTool(BaseTool):
         except RuntimeError as exc:
             return ToolResult.fail(str(exc), error_code="GOOGLE_NOT_CONNECTED")
         except Exception as exc:
+            if _is_token_expired(exc):
+                return _TOKEN_EXPIRED_RESULT
             _logger.error("calendar_create_recurring failed: %s", exc, exc_info=True)
             return ToolResult.fail(f"Could not create recurring event: {exc}", error_code="CALENDAR_ERROR")
 
@@ -754,6 +779,8 @@ class CalendarUpdateEventTool(BaseTool):
         except RuntimeError as exc:
             return ToolResult.fail(str(exc), error_code="GOOGLE_NOT_CONNECTED")
         except Exception as exc:
+            if _is_token_expired(exc):
+                return _TOKEN_EXPIRED_RESULT
             return ToolResult.fail(f"Could not search calendar: {exc}", error_code="CALENDAR_ERROR")
 
         if not matches:
@@ -793,6 +820,8 @@ class CalendarUpdateEventTool(BaseTool):
         try:
             updated = svc.update_event(uid, event)
         except Exception as exc:
+            if _is_token_expired(exc):
+                return _TOKEN_EXPIRED_RESULT
             _logger.error("calendar_update_event failed: %s", exc, exc_info=True)
             return ToolResult.fail(f"Could not update event: {exc}", error_code="CALENDAR_ERROR")
 
@@ -878,6 +907,8 @@ class CalendarDeleteEventTool(BaseTool):
         except RuntimeError as exc:
             return ToolResult.fail(str(exc), error_code="GOOGLE_NOT_CONNECTED")
         except Exception as exc:
+            if _is_token_expired(exc):
+                return _TOKEN_EXPIRED_RESULT
             return ToolResult.fail(f"Could not search calendar: {exc}", error_code="CALENDAR_ERROR")
 
         if not matches:
@@ -894,6 +925,8 @@ class CalendarDeleteEventTool(BaseTool):
         try:
             svc.delete_event(uid, event_id)
         except Exception as exc:
+            if _is_token_expired(exc):
+                return _TOKEN_EXPIRED_RESULT
             _logger.error("calendar_delete_event failed: %s", exc, exc_info=True)
             return ToolResult.fail(f"Could not delete event: {exc}", error_code="CALENDAR_ERROR")
 
@@ -982,6 +1015,8 @@ class CalendarCheckAvailabilityTool(BaseTool):
         except RuntimeError as exc:
             return ToolResult.fail(str(exc), error_code="GOOGLE_NOT_CONNECTED")
         except Exception as exc:
+            if _is_token_expired(exc):
+                return _TOKEN_EXPIRED_RESULT
             return ToolResult.fail(f"Could not check availability: {exc}", error_code="CALENDAR_ERROR")
 
         # Compute merged busy intervals across all requested users
@@ -1105,6 +1140,8 @@ class CalendarDailyBriefingTool(BaseTool):
         except RuntimeError as exc:
             return ToolResult.fail(str(exc), error_code="GOOGLE_NOT_CONNECTED")
         except Exception as exc:
+            if _is_token_expired(exc):
+                return _TOKEN_EXPIRED_RESULT
             _logger.warning("briefing: could not load events for %s: %s", uid, exc)
             lines.append(f"Could not load your {period} events.")
 
@@ -1196,6 +1233,8 @@ class CalendarFindTimeTool(BaseTool):
         except RuntimeError as exc:
             return ToolResult.fail(str(exc), error_code="GOOGLE_NOT_CONNECTED")
         except Exception as exc:
+            if _is_token_expired(exc):
+                return _TOKEN_EXPIRED_RESULT
             return ToolResult.fail(f"Could not check availability: {exc}", error_code="CALENDAR_ERROR")
 
         # Merge all busy blocks

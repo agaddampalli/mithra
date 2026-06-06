@@ -141,6 +141,7 @@ class AgentErrorCode(str, Enum):
     LOW_CONFIDENCE      = "low_confidence"
     PERMISSION_DENIED   = "permission_denied"
     INVALID_REQUEST     = "invalid_request"
+    TOKEN_EXPIRED       = "token_expired"
 
 
 @dataclass

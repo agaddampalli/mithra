@@ -127,6 +127,15 @@ class TelegramSignalHandler:
     # Confirmation buttons
     # ------------------------------------------------------------------
 
+    def make_reconnect_button(self, user_id: str) -> ActionButton:
+        """Return a URL button that starts the Google OAuth reconnect flow."""
+        url = f"{self._base_url}/auth/google?user_id={user_id}"
+        return ActionButton(
+            label="🔗 Reconnect Google",
+            action="url",
+            payload={"url": url},
+        )
+
     @staticmethod
     def make_confirmation_buttons(pending: "PendingAction") -> list[ActionButton]:
         """Return ✅ Yes / ❌ No buttons pre-wired for the given pending action."""

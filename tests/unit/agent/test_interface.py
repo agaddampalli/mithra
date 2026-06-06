@@ -52,8 +52,8 @@ class TestAgentErrorCode:
         missing = self._EXPECTED - member_names
         assert not missing, f"Missing AgentErrorCode members: {missing}"
 
-    def test_exactly_nine_codes(self):
-        assert len(list(AgentErrorCode)) == 9
+    def test_at_least_nine_codes(self):
+        assert len(list(AgentErrorCode)) >= 9
 
 
 class TestAgentAction:

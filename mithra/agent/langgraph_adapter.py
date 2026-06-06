@@ -893,6 +893,12 @@ class LangGraphAdapter(AgentInterface):
 
         actions: list[AgentAction] = []
         tool_result = state.get("tool_result") or {}
+        # Surface tool-level TOKEN_EXPIRED into AgentResult.error
+        if not agent_error and tool_result.get("error_code") == "TOKEN_EXPIRED":
+            agent_error = AgentError(
+                code=AgentErrorCode.TOKEN_EXPIRED,
+                message=tool_result.get("summary", "Google token expired"),
+            )
         if "action_type" in tool_result:
             actions.append(
                 AgentAction(

@@ -53,8 +53,8 @@ def _make_refresh_persisting_credentials(
                     "scopes": list(self.scopes) if self.scopes else fallback_scopes,
                 }
                 oauth_manager.save_token_data("google", user_id, updated)
-                _logger.debug(
-                    "GoogleCalendarService: persisted refreshed token for %s", user_id
+                _logger.info(
+                    "GoogleCalendarService: token refreshed and saved for %s", user_id
                 )
             except Exception as exc:
                 _logger.warning(
