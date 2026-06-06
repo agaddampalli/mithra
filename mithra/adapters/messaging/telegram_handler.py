@@ -210,7 +210,11 @@ class TelegramSignalHandler:
         signal = agent_request.signal or {}
         text_lower = (agent_request.text or "").lower()
 
-        wants_google = signal.get("connect_integration") == "google" or any(
+        wants_reconnect_google = any(
+            p in text_lower
+            for p in ["reconnect google", "reauth google", "reconnect calendar"]
+        )
+        wants_google = wants_reconnect_google or signal.get("connect_integration") == "google" or any(
             p in text_lower
             for p in ["connect google", "link google", "connect calendar", "setup google"]
         )
@@ -230,10 +234,21 @@ class TelegramSignalHandler:
             if not manager or not manager.is_provider_configured("google"):
                 await self.send(agent_request, "Google is not configured.")
                 return True
-            if manager.is_connected("google", uid):
-                await self.send(agent_request, "✅ Google is already connected.")
+            url = f"{base_url}/auth/google?user_id={uid}"
+            if wants_reconnect_google:
+                # User explicitly requested reconnect — always provide URL
+                await self.send(agent_request, f"Tap to reconnect Google Calendar:\n{url}")
+            elif manager.is_connected("google", uid):
+                token_data = manager.get_token_data("google", uid)
+                if token_data and token_data.get("refresh_token"):
+                    await self.send(agent_request, "✅ Google is already connected.")
+                else:
+                    # Token record exists but refresh_token is missing — reconnect needed
+                    await self.send(
+                        agent_request,
+                        f"⚠️ Google connection needs reconnecting.\nTap to reconnect:\n{url}",
+                    )
             else:
-                url = f"{base_url}/auth/google?user_id={uid}"
                 await self.send(agent_request, f"Tap to connect Google:\n{url}")
             return True
 
