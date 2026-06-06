@@ -19,13 +19,14 @@ Last updated: 2026-06-06
   798 tests passing
 
 ### In Progress
-  Tasks domain: starting ADR section 11
+  Tasks domain: ADR section 11 complete, next T1 schema
 
 ### Immediate Next Steps
-  1. Document Tasks domain ADR (section 11)
-  2. Implement Tasks domain
-  3. Verify DoD
-  4. HA setup (after Tasks domain)
+  1. T1 schema — tasks, projects, milestones, routines tables
+  2. T2–T6 tools (13 total)
+  3. T7–T9 domain class + API routes
+  4. T10 DoD verification
+  5. HA setup (after Tasks domain)
 
 ### Key Decisions Made
   - Mithra SQLite as source of truth (not Google Tasks)
@@ -268,19 +269,202 @@ Last updated: 2026-06-06
 
   Time domain closed: 2026-06-06. All DoD items verified end to end.
 
-## Current Focus → Tasks Domain (ADR section 11)
-  Next step: ADR section 11 — Tasks domain design.
-  Tasks domain inserted before People — highest daily use value.
-  Rationale: Google Keep replacement, enables accountability + deadlines,
-  required for meaningful HA dashboard, deep dive needed before implementation.
+## Current Focus → Tasks Domain (implementation)
+  ADR section 11 committed. Next: T1 schema implementation.
 
-## Tasks Domain (new — inserted before People)
-  [ ] TD-00 Deep dive — use cases, rules, deadlines,
-             accountability model, Google Tasks research
-  [ ] TD-01 Architecture decision (ADR section 11)
-  [ ] TD-02 Implementation
-  [ ] TD-03 DoD verification
-  [ ] TD-04 HA dashboard card (deferred — after HA setup)
+## Tasks Domain
+
+  [x] TD-00 Deep dive complete — use cases, rules, capture flow,
+             accountability model, alternatives considered
+  [x] TD-01 Architecture decision (ADR section 11) — committed 2026-06-06
+
+  ### Definition of Done
+
+  CODE COMPLETE:
+    Schema:
+    [ ] tasks table — all fields including source, source_ref
+    [ ] projects table
+    [ ] milestones table
+    [ ] routines table
+    [ ] routine_completions table
+    [ ] conversation_state table (already in SQLite)
+    [ ] All indexes
+    [ ] Migration safe for existing installs
+
+    Domain tools (13 total):
+    [ ] task_create — captures immediately, asks questions
+    [ ] task_list — today/inbox/overdue/urgent/household
+    [ ] task_complete — low friction, ACT_TELL
+    [ ] task_update — used in capture flow + direct updates
+    [ ] task_snooze — defer to date
+    [ ] task_delete — DESTRUCTIVE, always confirms
+    [ ] task_suggest — "what should I work on today?"
+    [ ] project_create — with milestone prompting
+    [ ] project_update — status/target date
+    [ ] milestone_complete — marks phase done
+    [ ] routine_create — household or personal
+    [ ] routine_complete — today's completion
+    [ ] routine_list — today's done/not-done state
+
+    Autonomy:
+    [ ] task_create → WRITE → confirms
+    [ ] task_complete → WRITE → ACT_TELL (no confirm)
+    [ ] task_delete → DESTRUCTIVE → always confirms
+    [ ] routine_complete → READ → immediate
+
+    Classification:
+    [ ] classify_task_scope() keyword heuristic
+    [ ] classify_task_priority() from title+context
+    [ ] Auto-promotion: normal/high → urgent near deadline
+    [ ] Waiting follow-up after 7 days
+
+    Capture flow:
+    [ ] Quick capture: "add task X" → creates immediately
+    [ ] conversation_state tracks enrichment questions
+    [ ] One question at a time with Telegram buttons
+    [ ] Rich capture: all fields in one message
+    [ ] State clears when user done or changes topic
+
+    API:
+    [ ] GET /api/v1/tasks/today
+    [ ] GET /api/v1/tasks/inbox
+    [ ] GET /api/v1/tasks/overdue
+    [ ] GET /api/v1/dashboard/tasks → DashboardData
+    [ ] GET /api/v1/routines/today
+    [ ] POST /api/v1/routines/{id}/complete
+
+    Proactive:
+    [ ] Morning task briefing (urgent + overdue)
+    [ ] Deadline alert 3 days before
+    [ ] Waiting follow-up 7 days
+    [ ] Weekly inbox summary Sunday
+    [ ] Auto-promotion Telegram notification
+
+  TESTS COMPLETE:
+    [ ] Unit tests all 5 tables
+    [ ] Unit tests all 13 tools
+    [ ] Unit tests classify_task_scope()
+    [ ] Unit tests classify_task_priority()
+    [ ] Unit tests auto-promotion logic
+    [ ] Unit tests routine reset
+    [ ] Unit tests conversation_state flow
+    [ ] Unit tests all API endpoints
+    [ ] Minimum 60 new tests
+    [ ] All existing tests pass (798+)
+
+  MANUAL VERIFICATION:
+    Capture:
+    [ ] "add task fix ceiling fan"
+        → task created in INBOX immediately
+        → Mithra asks deadline (with buttons)
+        → User sets June 15 → asks priority
+        → User taps Urgent → task ACTIVE
+        → status=active, priority=urgent, due=June 15
+
+    [ ] "add task return amazon package deadline friday urgent"
+        → single message capture, no questions
+        → status=active immediately
+
+    [ ] "add household task schedule pest control"
+        → scope=household
+
+    [ ] "add project backyard deck by July 4"
+        → project created, asks milestones
+
+    [ ] "add daily routine mix baby formula for household"
+        → routine created, scope=household
+        → resets at midnight
+
+    Querying:
+    [ ] "what tasks do I have today"
+        → urgent + overdue + due today
+
+    [ ] "show my inbox"
+        → tasks with status=inbox
+
+    [ ] "what's overdue"
+        → due_date < today, not done
+
+    [ ] "how is backyard deck going"
+        → project + milestone % complete
+
+    [ ] "what routines are done today"
+        → today's completions
+
+    Updating:
+    [ ] "mark ceiling fan done"
+        → status=done, completed_at set
+        → no confirmation needed
+
+    [ ] "snooze insurance call to next Monday"
+        → snoozed_until=next Monday
+
+    [ ] "ceiling fan is waiting for Amazon"
+        → status=waiting
+
+    [ ] "change ceiling fan to urgent"
+        → priority=urgent
+
+    Projects:
+    [ ] "complete phase 1 of backyard deck"
+        → milestone done, project shows 25%
+
+    Routines:
+    [ ] Wife marks "baby formula done"
+        → routine_completions row for wife
+    [ ] You check routines
+        → shows baby formula done by wife at X time
+    [ ] Next morning: resets, all unchecked
+
+    API:
+    [ ] GET /api/v1/dashboard/tasks → 200 with tasks
+    [ ] GET /api/v1/routines/today → completion state
+    [ ] POST /api/v1/routines/xxx/complete → marks done
+        GET again → shows done
+
+    Boundary:
+    [ ] "add task call mom sunday" → tasks (no clock time)
+    [ ] "remind me to call mom sunday at 3pm" → time domain
+    [ ] task_create never writes to calendar_events
+    [ ] No calendar tool creates tasks
+
+    Proactive (test after scheduler added):
+    [ ] Morning briefing mentions urgent tasks
+    [ ] Alert fires 3 days before deadline
+    [ ] Waiting task resurfaces after 7 days
+
+  ARCHITECTURE VERIFIED:
+    [ ] Tasks domain never imports Time domain
+    [ ] No HA-specific format in domain tools
+    [ ] API layer handles format translation
+    [ ] DomainContext.local_db_path used for SQLite writes
+    [ ] PermissionTier.DESTRUCTIVE on task_delete
+    [ ] REVIEW_CHECKLIST.md completed before marking done
+
+  ### Gmail Integration (Phase 2 — after Tasks domain stable)
+
+    [ ] Add gmail.readonly to Google OAuth scope
+    [ ] mithra/integrations/gmail/gmail_client.py
+        historyId incremental sync (15 min scheduler)
+        email body extraction + JSON-LD parsing
+    [ ] mithra/integrations/gmail/email_classifier.py
+        LLM classifies email type
+        return_label|flight_booking|receipt|other
+    [ ] Return task auto-creation
+        Extract product name + deadline from email
+        Create task with source="gmail" source_ref=message_id
+        Telegram notification with [View task] button
+    [ ] historyId stored in household_config
+    [ ] DoD: Amazon return email → task created automatically
+
+  ### Next Steps
+    → Step 1: ADR committed ✓ (this commit)
+    → Step 2: T1 schema — tasks, projects, milestones,
+               routines, routine_completions tables
+    → Step 3: T2–T6 tools implementation
+    → Step 4: T7–T9 domain class + API routes
+    → Step 5: T10 DoD verification
+    → Step 6: Gmail Phase 2
 
 ## Travel Domain (Phase 3 — after Documents)
   [ ] Gmail FlightReservation JSON-LD parsing
