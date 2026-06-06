@@ -56,27 +56,48 @@ from mithra.storage.router import StorageRouter
 # ---------------------------------------------------------------------------
 
 INTENT_DOMAIN_MAP: dict[str, str] = {
-    "calendar":   "time",
-    "time":       "time",
-    "scheduling": "time",
-    "schedule":   "time",
-    "reminder":   "time",
-    "reminders":  "time",
-    "event":      "time",
-    "cancel":     "time",
-    "people":     "people",
-    "contacts":   "people",
-    "money":      "money",
-    "finance":    "money",
-    "documents":  "documents",
-    "files":      "documents",
-    "home":       "home",
-    "health":     "health",
-    "food":       "food",
-    "shopping":   "shopping",
-    "travel":     "travel",
-    "general":    "",
-    "system":     "",
+    # Time domain — requires a specific clock time to exist
+    "calendar":         "time",
+    "time":             "time",
+    "scheduling":       "time",
+    "schedule":         "time",
+    "reminder":         "time",   # default; tasks domain handles if no time
+    "reminders":        "time",
+    "event":            "time",
+    "cancel":           "time",
+
+    # Tasks domain — action items without a specific clock time
+    "task":             "tasks",
+    "tasks":            "tasks",
+    "todo":             "tasks",
+    "routine":          "tasks",
+    "routines":         "tasks",
+    "project":          "tasks",
+    "projects":         "tasks",
+    "checklist":        "tasks",
+    "habit":            "tasks",
+
+    # Other domains
+    "people":           "people",
+    "contacts":         "people",
+    "money":            "money",
+    "finance":          "money",
+    "documents":        "documents",
+    "files":            "documents",
+    "home":             "home",
+    "health":           "health",
+    "food":             "food",
+    "shopping":         "shopping",
+    "travel":           "travel",
+
+    # No domain tools
+    "general":          "",
+    "system":           "",
+    "unknown":          "",
+    "integration":      "",
+    "auth":             "",
+    "conversation":     "",
+    "dialog":           "",
 }
 
 

@@ -494,7 +494,20 @@ class LiteLLMRouterAdapter(LLMRouter):
                 "content": (
                     "Classify the intent. Respond in JSON: "
                     '{"intent": "<domain.action>", "domain": "<domain>", '
-                    '"confidence": <float 0-1>, "alternatives": []}'
+                    '"confidence": <float 0-1>, "alternatives": []}. '
+                    "Time domain handles events and reminders WITH a specific clock time: "
+                    "'dentist tuesday 3pm', 'remind me at 8am daily', 'trash every thursday 8pm'. "
+                    "Tasks domain handles action items WITHOUT a specific time: "
+                    "'fix ceiling fan', 'call insurance this week', "
+                    "'return package by friday', 'mix baby formula daily' (routine checklist). "
+                    "For 'remind me to X' without a time → tasks domain intent: task.create. "
+                    "For 'remind me to X at [time]' → time domain intent: reminder.create. "
+                    "Use these intent prefixes: "
+                    "calendar.* → time domain (events), "
+                    "reminder.* → time domain (timed reminders), "
+                    "task.* → tasks domain, "
+                    "routine.* → tasks domain, "
+                    "project.* → tasks domain."
                 ),
             },
             {"role": "user", "content": text},
