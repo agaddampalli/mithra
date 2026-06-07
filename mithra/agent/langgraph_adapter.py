@@ -459,6 +459,9 @@ class LangGraphAdapter(AgentInterface):
                     summary = f"Create '{payload['title']}' at {payload['start_time']}"
                 elif "event_query" in payload:
                     summary = f"Delete '{payload['event_query']}' from your calendar"
+                elif tool_name == "task_delete":
+                    label = payload.get("title_hint") or payload.get("task_id", "task")
+                    summary = f"Delete '{label}'?"
                 elif "title" in payload:
                     summary = f"Confirm: {payload['title']}"
                 else:

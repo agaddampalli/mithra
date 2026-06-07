@@ -930,26 +930,42 @@ class TaskDeleteTool(BaseTool):
         try:
             with sqlite3.connect(ctx.local_db_path) as conn:
                 conn.row_factory = sqlite3.Row
-                row = conn.execute(
-                    "SELECT title FROM tasks WHERE id=? AND household_id=?",
-                    (task_id, ctx.household_id),
-                ).fetchone()
-                if not row:
-                    return ToolResult.fail(f"Task not found: {task_id}")
 
-                title = row["title"]
+                row = None
+                if task_id:
+                    row = conn.execute(
+                        "SELECT id, title FROM tasks WHERE id=? AND household_id=? AND status != 'cancelled'",
+                        (task_id, ctx.household_id),
+                    ).fetchone()
+
+                if not row and title_hint:
+                    row = conn.execute(
+                        "SELECT id, title FROM tasks "
+                        "WHERE household_id=? AND title LIKE ? AND status != 'cancelled' LIMIT 1",
+                        (ctx.household_id, f"%{title_hint}%"),
+                    ).fetchone()
+
+                if not row:
+                    query = task_id or title_hint or "?"
+                    return ToolResult.fail(f"No task found matching '{query}'.")
+
+                found_id = row["id"]
+                found_title = row["title"]
+
+                # Soft delete: status=cancelled preserves history per ADR section 11.4.
+                # CANCELLED = user decided not to do it; distinct from DONE.
                 conn.execute(
-                    "DELETE FROM tasks WHERE id=? AND household_id=?",
-                    (task_id, ctx.household_id),
+                    "UPDATE tasks SET status='cancelled', updated_at=? WHERE id=?",
+                    (now_iso(), found_id),
                 )
         except Exception as exc:
             _logger.error("task_delete DB error", exc_info=True)
             return ToolResult.fail("Could not delete task.", error=str(exc))
 
-        _logger.info("task_delete: %s title=%r", task_id, title)
+        _logger.info("task_delete: %s title=%r", found_id, found_title)
         return ToolResult.ok(
-            f'Deleted task: "{title}".',
-            data={"task_id": task_id, "title": title},
+            f'Deleted: "{found_title}".',
+            data={"task_id": found_id, "title": found_title},
         )
 
 

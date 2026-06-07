@@ -612,15 +612,45 @@ class TestTaskDeleteTool:
         assert result.success
         assert "Delete me" in result.summary
 
-    def test_task_removed_from_db(self, delete_tool, db):
+    def test_soft_delete_sets_cancelled(self, delete_tool, db):
         _seed_task(db, task_id="tsk_del2", title="Gone")
         delete_tool._run(task_id="tsk_del2")
         with sqlite3.connect(db) as conn:
-            row = conn.execute("SELECT id FROM tasks WHERE id=?", ("tsk_del2",)).fetchone()
-        assert row is None
+            row = conn.execute("SELECT status FROM tasks WHERE id='tsk_del2'").fetchone()
+        # Soft delete: row still exists, status=cancelled
+        assert row is not None
+        assert row[0] == "cancelled"
+
+    def test_soft_delete_preserved_in_history(self, delete_tool, db):
+        _seed_task(db, task_id="tsk_del2b", title="History check")
+        delete_tool._run(task_id="tsk_del2b")
+        with sqlite3.connect(db) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE id='tsk_del2b' AND status='cancelled'"
+            ).fetchone()[0]
+        assert count == 1
+
+    def test_delete_by_title_hint(self, delete_tool, db):
+        _seed_task(db, task_id="tsk_del4", title="Call doctor")
+        result = delete_tool._run(task_id="", title_hint="call doctor")
+        assert result.success
+        assert "Call doctor" in result.summary
+        with sqlite3.connect(db) as conn:
+            row = conn.execute("SELECT status FROM tasks WHERE id='tsk_del4'").fetchone()
+        assert row[0] == "cancelled"
+
+    def test_title_hint_partial_match(self, delete_tool, db):
+        _seed_task(db, task_id="tsk_del5", title="Fix ceiling fan")
+        result = delete_tool._run(task_id="", title_hint="ceiling fan")
+        assert result.success
+        assert "Fix ceiling fan" in result.summary
 
     def test_not_found_returns_fail(self, delete_tool):
         result = delete_tool._run(task_id="tsk_nonexistent")
+        assert not result.success
+
+    def test_not_found_title_hint_returns_fail(self, delete_tool, db):
+        result = delete_tool._run(task_id="", title_hint="totally nonexistent xyz")
         assert not result.success
 
     def test_wrong_household_fails(self, db):
@@ -634,6 +664,11 @@ class TestTaskDeleteTool:
         )
         tool = TaskDeleteTool(context=ctx2)
         result = tool._run(task_id="tsk_del3")
+        assert not result.success
+
+    def test_already_cancelled_not_redeleted(self, delete_tool, db):
+        _seed_task(db, task_id="tsk_del6", title="Already gone", status="cancelled")
+        result = delete_tool._run(task_id="", title_hint="Already gone")
         assert not result.success
 
 

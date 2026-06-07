@@ -212,8 +212,8 @@ class DefaultAutonomyEngine(AutononomyEngine):
             return f"move '{query}' to {new_time}" if new_time else f"update '{query}'"
         # Task domain actions
         if action_type == "task_delete":
-            label = payload.get("title_hint") or payload.get("task_id", "task")
-            return f"delete '{label}'"
+            title = payload.get("title_hint", "") or payload.get("task_id", "task")
+            return f"delete '{title}'"
         if action_type == "task_complete":
             label = payload.get("title_match") or payload.get("task_id", "task")
             return f"mark '{label}' as done"
