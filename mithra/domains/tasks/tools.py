@@ -507,16 +507,38 @@ class TaskListTool(BaseTool):
             )
 
         lines = []
-        for t in tasks:
-            line = f"[{t['id']}] {t['title']}"
+        for i, t in enumerate(tasks, 1):
+            line = f"{i}. {t['title']}"
             if t.get("due_date"):
-                line += f" (due {t['due_date']})"
-            if t.get("priority") and t["priority"] != "normal":
-                line += f" [{t['priority']}]"
+                line += f" — due {t['due_date']}"
+            priority = t.get("priority", "normal")
+            if priority == "urgent":
+                line += " ⚠️"
+            elif priority == "high":
+                line += " 🔹"
+            if t.get("scope") == "household":
+                line += " 🏠"
+            status = t.get("status", "")
+            if status == "waiting":
+                line += " ⏳"
+            elif status == "snoozed":
+                line += f" (snoozed until {t.get('snoozed_until', '')})"
             lines.append(line)
 
-        summary = f"{len(tasks)} task(s) — {filter}:\n" + "\n".join(lines)
-        return ToolResult.ok(summary, data={"tasks": tasks, "count": len(tasks)})
+        _FILTER_LABELS = {
+            "today": "today",
+            "inbox": "inbox",
+            "overdue": "overdue",
+            "urgent": "urgent",
+            "household": "household",
+            "waiting": "waiting",
+            "all": "all tasks",
+            "done": "completed",
+        }
+        label = _FILTER_LABELS.get(filter, filter)
+        count = len(tasks)
+        summary = f"{count} task(s) — {label}:\n" + "\n".join(lines)
+        return ToolResult.ok(summary, data={"tasks": tasks, "count": count})
 
 
 # ---------------------------------------------------------------------------
@@ -927,9 +949,14 @@ class TaskSuggestTool(BaseTool):
         for i, t in enumerate(tasks, 1):
             line = f"{i}. {t['title']}"
             if t.get("due_date"):
-                line += f" (due {t['due_date']})"
-            if t.get("priority") and t["priority"] != "normal":
-                line += f" [{t['priority']}]"
+                line += f" — due {t['due_date']}"
+            priority = t.get("priority", "normal")
+            if priority == "urgent":
+                line += " ⚠️"
+            elif priority == "high":
+                line += " 🔹"
+            if t.get("scope") == "household":
+                line += " 🏠"
             lines.append(line)
 
         summary = "Top tasks to focus on:\n" + "\n".join(lines)

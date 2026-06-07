@@ -357,6 +357,46 @@ class TestTaskListTool:
         result = list_tool._run(filter="inbox")
         assert all(t["status"] != "done" for t in result.data["tasks"])
 
+    def test_summary_no_task_ids(self, list_tool, db):
+        _seed_task(db, task_id="tsk_id_check", title="Fix ceiling fan", status="inbox")
+        result = list_tool._run(filter="inbox")
+        assert "tsk_" not in result.summary
+
+    def test_summary_numbered_list(self, list_tool, db):
+        _seed_task(db, task_id="tsk_num1", title="First task", status="inbox")
+        result = list_tool._run(filter="inbox")
+        assert "1." in result.summary
+
+    def test_summary_urgent_badge(self, list_tool, db):
+        _seed_task(db, task_id="tsk_badge_u", title="Urgent one", priority="urgent", status="inbox")
+        result = list_tool._run(filter="inbox")
+        assert "⚠️" in result.summary
+
+    def test_summary_high_badge(self, list_tool, db):
+        _seed_task(db, task_id="tsk_badge_h", title="High one", priority="high", status="inbox")
+        result = list_tool._run(filter="inbox")
+        assert "🔹" in result.summary
+
+    def test_summary_household_badge(self, list_tool, db):
+        _seed_task(db, task_id="tsk_badge_hh", title="Household one", scope="household", status="inbox")
+        result = list_tool._run(filter="household")
+        assert "🏠" in result.summary
+
+    def test_summary_due_date_format(self, list_tool, db):
+        _seed_task(db, task_id="tsk_due_fmt", title="Has deadline", due_date="2026-07-15", status="inbox")
+        result = list_tool._run(filter="inbox")
+        assert "— due 2026-07-15" in result.summary
+
+    def test_summary_filter_label_inbox(self, list_tool, db):
+        _seed_task(db, task_id="tsk_label1", title="Some task", status="inbox")
+        result = list_tool._run(filter="inbox")
+        assert "inbox" in result.summary
+
+    def test_summary_filter_label_all(self, list_tool, db):
+        _seed_task(db, task_id="tsk_label2", title="Any task", status="inbox")
+        result = list_tool._run(filter="all")
+        assert "all tasks" in result.summary
+
 
 # ---------------------------------------------------------------------------
 # TaskCompleteTool
@@ -629,6 +669,21 @@ class TestTaskSuggestTool:
         _seed_task(db, task_id="tsk_sug_t", title="Fix the leak")
         result = suggest_tool._run()
         assert "Fix the leak" in result.summary
+
+    def test_summary_no_task_ids(self, suggest_tool, db):
+        _seed_task(db, task_id="tsk_sug_id", title="Check emails")
+        result = suggest_tool._run()
+        assert "tsk_" not in result.summary
+
+    def test_summary_urgent_badge_suggest(self, suggest_tool, db):
+        _seed_task(db, task_id="tsk_sug_ub", title="Critical job", priority="urgent")
+        result = suggest_tool._run()
+        assert "⚠️" in result.summary
+
+    def test_summary_household_badge_suggest(self, suggest_tool, db):
+        _seed_task(db, task_id="tsk_sug_hh", title="Fix gate", scope="household")
+        result = suggest_tool._run()
+        assert "🏠" in result.summary
 
 
 # ---------------------------------------------------------------------------
