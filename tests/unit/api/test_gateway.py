@@ -250,3 +250,167 @@ class TestWebhookTelegramRoute:
             json={"update_id": 1, "message": {"message_id": 1, "chat": {"id": 111}, "text": "hi"}},
         )
         agent.run.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _is_capture_response — unit tests
+# ---------------------------------------------------------------------------
+
+class TestIsCaptureResponse:
+    def test_day_name_is_capture(self):
+        from mithra.api.gateway import _is_capture_response
+        assert _is_capture_response("friday") is True
+
+    def test_priority_keyword_is_capture(self):
+        from mithra.api.gateway import _is_capture_response
+        assert _is_capture_response("urgent") is True
+        assert _is_capture_response("high") is True
+        assert _is_capture_response("normal") is True
+        assert _is_capture_response("someday") is True
+
+    def test_skip_is_capture(self):
+        from mithra.api.gateway import _is_capture_response
+        assert _is_capture_response("skip") is True
+        assert _is_capture_response("done") is True
+
+    def test_iso_date_is_capture(self):
+        from mithra.api.gateway import _is_capture_response
+        assert _is_capture_response("2026-07-15") is True
+
+    def test_month_day_ordinal_is_capture(self):
+        from mithra.api.gateway import _is_capture_response
+        assert _is_capture_response("July 15th") is True
+        assert _is_capture_response("july 15th") is True  # case-insensitive
+
+    def test_month_day_plain_is_capture(self):
+        from mithra.api.gateway import _is_capture_response
+        assert _is_capture_response("July 15") is True
+        assert _is_capture_response("Dec 3") is True
+
+    def test_month_day_abbreviated_is_capture(self):
+        from mithra.api.gateway import _is_capture_response
+        assert _is_capture_response("Dec 3rd") is True
+        assert _is_capture_response("Jan 1st") is True
+
+    def test_this_next_phrases_are_capture(self):
+        from mithra.api.gateway import _is_capture_response
+        assert _is_capture_response("next week") is True
+        assert _is_capture_response("this month") is True
+        assert _is_capture_response("next friday") is True
+
+    def test_in_n_days_is_capture(self):
+        from mithra.api.gateway import _is_capture_response
+        assert _is_capture_response("in 3 days") is True
+        assert _is_capture_response("in 2 weeks") is True
+
+    def test_new_command_is_not_capture(self):
+        from mithra.api.gateway import _is_capture_response
+        assert _is_capture_response("add task call doctor") is False
+
+    def test_question_with_date_is_not_capture(self):
+        from mithra.api.gateway import _is_capture_response
+        assert _is_capture_response("what should I do today") is False
+
+    def test_full_sentence_is_not_capture(self):
+        from mithra.api.gateway import _is_capture_response
+        assert _is_capture_response("remind me to fix the fence tomorrow morning") is False
+
+    def test_empty_is_not_capture(self):
+        from mithra.api.gateway import _is_capture_response
+        assert _is_capture_response("") is False
+
+
+# ---------------------------------------------------------------------------
+# Capture context ordering — agent.run() must not be called when capture active
+# ---------------------------------------------------------------------------
+
+class TestCaptureContextOrdering:
+    def test_agent_not_called_when_capture_handles_reply(self, tmp_path):
+        """With active capture state and a capture response text, agent.run()
+        must never be called — the gateway returns early at step 0."""
+        import asyncio
+        import sqlite3
+        from mithra.api import gateway as gw
+        from mithra.agent.interface import AgentRequest as AR, InputChannel
+        from mithra.storage.local import LocalStorageAdapter
+        from mithra.domains.tasks.tools import _store_capture_state
+
+        # Real DB with tasks table and a pending capture state
+        LocalStorageAdapter(str(tmp_path), str(tmp_path / "test.db"))
+        db_path = str(tmp_path / "test.db")
+        now = "2026-06-06T00:00:00+00:00"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO tasks "
+                "(id, household_id, user_id, title, scope, priority, status, source, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                ("tsk_ord1", "hh_test", "usr_test", "Fix fan", "personal", "normal", "inbox", "manual", now, now),
+            )
+        _store_capture_state(db_path, "usr_test", "tsk_ord1", "due_date", {})
+
+        mock_agent = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter.db_path = db_path
+
+        gw._state.clear()
+        gw._state.update({
+            "agent": mock_agent,
+            "local_adapter": mock_adapter,
+        })
+
+        request = AR(
+            user_id="usr_test",
+            device_id="phone",
+            input_channel=InputChannel.TELEGRAM,
+            text="friday",
+        )
+        asyncio.run(gw._process_request(request))
+
+        mock_agent.run.assert_not_called()
+
+    def test_agent_called_when_text_is_new_command(self, tmp_path):
+        """When the user sends a new command (not a capture response),
+        the gateway must call agent.run() even if capture state exists."""
+        import asyncio
+        import sqlite3
+        from mithra.api import gateway as gw
+        from mithra.agent.interface import AgentRequest as AR, InputChannel, AgentIntent, AgentResult
+        from mithra.storage.local import LocalStorageAdapter
+        from mithra.domains.tasks.tools import _store_capture_state
+
+        LocalStorageAdapter(str(tmp_path), str(tmp_path / "test.db"))
+        db_path = str(tmp_path / "test.db")
+        now = "2026-06-06T00:00:00+00:00"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO tasks "
+                "(id, household_id, user_id, title, scope, priority, status, source, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                ("tsk_ord2", "hh_test", "usr_test", "Fix fan", "personal", "normal", "inbox", "manual", now, now),
+            )
+        _store_capture_state(db_path, "usr_test", "tsk_ord2", "due_date", {})
+
+        mock_agent = MagicMock()
+        mock_agent.run.return_value = AgentResult(
+            request_id="r", success=True,
+            intent=AgentIntent.SYSTEM_UNKNOWN, domain="tasks",
+            confidence=0.9, actions=[], response_text="Done.",
+        )
+        mock_adapter = MagicMock()
+        mock_adapter.db_path = db_path
+
+        gw._state.clear()
+        gw._state.update({
+            "agent": mock_agent,
+            "local_adapter": mock_adapter,
+        })
+
+        request = AR(
+            user_id="usr_test",
+            device_id="phone",
+            input_channel=InputChannel.TELEGRAM,
+            text="add task call doctor",  # new command — not a capture response
+        )
+        asyncio.run(gw._process_request(request))
+
+        mock_agent.run.assert_called_once()

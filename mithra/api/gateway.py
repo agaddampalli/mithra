@@ -435,6 +435,15 @@ def _is_capture_response(text: str) -> bool:
     if re.fullmatch(r"in \d+ (day|days|week|weeks)", lower):
         return True
 
+    # Natural-language month + day: "July 15th", "Dec 3", "January 1st"
+    _MONTHS = (
+        r"january|february|march|april|may|june|july|august|"
+        r"september|october|november|december|"
+        r"jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec"
+    )
+    if re.fullmatch(rf"({_MONTHS}) \d{{1,2}}(st|nd|rd|th)?", lower):
+        return True
+
     return False
 
 
@@ -557,8 +566,25 @@ async def _process_request(agent_request) -> None:
     logger = logging.getLogger(__name__)
     logger.info("Processing: user=%s text=%r", agent_request.user_id, agent_request.text)
 
-    # 1. Delegate Telegram-specific signals to the handler
     handler = _state.get("telegram_handler")
+
+    # 0. Capture context check — BEFORE context assembly and classify_intent.
+    #    If active capture state exists and the text is a capture answer,
+    #    apply the field update and ask the next question, then return early.
+    #    This prevents classify_intent from seeing short date/priority replies
+    #    and returning low-confidence or CLARIFICATION_NEEDED.
+    if agent_request.text and _is_capture_response(agent_request.text):
+        local_adapter = _state.get("local_adapter")
+        db_path = getattr(local_adapter, "db_path", None) if local_adapter else None
+        if db_path:
+            try:
+                handled = await _check_capture_context(agent_request, db_path, handler)
+                if handled:
+                    return
+            except Exception as exc:
+                logger.warning("Capture context check failed: %s", exc)
+
+    # 1. Delegate Telegram-specific signals to the handler
     if handler and await handler.handle_signal(agent_request):
         return
 
@@ -576,19 +602,7 @@ async def _process_request(agent_request) -> None:
         except Exception as exc:
             logger.error("Context assembly failed: %s", exc, exc_info=True)
 
-    # 3. Check for active multi-turn capture state before routing to agent
-    local_adapter = _state.get("local_adapter")
-    if local_adapter and agent_request.text:
-        db_path = getattr(local_adapter, "db_path", None)
-        if db_path:
-            try:
-                handled = await _check_capture_context(agent_request, db_path, handler)
-                if handled:
-                    return
-            except Exception as exc:
-                logger.warning("Capture context check failed: %s", exc)
-
-    # 4. Run agent
+    # 3. Run agent
     agent = _state.get("agent")
     if not agent:
         logger.error("No agent in state")
@@ -603,7 +617,7 @@ async def _process_request(agent_request) -> None:
         logger.error("Agent.run failed: %s", exc, exc_info=True)
         return
 
-    # 5. Run autonomy engine
+    # 4. Run autonomy engine
     engine = _state.get("engine")
     executor = _state.get("executor")
     receipt = None
@@ -617,11 +631,11 @@ async def _process_request(agent_request) -> None:
         except Exception as exc:
             logger.error("Engine.process failed: %s", exc, exc_info=True)
 
-    # 6. Engine response takes priority over agent response
+    # 5. Engine response takes priority over agent response
     if receipt and receipt.response_text:
         result.response_text = receipt.response_text
 
-    # 7. Send response — all channel knowledge stays in the handler
+    # 6. Send response — all channel knowledge stays in the handler
     if result.response_text and handler:
         actions = None
         if receipt and receipt.pending:
