@@ -969,7 +969,7 @@ def build_tasks_tools(context: DomainContext) -> list[ToolBundle]:
             metadata=ToolMetadata(
                 name="task_complete",
                 domain_id="tasks",
-                permission=PermissionTier.WRITE,
+                permission=PermissionTier.READ,
                 is_reversible=True,
                 autonomy_level=2,
                 event_emitted="task_completed",

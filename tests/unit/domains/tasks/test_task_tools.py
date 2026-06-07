@@ -674,3 +674,9 @@ class TestBuildTasksTools:
         bundles = build_tasks_tools(ctx)
         create = next(b for b in bundles if b.metadata.name == "task_create")
         assert create.metadata.event_emitted == "task_created"
+
+    def test_complete_is_read(self, ctx):
+        from mithra.domains.bundle import PermissionTier
+        bundles = build_tasks_tools(ctx)
+        complete = next(b for b in bundles if b.metadata.name == "task_complete")
+        assert complete.metadata.permission == PermissionTier.READ

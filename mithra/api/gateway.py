@@ -506,8 +506,9 @@ async def _check_capture_context(agent_request, db_path: str, handler) -> bool:
             await handler.send(agent_request, "Got it, task saved.")
         return True
 
-    # Not a capture-like answer → user changed topic; clear stale state and fall through
-    if not _is_capture_response(text):
+    # Not a capture-like answer for structured steps (due_date/priority) → topic change.
+    # Notes step bypasses this check — any text that isn't a command is a valid note.
+    if step != "notes" and not _is_capture_response(text):
         _clear_capture_state(db_path, agent_request.user_id)
         return False
 
@@ -554,6 +555,57 @@ async def _check_capture_context(agent_request, db_path: str, handler) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Step-aware capture gate
+# ---------------------------------------------------------------------------
+
+_NEW_COMMAND_PREFIXES: tuple[str, ...] = (
+    "add ", "show ", "list ", "create ",
+    "what ", "how ", "when ", "cancel ",
+    "delete ", "mark ", "remind ",
+)
+
+
+async def _check_and_apply_capture(agent_request, db_path: str, handler) -> bool:
+    """Decide whether to intercept a message as a capture follow-up, then apply it.
+
+    Reads the active capture step from DB first so the interception logic is
+    step-aware:
+      - notes step: intercept any text that isn't a clear new command
+      - due_date / priority steps: intercept only if _is_capture_response matches
+
+    Returns True if the reply was consumed (caller should return early).
+    Returns False if the pipeline should continue normally.
+    """
+    from mithra.domains.tasks.tools import _clear_capture_state, _get_capture_state
+
+    text = (agent_request.text or "").strip()
+    if not text:
+        return False
+
+    state = _get_capture_state(db_path, agent_request.user_id)
+    if not state:
+        return False
+
+    step = state["step"]
+    text_lower = text.lower()
+
+    if step == "notes":
+        # New commands start a fresh pipeline; everything else is a note
+        if any(text_lower.startswith(p) for p in _NEW_COMMAND_PREFIXES):
+            _clear_capture_state(db_path, agent_request.user_id)
+            return False
+        return await _check_capture_context(agent_request, db_path, handler)
+
+    # due_date and priority: only intercept recognisable capture expressions
+    if _is_capture_response(text):
+        return await _check_capture_context(agent_request, db_path, handler)
+
+    # Text doesn't match structured capture pattern → user changed topic
+    _clear_capture_state(db_path, agent_request.user_id)
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Request lifecycle
 # ---------------------------------------------------------------------------
 
@@ -569,16 +621,14 @@ async def _process_request(agent_request) -> None:
     handler = _state.get("telegram_handler")
 
     # 0. Capture context check — BEFORE context assembly and classify_intent.
-    #    If active capture state exists and the text is a capture answer,
-    #    apply the field update and ask the next question, then return early.
-    #    This prevents classify_intent from seeing short date/priority replies
-    #    and returning low-confidence or CLARIFICATION_NEEDED.
-    if agent_request.text and _is_capture_response(agent_request.text):
+    #    Routes to step-aware gate: notes step intercepts any text that isn't a
+    #    new command; due_date/priority steps require a recognised capture expression.
+    if agent_request.text:
         local_adapter = _state.get("local_adapter")
         db_path = getattr(local_adapter, "db_path", None) if local_adapter else None
         if db_path:
             try:
-                handled = await _check_capture_context(agent_request, db_path, handler)
+                handled = await _check_and_apply_capture(agent_request, db_path, handler)
                 if handled:
                     return
             except Exception as exc:

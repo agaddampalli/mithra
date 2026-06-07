@@ -414,3 +414,118 @@ class TestCaptureContextOrdering:
         asyncio.run(gw._process_request(request))
 
         mock_agent.run.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _check_and_apply_capture — notes step interception
+# ---------------------------------------------------------------------------
+
+class TestCheckAndApplyCapture:
+    def _setup_db(self, tmp_path, task_id: str, step: str):
+        """Create a real DB with one task and a capture state."""
+        import sqlite3
+        from mithra.storage.local import LocalStorageAdapter
+        from mithra.domains.tasks.tools import _store_capture_state
+
+        LocalStorageAdapter(str(tmp_path), str(tmp_path / "test.db"))
+        db_path = str(tmp_path / "test.db")
+        now = "2026-06-06T00:00:00+00:00"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO tasks "
+                "(id, household_id, user_id, title, scope, priority, status, source, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (task_id, "hh_test", "usr_test", "Fix fan", "personal", "normal", "active", "manual", now, now),
+            )
+        _store_capture_state(db_path, "usr_test", task_id, step, {})
+        return db_path
+
+    def test_notes_step_intercepts_plain_sentence(self, tmp_path):
+        """Any non-command sentence during notes step is captured as a note."""
+        import asyncio
+        from unittest.mock import AsyncMock
+        from mithra.api import gateway as gw
+        from mithra.agent.interface import AgentRequest as AR, InputChannel
+
+        db_path = self._setup_db(tmp_path, "tsk_notes1", "notes")
+        handler = MagicMock()
+        handler.send = AsyncMock()
+
+        request = AR(
+            user_id="usr_test", device_id="phone",
+            input_channel=InputChannel.TELEGRAM,
+            text="Amazon gave debug instructions check email",
+        )
+        result = asyncio.run(gw._check_and_apply_capture(request, db_path, handler))
+        assert result is True
+
+    def test_notes_step_new_command_falls_through(self, tmp_path):
+        """A new-command prefix during notes step clears state and returns False."""
+        import asyncio
+        from mithra.api import gateway as gw
+        from mithra.agent.interface import AgentRequest as AR, InputChannel
+        from mithra.domains.tasks.tools import _get_capture_state
+
+        db_path = self._setup_db(tmp_path, "tsk_notes2", "notes")
+        request = AR(
+            user_id="usr_test", device_id="phone",
+            input_channel=InputChannel.TELEGRAM,
+            text="add task call doctor",
+        )
+        result = asyncio.run(gw._check_and_apply_capture(request, db_path, None))
+        assert result is False
+        # capture state must be cleared
+        assert _get_capture_state(db_path, "usr_test") is None
+
+    def test_due_date_step_rejects_sentence(self, tmp_path):
+        """A full sentence during due_date step clears state and returns False."""
+        import asyncio
+        from mithra.api import gateway as gw
+        from mithra.agent.interface import AgentRequest as AR, InputChannel
+        from mithra.domains.tasks.tools import _get_capture_state
+
+        db_path = self._setup_db(tmp_path, "tsk_dd1", "due_date")
+        request = AR(
+            user_id="usr_test", device_id="phone",
+            input_channel=InputChannel.TELEGRAM,
+            text="remind me about the fence tomorrow morning",
+        )
+        result = asyncio.run(gw._check_and_apply_capture(request, db_path, None))
+        assert result is False
+        assert _get_capture_state(db_path, "usr_test") is None
+
+    def test_due_date_step_accepts_friday(self, tmp_path):
+        """'friday' during due_date step is intercepted."""
+        import asyncio
+        from unittest.mock import AsyncMock
+        from mithra.api import gateway as gw
+        from mithra.agent.interface import AgentRequest as AR, InputChannel
+
+        db_path = self._setup_db(tmp_path, "tsk_dd2", "due_date")
+        handler = MagicMock()
+        handler.send = AsyncMock()
+
+        request = AR(
+            user_id="usr_test", device_id="phone",
+            input_channel=InputChannel.TELEGRAM,
+            text="friday",
+        )
+        result = asyncio.run(gw._check_and_apply_capture(request, db_path, handler))
+        assert result is True
+
+    def test_no_active_state_returns_false(self, tmp_path):
+        """When no capture state exists, always returns False immediately."""
+        import asyncio
+        from mithra.api import gateway as gw
+        from mithra.storage.local import LocalStorageAdapter
+        from mithra.agent.interface import AgentRequest as AR, InputChannel
+
+        LocalStorageAdapter(str(tmp_path), str(tmp_path / "test.db"))
+        db_path = str(tmp_path / "test.db")
+        request = AR(
+            user_id="usr_test", device_id="phone",
+            input_channel=InputChannel.TELEGRAM,
+            text="friday",
+        )
+        result = asyncio.run(gw._check_and_apply_capture(request, db_path, None))
+        assert result is False
