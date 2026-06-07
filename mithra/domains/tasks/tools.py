@@ -964,11 +964,401 @@ class TaskSuggestTool(BaseTool):
 
 
 # ---------------------------------------------------------------------------
-# Factory — build all 7 ToolBundles for a given DomainContext
+# Tool 8 — project_create
+# ---------------------------------------------------------------------------
+
+class _ProjectCreateArgs(BaseModel):
+    title: str = Field(description="Project title")
+    description: str = Field(default="", description="Optional description")
+    target_date: str = Field(default="", description="Target completion date")
+    scope: str = Field(default="", description="personal|household")
+    milestones: list[str] = Field(
+        default=[],
+        description="Optional ordered milestone titles. e.g. ['Buy materials', 'Build frame', 'Paint']",
+    )
+
+
+class ProjectCreateTool(BaseTool):
+    name: str = "project_create"
+    description: str = (
+        "Create a new project with optional milestones. "
+        "Use for multi-step work with phases. "
+        "Examples: 'backyard deck by July 4', 'woodworking bench with milestones'."
+    )
+    args_schema: Type[BaseModel] = _ProjectCreateArgs
+    _ctx: DomainContext
+
+    def __init__(self, context: DomainContext, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        object.__setattr__(self, "_ctx", context)
+
+    def _run(
+        self,
+        title: str,
+        description: str = "",
+        target_date: str = "",
+        scope: str = "",
+        milestones: list[str] | None = None,
+    ) -> ToolResult:
+        import sqlite3
+
+        ctx = self._ctx
+        if not ctx.local_db_path:
+            return ToolResult.fail("Tasks storage not available.", error_code="NO_DB_PATH")
+
+        parsed_date = _parse_due_date(target_date) if target_date else None
+        final_scope = scope or classify_task_scope(title)
+        project_id = new_project_id()
+        now = now_iso()
+        milestones = milestones or []
+
+        try:
+            with sqlite3.connect(ctx.local_db_path) as conn:
+                conn.execute(
+                    """INSERT INTO projects
+                       (id, household_id, user_id, title, description, scope, status, target_date, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        project_id, ctx.household_id, ctx.user_id,
+                        title, description or None, final_scope,
+                        "active", parsed_date, now, now,
+                    ),
+                )
+                for i, ms_title in enumerate(milestones, 1):
+                    conn.execute(
+                        """INSERT INTO milestones
+                           (id, project_id, household_id, title, order_index, status, created_at, updated_at)
+                           VALUES (?,?,?,?,?,?,?,?)""",
+                        (new_milestone_id(), project_id, ctx.household_id, ms_title, i, "pending", now, now),
+                    )
+        except Exception as exc:
+            _logger.error("project_create DB error", exc_info=True)
+            return ToolResult.fail("Could not create project.", error=str(exc))
+
+        _logger.info("project_create: %s scope=%s milestones=%d", project_id, final_scope, len(milestones))
+
+        parts = [f'Project created: "{title}"']
+        if parsed_date:
+            parts.append(f"Target: {parsed_date}")
+        if final_scope == "household":
+            parts.append("🏠 Household")
+        summary = " · ".join(parts)
+
+        if milestones:
+            ms_lines = "\n".join(f"  {i}. {m}" for i, m in enumerate(milestones, 1))
+            summary += f"\n{len(milestones)} milestones:\n" + ms_lines
+        else:
+            summary += (
+                "\n\nAdd milestones? List them or say 'skip'.\n"
+                "e.g. 'Buy materials, Build frame, Paint'"
+            )
+
+        return ToolResult.ok(
+            summary,
+            data={
+                "project_id": project_id,
+                "milestone_count": len(milestones),
+                "scope": final_scope,
+                "target_date": parsed_date,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tool 9 — project_update
+# ---------------------------------------------------------------------------
+
+class _ProjectUpdateArgs(BaseModel):
+    project_query: str = Field(description="Project title or keyword to search for")
+    title: str = Field(default="", description="New project title")
+    description: str = Field(default="", description="New description")
+    target_date: str = Field(default="", description="New target completion date")
+    status: str = Field(default="", description="active|completed|on_hold")
+
+
+class ProjectUpdateTool(BaseTool):
+    name: str = "project_update"
+    description: str = (
+        "Update a project's title, description, target date, or status. "
+        "Examples: 'mark backyard deck on hold', 'update deck deadline to August'."
+    )
+    args_schema: Type[BaseModel] = _ProjectUpdateArgs
+    _ctx: DomainContext
+
+    def __init__(self, context: DomainContext, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        object.__setattr__(self, "_ctx", context)
+
+    def _run(
+        self,
+        project_query: str,
+        title: str = "",
+        description: str = "",
+        target_date: str = "",
+        status: str = "",
+    ) -> ToolResult:
+        import sqlite3
+
+        ctx = self._ctx
+        if not ctx.local_db_path:
+            return ToolResult.fail("Tasks storage not available.", error_code="NO_DB_PATH")
+
+        try:
+            with sqlite3.connect(ctx.local_db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT * FROM projects WHERE household_id=? AND title LIKE ? AND status != 'completed' LIMIT 1",
+                    (ctx.household_id, f"%{project_query}%"),
+                ).fetchone()
+                if not row:
+                    return ToolResult.fail(f"No project found matching '{project_query}'")
+
+                project = dict(row)
+                project_id = project["id"]
+                now = now_iso()
+
+                updates: dict[str, Any] = {"updated_at": now}
+                if title:
+                    updates["title"] = title
+                if description:
+                    updates["description"] = description
+                if target_date:
+                    parsed = _parse_due_date(target_date)
+                    if parsed:
+                        updates["target_date"] = parsed
+                if status in ("active", "completed", "on_hold"):
+                    updates["status"] = status
+
+                if len(updates) == 1:  # only updated_at
+                    return ToolResult.fail(
+                        "No valid fields to update. Specify title, description, target_date, or status."
+                    )
+
+                set_clause = ", ".join(f"{k}=?" for k in updates)
+                conn.execute(
+                    f"UPDATE projects SET {set_clause} WHERE id=?",
+                    (*updates.values(), project_id),
+                )
+        except Exception as exc:
+            _logger.error("project_update DB error", exc_info=True)
+            return ToolResult.fail("Could not update project.", error=str(exc))
+
+        old_title = project["title"]
+        if status == "completed":
+            summary = f'✓ Project "{old_title}" marked complete.'
+        else:
+            summary = f'Project "{old_title}" updated.'
+
+        _logger.info("project_update: %s", project_id)
+        return ToolResult.ok(summary, data={"project_id": project_id})
+
+
+# ---------------------------------------------------------------------------
+# Tool 10 — milestone_complete
+# ---------------------------------------------------------------------------
+
+class _MilestoneCompleteArgs(BaseModel):
+    project_query: str = Field(description="Project title or keyword")
+    milestone_query: str = Field(
+        default="",
+        description="Milestone title or keyword. If empty, completes the next pending milestone.",
+    )
+
+
+class MilestoneCompleteTool(BaseTool):
+    name: str = "milestone_complete"
+    description: str = (
+        "Mark a project milestone as done. "
+        "If no milestone specified, completes the next pending one. "
+        "Examples: 'complete phase 1 of backyard deck', 'next milestone on deck'."
+    )
+    args_schema: Type[BaseModel] = _MilestoneCompleteArgs
+    _ctx: DomainContext
+
+    def __init__(self, context: DomainContext, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        object.__setattr__(self, "_ctx", context)
+
+    def _run(self, project_query: str, milestone_query: str = "") -> ToolResult:
+        import sqlite3
+
+        ctx = self._ctx
+        if not ctx.local_db_path:
+            return ToolResult.fail("Tasks storage not available.", error_code="NO_DB_PATH")
+
+        try:
+            with sqlite3.connect(ctx.local_db_path) as conn:
+                conn.row_factory = sqlite3.Row
+
+                project_row = conn.execute(
+                    "SELECT * FROM projects WHERE household_id=? AND title LIKE ? LIMIT 1",
+                    (ctx.household_id, f"%{project_query}%"),
+                ).fetchone()
+                if not project_row:
+                    return ToolResult.fail(f"No project found matching '{project_query}'")
+
+                project = dict(project_row)
+                project_id = project["id"]
+
+                if milestone_query:
+                    ms_row = conn.execute(
+                        "SELECT * FROM milestones WHERE project_id=? AND title LIKE ? LIMIT 1",
+                        (project_id, f"%{milestone_query}%"),
+                    ).fetchone()
+                else:
+                    ms_row = conn.execute(
+                        "SELECT * FROM milestones WHERE project_id=? AND status='pending' ORDER BY order_index ASC LIMIT 1",
+                        (project_id,),
+                    ).fetchone()
+
+                if not ms_row:
+                    return ToolResult.fail(f"No pending milestones for '{project['title']}'")
+
+                ms = dict(ms_row)
+                now = now_iso()
+
+                conn.execute(
+                    "UPDATE milestones SET status='done', updated_at=? WHERE id=?",
+                    (now, ms["id"]),
+                )
+
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM milestones WHERE project_id=?", (project_id,)
+                ).fetchone()[0]
+                done_count = conn.execute(
+                    "SELECT COUNT(*) FROM milestones WHERE project_id=? AND status='done'", (project_id,)
+                ).fetchone()[0]
+
+                auto_complete = done_count == total and total > 0
+                if auto_complete:
+                    conn.execute(
+                        "UPDATE projects SET status='completed', updated_at=? WHERE id=?",
+                        (now, project_id),
+                    )
+        except Exception as exc:
+            _logger.error("milestone_complete DB error", exc_info=True)
+            return ToolResult.fail("Could not complete milestone.", error=str(exc))
+
+        pct = int(done_count / total * 100) if total else 0
+        summary = (
+            f"✓ {ms['title']}\n"
+            f"{project['title']}: {done_count}/{total} milestones ({pct}%)"
+        )
+        if auto_complete:
+            summary += "\n🎉 Project complete!"
+
+        _logger.info(
+            "milestone_complete: %s project=%s %d/%d", ms["id"], project_id, done_count, total
+        )
+        return ToolResult.ok(
+            summary,
+            data={
+                "milestone_id": ms["id"],
+                "project_id": project_id,
+                "done": done_count,
+                "total": total,
+                "pct": pct,
+                "auto_completed": auto_complete,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tool 11 — project_status
+# ---------------------------------------------------------------------------
+
+class _ProjectStatusArgs(BaseModel):
+    project_query: str = Field(description="Project title or keyword")
+
+
+class ProjectStatusTool(BaseTool):
+    name: str = "project_status"
+    description: str = (
+        "Show project progress with all milestones. "
+        "Use for 'how is [project] going' queries."
+    )
+    args_schema: Type[BaseModel] = _ProjectStatusArgs
+    _ctx: DomainContext
+
+    def __init__(self, context: DomainContext, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        object.__setattr__(self, "_ctx", context)
+
+    def _run(self, project_query: str) -> ToolResult:
+        import sqlite3
+
+        ctx = self._ctx
+        if not ctx.local_db_path:
+            return ToolResult.fail("Tasks storage not available.", error_code="NO_DB_PATH")
+
+        try:
+            with sqlite3.connect(ctx.local_db_path) as conn:
+                conn.row_factory = sqlite3.Row
+
+                project_row = conn.execute(
+                    "SELECT * FROM projects WHERE household_id=? AND title LIKE ? LIMIT 1",
+                    (ctx.household_id, f"%{project_query}%"),
+                ).fetchone()
+                if not project_row:
+                    return ToolResult.fail(f"No project found matching '{project_query}'")
+
+                project = dict(project_row)
+                project_id = project["id"]
+
+                ms_rows = conn.execute(
+                    "SELECT * FROM milestones WHERE project_id=? ORDER BY order_index ASC",
+                    (project_id,),
+                ).fetchall()
+                milestones = [dict(r) for r in ms_rows]
+        except Exception as exc:
+            _logger.error("project_status DB error", exc_info=True)
+            return ToolResult.fail("Could not retrieve project status.", error=str(exc))
+
+        total = len(milestones)
+        done_count = sum(1 for m in milestones if m["status"] == "done")
+        pct = int(done_count / total * 100) if total else 0
+
+        lines = [f"📋 {project['title']}"]
+        meta = []
+        if project.get("target_date"):
+            meta.append(f"Target: {project['target_date']}")
+        if project.get("scope") == "household":
+            meta.append("🏠 Household")
+        if meta:
+            lines.append(" · ".join(meta))
+        lines.append(f"Progress: {done_count}/{total} milestones ({pct}%)")
+        lines.append("")
+
+        _ICONS = {"done": "✓", "active": "▶", "pending": "○"}
+        for m in milestones:
+            icon = _ICONS.get(m["status"], "○")
+            lines.append(f"{icon} {m['order_index']}. {m['title']}")
+
+        if not milestones:
+            lines.append("No milestones yet.")
+
+        summary = "\n".join(lines)
+        _logger.info("project_status: %s %d/%d", project_id, done_count, total)
+        return ToolResult.ok(
+            summary,
+            data={
+                "project_id": project_id,
+                "title": project["title"],
+                "status": project["status"],
+                "done": done_count,
+                "total": total,
+                "pct": pct,
+                "milestones": milestones,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# Factory — build all 11 ToolBundles for a given DomainContext
 # ---------------------------------------------------------------------------
 
 def build_tasks_tools(context: DomainContext) -> list[ToolBundle]:
-    """Construct all 7 Tasks domain tools bound to the given context."""
+    """Construct all 11 Tasks domain tools bound to the given context."""
     return [
         ToolBundle(
             tool=TaskCreateTool(context=context),
@@ -1036,6 +1426,48 @@ def build_tasks_tools(context: DomainContext) -> list[ToolBundle]:
             tool=TaskSuggestTool(context=context),
             metadata=ToolMetadata(
                 name="task_suggest",
+                domain_id="tasks",
+                permission=PermissionTier.READ,
+                is_reversible=False,
+                autonomy_level=3,
+            ),
+        ),
+        ToolBundle(
+            tool=ProjectCreateTool(context=context),
+            metadata=ToolMetadata(
+                name="project_create",
+                domain_id="tasks",
+                permission=PermissionTier.READ,
+                is_reversible=True,
+                autonomy_level=1,
+                event_emitted="project_created",
+            ),
+        ),
+        ToolBundle(
+            tool=ProjectUpdateTool(context=context),
+            metadata=ToolMetadata(
+                name="project_update",
+                domain_id="tasks",
+                permission=PermissionTier.WRITE,
+                is_reversible=True,
+                autonomy_level=1,
+            ),
+        ),
+        ToolBundle(
+            tool=MilestoneCompleteTool(context=context),
+            metadata=ToolMetadata(
+                name="milestone_complete",
+                domain_id="tasks",
+                permission=PermissionTier.READ,
+                is_reversible=False,
+                autonomy_level=2,
+                event_emitted="milestone_completed",
+            ),
+        ),
+        ToolBundle(
+            tool=ProjectStatusTool(context=context),
+            metadata=ToolMetadata(
+                name="project_status",
                 domain_id="tasks",
                 permission=PermissionTier.READ,
                 is_reversible=False,

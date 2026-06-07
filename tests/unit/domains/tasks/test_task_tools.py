@@ -10,6 +10,10 @@ import pytest
 
 from mithra.domains.context import DomainContext
 from mithra.domains.tasks.tools import (
+    MilestoneCompleteTool,
+    ProjectCreateTool,
+    ProjectStatusTool,
+    ProjectUpdateTool,
     TaskCompleteTool,
     TaskCreateTool,
     TaskDeleteTool,
@@ -691,15 +695,16 @@ class TestTaskSuggestTool:
 # ---------------------------------------------------------------------------
 
 class TestBuildTasksTools:
-    def test_returns_7_bundles(self, ctx):
+    def test_returns_11_bundles(self, ctx):
         bundles = build_tasks_tools(ctx)
-        assert len(bundles) == 7
+        assert len(bundles) == 11
 
     def test_tool_names(self, ctx):
         names = {b.metadata.name for b in build_tasks_tools(ctx)}
         expected = {
             "task_create", "task_list", "task_complete",
             "task_update", "task_snooze", "task_delete", "task_suggest",
+            "project_create", "project_update", "milestone_complete", "project_status",
         }
         assert names == expected
 
@@ -735,3 +740,338 @@ class TestBuildTasksTools:
         bundles = build_tasks_tools(ctx)
         complete = next(b for b in bundles if b.metadata.name == "task_complete")
         assert complete.metadata.permission == PermissionTier.READ
+
+    def test_project_create_is_read(self, ctx):
+        from mithra.domains.bundle import PermissionTier
+        bundles = build_tasks_tools(ctx)
+        b = next(b for b in bundles if b.metadata.name == "project_create")
+        assert b.metadata.permission == PermissionTier.READ
+
+    def test_project_update_is_write(self, ctx):
+        from mithra.domains.bundle import PermissionTier
+        bundles = build_tasks_tools(ctx)
+        b = next(b for b in bundles if b.metadata.name == "project_update")
+        assert b.metadata.permission == PermissionTier.WRITE
+
+    def test_milestone_complete_is_read(self, ctx):
+        from mithra.domains.bundle import PermissionTier
+        bundles = build_tasks_tools(ctx)
+        b = next(b for b in bundles if b.metadata.name == "milestone_complete")
+        assert b.metadata.permission == PermissionTier.READ
+
+    def test_project_status_is_read(self, ctx):
+        from mithra.domains.bundle import PermissionTier
+        bundles = build_tasks_tools(ctx)
+        b = next(b for b in bundles if b.metadata.name == "project_status")
+        assert b.metadata.permission == PermissionTier.READ
+
+    def test_project_create_emits_event(self, ctx):
+        bundles = build_tasks_tools(ctx)
+        b = next(b for b in bundles if b.metadata.name == "project_create")
+        assert b.metadata.event_emitted == "project_created"
+
+    def test_milestone_complete_emits_event(self, ctx):
+        bundles = build_tasks_tools(ctx)
+        b = next(b for b in bundles if b.metadata.name == "milestone_complete")
+        assert b.metadata.event_emitted == "milestone_completed"
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by project tool tests
+# ---------------------------------------------------------------------------
+
+def _seed_project(db_path, project_id="prj_aabb", title="Backyard Deck",
+                  scope="household", status="active", target_date=None,
+                  household_id="hh_test", user_id="usr_test"):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO projects
+               (id, household_id, user_id, title, scope, status, target_date, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (project_id, household_id, user_id, title, scope, status, target_date, now, now),
+        )
+
+
+def _seed_milestone(db_path, ms_id, project_id, title, order_index=1,
+                    status="pending", household_id="hh_test"):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO milestones
+               (id, project_id, household_id, title, order_index, status, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (ms_id, project_id, household_id, title, order_index, status, now, now),
+        )
+
+
+# ---------------------------------------------------------------------------
+# ProjectCreateTool
+# ---------------------------------------------------------------------------
+
+class TestProjectCreateTool:
+    @pytest.fixture()
+    def tool(self, ctx):
+        return ProjectCreateTool(context=ctx)
+
+    def test_creates_project(self, tool, db):
+        result = tool._run(title="Backyard Deck")
+        assert result.success
+        assert result.data["project_id"].startswith("prj_")
+
+    def test_project_written_to_db(self, tool, db):
+        result = tool._run(title="Woodworking Bench")
+        pid = result.data["project_id"]
+        with sqlite3.connect(db) as conn:
+            row = conn.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone()
+        assert row is not None
+
+    def test_target_date_parsed(self, tool, db):
+        result = tool._run(title="Deck", target_date="2026-07-04")
+        assert result.data["target_date"] == "2026-07-04"
+
+    def test_scope_auto_household(self, tool, db):
+        result = tool._run(title="Backyard deck renovation")
+        assert result.data["scope"] == "household"
+
+    def test_scope_explicit(self, tool, db):
+        result = tool._run(title="Personal project", scope="personal")
+        assert result.data["scope"] == "personal"
+
+    def test_milestones_created(self, tool, db):
+        ms = ["Buy wood", "Cut pieces", "Assemble"]
+        result = tool._run(title="Bench", milestones=ms)
+        pid = result.data["project_id"]
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT * FROM milestones WHERE project_id=? ORDER BY order_index", (pid,)
+            ).fetchall()
+        assert len(rows) == 3
+        assert rows[0][3] == "Buy wood"   # title column
+
+    def test_milestones_order_index(self, tool, db):
+        result = tool._run(title="Bench2", milestones=["A", "B", "C", "D"])
+        pid = result.data["project_id"]
+        with sqlite3.connect(db) as conn:
+            rows = conn.execute(
+                "SELECT order_index FROM milestones WHERE project_id=? ORDER BY order_index", (pid,)
+            ).fetchall()
+        assert [r[0] for r in rows] == [1, 2, 3, 4]
+
+    def test_no_milestones_asks_question(self, tool, db):
+        result = tool._run(title="New project")
+        assert "milestone" in result.summary.lower()
+
+    def test_milestones_in_summary(self, tool, db):
+        result = tool._run(title="Deck", milestones=["Frame", "Paint"])
+        assert "Frame" in result.summary
+        assert "Paint" in result.summary
+
+    def test_household_badge_in_summary(self, tool, db):
+        result = tool._run(title="yard fence", scope="household")
+        assert "🏠" in result.summary
+
+    def test_no_db_path_returns_fail(self, ctx):
+        from mithra.domains.context import DomainContext
+        ctx2 = DomainContext(
+            user_id="usr_test", household_id="hh_test",
+            household_timezone="UTC", oauth_manager=None,
+            storage_adapter=None, file_router=None,
+            member_registry=None, file_search=None,
+            request_id="r", channel="telegram", local_db_path="",
+        )
+        result = ProjectCreateTool(context=ctx2)._run(title="Test")
+        assert not result.success
+
+    def test_milestone_count_in_data(self, tool, db):
+        result = tool._run(title="Proj", milestones=["A", "B"])
+        assert result.data["milestone_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# ProjectUpdateTool
+# ---------------------------------------------------------------------------
+
+class TestProjectUpdateTool:
+    @pytest.fixture()
+    def tool(self, ctx):
+        return ProjectUpdateTool(context=ctx)
+
+    def test_update_status_on_hold(self, tool, db):
+        _seed_project(db, project_id="prj_u1", title="Backyard Deck")
+        result = tool._run(project_query="Backyard Deck", status="on_hold")
+        assert result.success
+        with sqlite3.connect(db) as conn:
+            row = conn.execute("SELECT status FROM projects WHERE id='prj_u1'").fetchone()
+        assert row[0] == "on_hold"
+
+    def test_update_title(self, tool, db):
+        _seed_project(db, project_id="prj_u2", title="Old Title")
+        result = tool._run(project_query="Old Title", title="New Title")
+        assert result.success
+        with sqlite3.connect(db) as conn:
+            row = conn.execute("SELECT title FROM projects WHERE id='prj_u2'").fetchone()
+        assert row[0] == "New Title"
+
+    def test_complete_status_summary(self, tool, db):
+        _seed_project(db, project_id="prj_u3", title="Done Project")
+        result = tool._run(project_query="Done Project", status="completed")
+        assert "complete" in result.summary.lower()
+
+    def test_not_found_returns_fail(self, tool, db):
+        result = tool._run(project_query="Nonexistent Project XYZ")
+        assert not result.success
+
+    def test_no_fields_returns_fail(self, tool, db):
+        _seed_project(db, project_id="prj_u4", title="Empty Update")
+        result = tool._run(project_query="Empty Update")
+        assert not result.success
+
+    def test_target_date_parsed_and_stored(self, tool, db):
+        _seed_project(db, project_id="prj_u5", title="Date Update")
+        result = tool._run(project_query="Date Update", target_date="2026-08-01")
+        assert result.success
+        with sqlite3.connect(db) as conn:
+            row = conn.execute("SELECT target_date FROM projects WHERE id='prj_u5'").fetchone()
+        assert row[0] == "2026-08-01"
+
+    def test_completed_projects_excluded_from_search(self, tool, db):
+        _seed_project(db, project_id="prj_u6", title="Finished", status="completed")
+        result = tool._run(project_query="Finished", title="New Name")
+        assert not result.success  # completed projects not found
+
+
+# ---------------------------------------------------------------------------
+# MilestoneCompleteTool
+# ---------------------------------------------------------------------------
+
+class TestMilestoneCompleteTool:
+    @pytest.fixture()
+    def tool(self, ctx):
+        return MilestoneCompleteTool(context=ctx)
+
+    def test_completes_first_pending(self, tool, db):
+        _seed_project(db, project_id="prj_m1", title="Deck")
+        _seed_milestone(db, "ms_m1a", "prj_m1", "Buy materials", order_index=1)
+        _seed_milestone(db, "ms_m1b", "prj_m1", "Build frame", order_index=2)
+        result = tool._run(project_query="Deck")
+        assert result.success
+        assert "Buy materials" in result.summary
+
+    def test_milestone_status_updated(self, tool, db):
+        _seed_project(db, project_id="prj_m2", title="Bench")
+        _seed_milestone(db, "ms_m2a", "prj_m2", "Cut wood", order_index=1)
+        tool._run(project_query="Bench")
+        with sqlite3.connect(db) as conn:
+            row = conn.execute("SELECT status FROM milestones WHERE id='ms_m2a'").fetchone()
+        assert row[0] == "done"
+
+    def test_progress_in_summary(self, tool, db):
+        _seed_project(db, project_id="prj_m3", title="Fence")
+        _seed_milestone(db, "ms_m3a", "prj_m3", "Phase 1", order_index=1)
+        _seed_milestone(db, "ms_m3b", "prj_m3", "Phase 2", order_index=2)
+        result = tool._run(project_query="Fence")
+        assert "1/2" in result.summary
+
+    def test_percentage_correct(self, tool, db):
+        _seed_project(db, project_id="prj_m4", title="Wall")
+        _seed_milestone(db, "ms_m4a", "prj_m4", "A", order_index=1)
+        _seed_milestone(db, "ms_m4b", "prj_m4", "B", order_index=2)
+        _seed_milestone(db, "ms_m4c", "prj_m4", "C", order_index=3)
+        _seed_milestone(db, "ms_m4d", "prj_m4", "D", order_index=4)
+        result = tool._run(project_query="Wall")
+        assert "25%" in result.summary
+
+    def test_auto_completes_project_when_all_done(self, tool, db):
+        _seed_project(db, project_id="prj_m5", title="Shed")
+        _seed_milestone(db, "ms_m5a", "prj_m5", "Only step", order_index=1)
+        result = tool._run(project_query="Shed")
+        assert result.data["auto_completed"] is True
+        assert "🎉" in result.summary
+        with sqlite3.connect(db) as conn:
+            row = conn.execute("SELECT status FROM projects WHERE id='prj_m5'").fetchone()
+        assert row[0] == "completed"
+
+    def test_milestone_query_selects_by_title(self, tool, db):
+        _seed_project(db, project_id="prj_m6", title="Pool")
+        _seed_milestone(db, "ms_m6a", "prj_m6", "Dig hole", order_index=1)
+        _seed_milestone(db, "ms_m6b", "prj_m6", "Fill water", order_index=2)
+        result = tool._run(project_query="Pool", milestone_query="Fill")
+        assert "Fill water" in result.summary
+
+    def test_no_pending_returns_fail(self, tool, db):
+        _seed_project(db, project_id="prj_m7", title="Done Proj")
+        _seed_milestone(db, "ms_m7a", "prj_m7", "Already done", order_index=1, status="done")
+        result = tool._run(project_query="Done Proj")
+        assert not result.success
+
+    def test_project_not_found_returns_fail(self, tool, db):
+        result = tool._run(project_query="Nonexistent XYZ")
+        assert not result.success
+
+
+# ---------------------------------------------------------------------------
+# ProjectStatusTool
+# ---------------------------------------------------------------------------
+
+class TestProjectStatusTool:
+    @pytest.fixture()
+    def tool(self, ctx):
+        return ProjectStatusTool(context=ctx)
+
+    def test_shows_project_title(self, tool, db):
+        _seed_project(db, project_id="prj_s1", title="Backyard Deck")
+        result = tool._run(project_query="Backyard")
+        assert "Backyard Deck" in result.summary
+
+    def test_shows_all_milestones(self, tool, db):
+        _seed_project(db, project_id="prj_s2", title="Garden")
+        _seed_milestone(db, "ms_s2a", "prj_s2", "Dig beds", order_index=1)
+        _seed_milestone(db, "ms_s2b", "prj_s2", "Plant seeds", order_index=2)
+        result = tool._run(project_query="Garden")
+        assert "Dig beds" in result.summary
+        assert "Plant seeds" in result.summary
+
+    def test_done_icon(self, tool, db):
+        _seed_project(db, project_id="prj_s3", title="Garage")
+        _seed_milestone(db, "ms_s3a", "prj_s3", "Clear space", order_index=1, status="done")
+        result = tool._run(project_query="Garage")
+        assert "✓" in result.summary
+
+    def test_pending_icon(self, tool, db):
+        _seed_project(db, project_id="prj_s4", title="Studio")
+        _seed_milestone(db, "ms_s4a", "prj_s4", "Buy paint", order_index=1, status="pending")
+        result = tool._run(project_query="Studio")
+        assert "○" in result.summary
+
+    def test_progress_fraction_shown(self, tool, db):
+        _seed_project(db, project_id="prj_s5", title="Deck2")
+        _seed_milestone(db, "ms_s5a", "prj_s5", "M1", order_index=1, status="done")
+        _seed_milestone(db, "ms_s5b", "prj_s5", "M2", order_index=2, status="done")
+        _seed_milestone(db, "ms_s5c", "prj_s5", "M3", order_index=3, status="pending")
+        _seed_milestone(db, "ms_s5d", "prj_s5", "M4", order_index=4, status="pending")
+        result = tool._run(project_query="Deck2")
+        assert "2/4" in result.summary
+        assert "50%" in result.summary
+
+    def test_household_badge_shown(self, tool, db):
+        _seed_project(db, project_id="prj_s6", title="Shed2", scope="household")
+        result = tool._run(project_query="Shed2")
+        assert "🏠" in result.summary
+
+    def test_target_date_shown(self, tool, db):
+        _seed_project(db, project_id="prj_s7", title="Fence2", target_date="2026-09-01")
+        result = tool._run(project_query="Fence2")
+        assert "2026-09-01" in result.summary
+
+    def test_not_found_returns_fail(self, tool, db):
+        result = tool._run(project_query="Totally Nonexistent XYZ")
+        assert not result.success
+
+    def test_data_contains_pct(self, tool, db):
+        _seed_project(db, project_id="prj_s8", title="Gate")
+        _seed_milestone(db, "ms_s8a", "prj_s8", "Step", order_index=1, status="done")
+        result = tool._run(project_query="Gate")
+        assert result.data["pct"] == 100
