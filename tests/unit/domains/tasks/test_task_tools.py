@@ -1080,6 +1080,55 @@ class TestMilestoneCompleteTool:
         result = tool._run(project_query="Nonexistent XYZ")
         assert not result.success
 
+    def test_ordinal_phase_1_resolves_to_order_index_1(self, tool, db):
+        _seed_project(db, project_id="prj_o1", title="Backyard Deck")
+        _seed_milestone(db, "ms_o1a", "prj_o1", "Buy materials", order_index=1)
+        _seed_milestone(db, "ms_o1b", "prj_o1", "Build frame", order_index=2)
+        result = tool._run(project_query="Backyard Deck", milestone_query="phase 1")
+        assert result.success
+        assert "Buy materials" in result.summary
+
+    def test_ordinal_phase_2_resolves_to_order_index_2(self, tool, db):
+        _seed_project(db, project_id="prj_o2", title="Patio Project")
+        _seed_milestone(db, "ms_o2a", "prj_o2", "Dig foundation", order_index=1)
+        _seed_milestone(db, "ms_o2b", "prj_o2", "Lay stones", order_index=2)
+        result = tool._run(project_query="Patio", milestone_query="phase 2")
+        assert result.success
+        assert "Lay stones" in result.summary
+
+    def test_ordinal_word_second_resolves_to_order_index_2(self, tool, db):
+        _seed_project(db, project_id="prj_o3", title="Garage Build")
+        _seed_milestone(db, "ms_o3a", "prj_o3", "Clear space", order_index=1)
+        _seed_milestone(db, "ms_o3b", "prj_o3", "Frame walls", order_index=2)
+        result = tool._run(project_query="Garage", milestone_query="second")
+        assert result.success
+        assert "Frame walls" in result.summary
+
+    def test_ordinal_word_first_resolves_to_order_index_1(self, tool, db):
+        _seed_project(db, project_id="prj_o4", title="Shed Construction")
+        _seed_milestone(db, "ms_o4a", "prj_o4", "Pour slab", order_index=1)
+        _seed_milestone(db, "ms_o4b", "prj_o4", "Erect frame", order_index=2)
+        result = tool._run(project_query="Shed", milestone_query="first")
+        assert result.success
+        assert "Pour slab" in result.summary
+
+    def test_title_match_takes_priority_over_ordinal(self, tool, db):
+        _seed_project(db, project_id="prj_o5", title="Phase Project")
+        _seed_milestone(db, "ms_o5a", "prj_o5", "Phase 2 prep", order_index=1)
+        _seed_milestone(db, "ms_o5b", "prj_o5", "Install gear", order_index=2)
+        # "Phase 2 prep" title matches "phase 2" LIKE before ordinal logic kicks in
+        result = tool._run(project_query="Phase Project", milestone_query="Phase 2 prep")
+        assert result.success
+        assert "Phase 2 prep" in result.summary
+
+    def test_no_query_falls_back_to_next_pending(self, tool, db):
+        _seed_project(db, project_id="prj_o6", title="Fence Build")
+        _seed_milestone(db, "ms_o6a", "prj_o6", "Order posts", order_index=1, status="done")
+        _seed_milestone(db, "ms_o6b", "prj_o6", "Dig holes", order_index=2)
+        result = tool._run(project_query="Fence")
+        assert result.success
+        assert "Dig holes" in result.summary
+
 
 # ---------------------------------------------------------------------------
 # ProjectStatusTool

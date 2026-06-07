@@ -302,6 +302,50 @@ def _find_project(conn, household_id: str, query: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def _resolve_milestone(conn, project_id: str, milestone_query: str):
+    """Find a milestone by title match, then ordinal, then next-pending fallback.
+
+    Handles queries like 'phase 1', 'phase 2', 'first', 'second' where the
+    milestone titles are descriptive ('Buy materials', 'Build frame') and the
+    LIKE match would fail.
+    """
+    if milestone_query:
+        row = conn.execute(
+            "SELECT * FROM milestones WHERE project_id=? AND title LIKE ? LIMIT 1",
+            (project_id, f"%{milestone_query}%"),
+        ).fetchone()
+        if row:
+            return row
+
+        _ORDINAL_MAP: dict[str, int] = {
+            "1": 1, "first": 1, "one": 1,
+            "2": 2, "second": 2, "two": 2,
+            "3": 3, "third": 3, "three": 3,
+            "4": 4, "fourth": 4, "four": 4,
+            "5": 5, "fifth": 5, "five": 5,
+        }
+        query_lower = milestone_query.lower()
+        num_match = re.search(r"\d+", query_lower)
+        order: Optional[int] = int(num_match.group()) if num_match else None
+        if order is None:
+            for word, idx in _ORDINAL_MAP.items():
+                if word in query_lower:
+                    order = idx
+                    break
+        if order is not None:
+            row = conn.execute(
+                "SELECT * FROM milestones WHERE project_id=? AND order_index=? LIMIT 1",
+                (project_id, order),
+            ).fetchone()
+            if row:
+                return row
+
+    return conn.execute(
+        "SELECT * FROM milestones WHERE project_id=? AND status='pending' ORDER BY order_index ASC LIMIT 1",
+        (project_id,),
+    ).fetchone()
+
+
 # ---------------------------------------------------------------------------
 # Tool 1 — task_create
 # ---------------------------------------------------------------------------
@@ -1217,16 +1261,7 @@ class MilestoneCompleteTool(BaseTool):
 
                 project_id = project["id"]
 
-                if milestone_query:
-                    ms_row = conn.execute(
-                        "SELECT * FROM milestones WHERE project_id=? AND title LIKE ? LIMIT 1",
-                        (project_id, f"%{milestone_query}%"),
-                    ).fetchone()
-                else:
-                    ms_row = conn.execute(
-                        "SELECT * FROM milestones WHERE project_id=? AND status='pending' ORDER BY order_index ASC LIMIT 1",
-                        (project_id,),
-                    ).fetchone()
+                ms_row = _resolve_milestone(conn, project_id, milestone_query)
 
                 if not ms_row:
                     return ToolResult.fail(f"No pending milestones for '{project['title']}'")
