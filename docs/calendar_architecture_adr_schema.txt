@@ -1,0 +1,481 @@
+Two parts: ADR documentation update and schema implementation.
+Read existing ARCHITECTURE_DECISIONS.md section 10 before writing.
+
+===============================================================
+PART 1 — Update docs/ARCHITECTURE_DECISIONS.md
+Replace sections 10.9-10.12 with the following complete design.
+Documentation only in this part.
+===============================================================
+
+---
+
+### 10.9 Personal vs Household Events — Classification Model
+
+#### The Core Problem
+Every calendar event has a scope: personal or household.
+Scope determines:
+  - Whether it shows on the HA shared wall dashboard
+  - Whether it appears in household briefings
+  - Whether other members can see it
+
+Personal: affects only one member
+  "add gym tomorrow morning"
+  "add dentist tuesday 3pm"
+  "add meeting with John"
+
+Household: relevant to the whole household
+  "add trash pickup every thursday"
+  "add family dinner saturday"
+  "add rent reminder 1st of month"
+  "add anniversary dinner march 15"
+
+#### Classification Strategy
+
+Three phases, increasing intelligence:
+
+    PHASE 1 — Keyword heuristic (implemented now):
+      Household triggers (any match → household):
+        trash, recycling, rent, mortgage, utilities,
+        family, anniversary, birthday (household members),
+        both, we, us, everyone, kids, children,
+        dinner (when combined with family/us/we),
+        holiday, school, pickup, dropoff
+      Default: personal
+
+      Recurring events default to household if
+      they match household triggers.
+      Single medical/personal events always personal.
+
+    PHASE 2 — LLM classification (future):
+      For ambiguous events not matched by keywords,
+      LLM classifies:
+        "add dentist" → personal (medical)
+        "add car service" → personal
+        "add anniversary dinner" → household
+        "add school pickup" → household
+      LLM result stored in scope field.
+
+    PHASE 3 — User correction (future):
+      "make dentist appointment household"
+      → updates scope in SQLite + Google extended property
+      User has final authority over classification.
+
+#### Source of Truth
+    Mithra SQLite (calendar_events table) = source of truth
+    Google Calendar extended properties = mirror/cache
+    (extended properties added in Phase 3 via raw API)
+
+    This means:
+      Classification survives even if Google Calendar
+      extended properties are not yet implemented.
+      Phase 3 sync is additive, not a migration.
+
+---
+
+### 10.10 Calendar Data Architecture
+
+#### Phase 1 — Live queries + local event index (NOW)
+
+    Writes: gcsa creates events in Google Calendar.
+    Reads: live Google Calendar API calls via gcsa.
+    Index: every Mithra-created event recorded in
+           calendar_events SQLite table with scope.
+
+    Why index now:
+      Events created TODAY lose their scope context
+      if not recorded. Adding the table now costs
+      nothing and means Phase 2 sync is additive.
+
+    Dashboard (Phase 1):
+      Live query Google Calendar for today's events.
+      Returns all events for the owner user.
+      No scope filtering yet (all events shown).
+
+#### Phase 2 — Incremental sync + cached reads (HA phase)
+
+    WHY sync at all:
+      External events (flights auto-added by Gmail,
+      restaurant reservations, meeting invites) need
+      to appear on dashboard and in briefings.
+      syncToken approach gets ALL events regardless
+      of how they were created.
+
+    HOW — Native Google Calendar syncToken:
+      50 lines of code. No new library.
+      Google returns only changes since last sync.
+      Efficient: 24 API calls/day for 2-member household.
+
+      Sync token stored in household_config:
+        key:   "calendar_sync_token_{user_id}"
+        value: opaque token string from Google
+
+      Sync flow (triggered on dashboard poll):
+        1. Load syncToken from household_config
+        2. GET events?syncToken=xxx → only changes
+        3. Upsert changes into calendar_events table
+        4. Classify new external events (keyword heuristic)
+        5. Store new syncToken
+        6. On 410 Gone: full resync (token expired)
+
+      Dashboard reads from local cache (fast).
+      Tool reads (briefing, availability) still use
+      live API for freshness.
+
+    WHY NOT gcal-sync library:
+      gcal-sync is correct at product scale (100+
+      households, multiple calendar providers).
+      For household of 2, Google Calendar only:
+      native syncToken = 50 lines vs full library.
+      Revisit when Mithra supports multiple calendar
+      providers simultaneously.
+
+#### Phase 3 — Categorization + extended properties
+
+    LLM classifies new external events:
+      "Delta flight NYC" → scope=household
+      "Dentist"          → scope=personal
+
+    Extended properties via raw Google API:
+      PATCH event body:
+        {extendedProperties: {shared: {
+          mithra_scope: "household",
+          mithra_household_id: "hh_b76fef08"
+        }}}
+
+    Dashboard scope filtering:
+      GET /api/v1/dashboard/time?scope=household
+      Returns household-tagged events from ALL members.
+
+#### Product Scale
+    SQLite per household (self-hosted): scales infinitely.
+    Each household has isolated SQLite — no contention.
+    Cloud product: StorageAdapter swap (SQLite → Postgres).
+    Schema is identical. Zero domain code changes.
+    This is the existing StorageAdapter contract (section 7).
+
+---
+
+### 10.11 calendar_events Table Schema
+
+Added to SQLite in Phase 1. Schema designed for all phases.
+
+    CREATE TABLE calendar_events (
+        event_id      TEXT PRIMARY KEY,
+        user_id       TEXT NOT NULL,
+        household_id  TEXT NOT NULL,
+        summary       TEXT,
+        start_time    TEXT,         -- ISO8601 with offset
+        end_time      TEXT,         -- ISO8601 with offset
+        is_recurring  INTEGER DEFAULT 0,
+        source        TEXT DEFAULT 'mithra',
+                                    -- 'mithra' | 'external'
+        scope         TEXT DEFAULT 'personal',
+                                    -- 'personal' | 'household'
+        calendar_id   TEXT DEFAULT 'primary',
+        raw_json      TEXT,         -- full event JSON
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL
+    );
+
+    CREATE INDEX idx_cal_events_household
+        ON calendar_events(household_id, start_time);
+    CREATE INDEX idx_cal_events_user
+        ON calendar_events(user_id, start_time);
+    CREATE INDEX idx_cal_events_scope
+        ON calendar_events(household_id, scope, start_time);
+
+    source field:
+      'mithra'   → created by Mithra tools
+      'external' → synced from Google (Phase 2)
+
+    scope field:
+      'personal'  → affects one member only
+      'household' → relevant to whole household
+      null        → not yet classified (external events
+                    before Phase 2 classification)
+
+---
+
+### 10.12 Scope Classification Helper
+
+Used at event creation time in all calendar tools.
+
+    HOUSEHOLD_KEYWORDS = {
+        # Household chores
+        "trash", "recycling", "garbage", "bins",
+        "rent", "mortgage", "utilities", "bills",
+        # Family
+        "family", "anniversary", "birthday",
+        "kids", "children", "school", "pickup",
+        "dropoff", "daycare",
+        # Inclusive pronouns
+        "both", "we", "us", "everyone", "together",
+        # Household events
+        "dinner" (only with family/us/we context),
+        "holiday", "vacation", "trip",
+        "hoa", "neighborhood",
+    }
+
+    def classify_event_scope(
+        title: str,
+        user_text: str,
+        is_recurring: bool,
+    ) -> str:
+        """Classify event as 'personal' or 'household'.
+        Phase 1: keyword heuristic.
+        Returns 'household' or 'personal'.
+        """
+        text = (title + " " + user_text).lower()
+        for keyword in HOUSEHOLD_KEYWORDS:
+            if keyword in text:
+                return "household"
+        # Recurring events with no personal keywords
+        # tend to be household (trash, reminders etc)
+        personal_recurring = {
+            "gym", "workout", "medication", "therapy",
+            "commute", "lunch", "standup", "meeting"
+        }
+        if is_recurring:
+            for kw in personal_recurring:
+                if kw in text:
+                    return "personal"
+            # Ambiguous recurring → household by default
+            return "household"
+        return "personal"
+
+---
+
+### 10.13 Managed Members (Children)
+
+    Children are managed members — no Telegram required.
+    Parent manages their calendar on their behalf.
+
+    Schema additions to members table (added now):
+      managed_by     TEXT  nullable FK → members.id
+      date_of_birth  TEXT  nullable ISO8601 date
+
+    Parent connects child's Google account:
+      "connect Emma's Google calendar"
+      → OAuth in parent's browser
+      → token stored for child's user_id
+
+    Phase 1: children added as regular members.
+             Parent manages via Mithra commands.
+    Phase 2: "for Emma" natural language routing.
+    Phase 3: age-based auto-transition at 18.
+
+### 10.14 Multiple Google Accounts Per Person
+
+    Phase 1: one Google account per user_id.
+
+    Phase 2 when needed:
+      member_preferences:
+        google_calendar_primary → personal account
+        google_calendar_work    → work account
+      OAuthManager key: "google_work:{user_id}"
+
+---
+
+===============================================================
+PART 2 — Schema and implementation changes (NOW)
+===============================================================
+
+These changes implement the foundation that all phases build on.
+Read REVIEW_CHECKLIST.md before starting.
+
+---------------------------------------------------------------
+CHANGE 1 — Add calendar_events table to SQLite
+---------------------------------------------------------------
+
+In mithra/storage/local.py, add _CALENDAR_DDL after
+the existing files table DDL:
+
+_CALENDAR_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS calendar_events (
+    event_id     TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    household_id TEXT NOT NULL,
+    summary      TEXT,
+    start_time   TEXT,
+    end_time     TEXT,
+    is_recurring INTEGER DEFAULT 0,
+    source       TEXT DEFAULT 'mithra',
+    scope        TEXT DEFAULT 'personal',
+    calendar_id  TEXT DEFAULT 'primary',
+    raw_json     TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cal_events_household
+    ON calendar_events(household_id, start_time);
+CREATE INDEX IF NOT EXISTS idx_cal_events_user
+    ON calendar_events(user_id, start_time);
+CREATE INDEX IF NOT EXISTS idx_cal_events_scope
+    ON calendar_events(household_id, scope, start_time);
+"""
+
+Call in __init__ after files table DDL.
+
+---------------------------------------------------------------
+CHANGE 2 — Add managed_by and date_of_birth to members table
+---------------------------------------------------------------
+
+In mithra/storage/local.py, in the members table DDL,
+add columns (use ALTER TABLE for existing installs):
+
+Add to CREATE TABLE IF NOT EXISTS members:
+    managed_by     TEXT,
+    date_of_birth  TEXT
+
+For existing installs, add migration in __init__:
+    try:
+        conn.execute(
+            "ALTER TABLE members ADD COLUMN managed_by TEXT")
+    except Exception:
+        pass  # Column already exists
+    try:
+        conn.execute(
+            "ALTER TABLE members "
+            "ADD COLUMN date_of_birth TEXT")
+    except Exception:
+        pass
+
+---------------------------------------------------------------
+CHANGE 3 — Add classify_event_scope helper to time tools
+---------------------------------------------------------------
+
+In mithra/domains/time/tools.py, add at module level:
+
+    HOUSEHOLD_KEYWORDS = frozenset({
+        "trash", "recycling", "garbage", "bins",
+        "rent", "mortgage", "utilities", "bills",
+        "family", "anniversary",
+        "kids", "children", "school", "pickup",
+        "dropoff", "daycare",
+        "both", "we", "us", "everyone", "together",
+        "holiday", "vacation", "trip",
+        "hoa", "neighborhood", "household",
+        "weekly", "monthly",  # recurring household tasks
+    })
+
+    PERSONAL_RECURRING_KEYWORDS = frozenset({
+        "gym", "workout", "run", "yoga", "meditation",
+        "medication", "therapy", "commute",
+        "standup", "1on1", "one on one",
+    })
+
+    def classify_event_scope(
+        title: str,
+        user_text: str = "",
+        is_recurring: bool = False,
+    ) -> str:
+        """Classify event as 'personal' or 'household'.
+
+        Phase 1 keyword heuristic.
+        Phase 2 will add LLM classification for ambiguous cases.
+        """
+        text = (title + " " + user_text).lower()
+        for kw in HOUSEHOLD_KEYWORDS:
+            if kw in text:
+                return "household"
+        if is_recurring:
+            for kw in PERSONAL_RECURRING_KEYWORDS:
+                if kw in text:
+                    return "personal"
+            return "household"
+        return "personal"
+
+---------------------------------------------------------------
+CHANGE 4 — Record events in calendar_events after creation
+---------------------------------------------------------------
+
+In CalendarCreateEventTool._run() and
+CalendarCreateRecurringTool._run(), after successful
+event creation, record in calendar_events table:
+
+    import json
+    from datetime import datetime, timezone
+
+    scope = classify_event_scope(
+        title=title,
+        user_text="",  # tool doesn't have original text
+        is_recurring=False,
+    )
+
+    try:
+        import sqlite3
+        db_path = ctx.storage_adapter._db_path \
+            if ctx.storage_adapter else None
+        if db_path:
+            now = datetime.now(timezone.utc).isoformat()
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """INSERT OR REPLACE INTO calendar_events
+                       (event_id, user_id, household_id,
+                        summary, start_time, end_time,
+                        is_recurring, source, scope,
+                        calendar_id, raw_json,
+                        created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        created.id,
+                        uid,
+                        ctx.household_id,
+                        title,
+                        start_dt.isoformat(),
+                        end_dt.isoformat(),
+                        0,  # is_recurring
+                        "mithra",
+                        scope,
+                        "primary",
+                        json.dumps({"summary": title}),
+                        now,
+                        now,
+                    )
+                )
+            logger.info(
+                f"Recorded event {created.id} "
+                f"scope={scope} in calendar_events")
+    except Exception as e:
+        logger.warning(
+            f"Could not record event in calendar_events: {e}")
+        # Non-fatal: event was created in Google Calendar
+        # SQLite record is supplementary
+
+For CalendarCreateRecurringTool, set is_recurring=1.
+
+---------------------------------------------------------------
+CHANGE 5 — Access storage_adapter from DomainContext
+---------------------------------------------------------------
+
+DomainContext already has storage_adapter field.
+The tools have access to ctx.storage_adapter.
+Verify ctx.storage_adapter is not None before using.
+If None, log warning and skip — non-fatal.
+
+---------------------------------------------------------------
+REVIEW_CHECKLIST:
+  [ ] calendar_events table created on startup
+      docker exec: SELECT name FROM sqlite_master
+                   WHERE name='calendar_events'
+  [ ] members table has managed_by, date_of_birth columns
+  [ ] classify_event_scope("trash reminder", recurring=True)
+      returns "household"
+  [ ] classify_event_scope("dentist appointment", recurring=False)
+      returns "personal"
+  [ ] classify_event_scope("family dinner", recurring=False)
+      returns "household"
+  [ ] After "add dentist tuesday 3pm" and confirm yes:
+      SELECT * FROM calendar_events WHERE summary LIKE '%Dentist%'
+      shows row with scope='personal'
+  [ ] After "add trash reminder every thursday" and confirm yes:
+      SELECT * FROM calendar_events WHERE summary LIKE '%Trash%'
+      shows row with scope='household' is_recurring=1
+  [ ] All tests pass
+
+Run: pytest tests/unit/ -x -q
+Commit message: feat: calendar_events table with scope
+                classification, managed_by on members,
+                classify_event_scope keyword heuristic,
+                record all Mithra-created events in SQLite
+===============================================================

@@ -1,0 +1,344 @@
+Implement Tasks domain project and milestone tools (T4).
+Read ADR section 11 in docs/ARCHITECTURE_DECISIONS.md
+fully before starting. Read REVIEW_CHECKLIST.md.
+
+All tools in mithra/domains/tasks/tools.py.
+Follow same patterns as task_create and task_list.
+Reference Time domain tools for style consistency.
+
+═══════════════════════════════════════════════════════
+TOOL 8 — project_create
+═══════════════════════════════════════════════════════
+
+class ProjectCreateTool(BaseTool):
+    name = "project_create"
+    description = (
+        "Create a new project with optional milestones. "
+        "Use for multi-step work with phases. "
+        "Examples: 'backyard deck by July 4', "
+        "'woodworking bench with milestones'."
+    )
+    permission_tier = PermissionTier.READ
+
+    class ArgsSchema(BaseModel):
+        title: str = Field(description="Project title")
+        description: str = Field(default="")
+        target_date: str = Field(
+            default="",
+            description="Target completion date")
+        scope: str = Field(
+            default="",
+            description="personal|household")
+        milestones: list[str] = Field(
+            default=[],
+            description=(
+                "Optional list of milestone titles "
+                "in order. e.g. ['Buy materials', "
+                "'Build frame', 'Paint']"
+            )
+        )
+
+    def _run(self, title, description="",
+             target_date="", scope="",
+             milestones=None, **kwargs):
+        ctx = kwargs.get("context")
+        try:
+            import sqlite3
+            from mithra.domains.tasks.tools import (
+                classify_task_scope,
+                new_project_id, new_milestone_id,
+                now_iso, _parse_due_date,
+            )
+
+            parsed_date = None
+            if target_date:
+                parsed_date = _parse_due_date(
+                    target_date,
+                    ctx.household_timezone
+                    if ctx else "UTC")
+
+            final_scope = scope or classify_task_scope(
+                title)
+            project_id = new_project_id()
+            now = now_iso()
+
+            if ctx and ctx.local_db_path:
+                with sqlite3.connect(
+                        ctx.local_db_path) as conn:
+                    conn.execute("""
+                        INSERT INTO projects (
+                            id, household_id, user_id,
+                            title, description, scope,
+                            status, target_date,
+                            created_at, updated_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?)
+                    """, (
+                        project_id,
+                        ctx.household_id,
+                        ctx.user_id,
+                        title,
+                        description or None,
+                        final_scope,
+                        "active",
+                        parsed_date,
+                        now, now,
+                    ))
+
+                    # Create milestones if provided
+                    if milestones:
+                        for i, ms_title in enumerate(
+                                milestones, 1):
+                            conn.execute("""
+                                INSERT INTO milestones (
+                                    id, project_id,
+                                    household_id, title,
+                                    order_index, status,
+                                    created_at, updated_at)
+                                VALUES (?,?,?,?,?,?,?,?)
+                            """, (
+                                new_milestone_id(),
+                                project_id,
+                                ctx.household_id,
+                                ms_title,
+                                i, "pending",
+                                now, now,
+                            ))
+
+            # Build summary
+            parts = [f"Project created: {title}"]
+            if parsed_date:
+                parts.append(f"Target: {parsed_date}")
+            if final_scope == "household":
+                parts.append("🏠 Household")
+
+            if milestones:
+                ms_lines = "\n".join(
+                    f"  {i}. {m}"
+                    for i, m in enumerate(milestones, 1)
+                )
+                parts.append(
+                    f"{len(milestones)} milestones:\n"
+                    + ms_lines
+                )
+                next_q = None
+            else:
+                next_q = (
+                    "Add milestones? List them "
+                    "or say 'skip'.\n"
+                    "e.g. 'Buy materials, Build frame, Paint'"
+                )
+
+            summary = " · ".join(parts[:3])
+            if len(parts) > 3:
+                summary += "\n" + "\n".join(parts[3:])
+            if next_q:
+                summary += "\n\n" + next_q
+
+            return ToolResult.success(
+                summary=summary,
+                data={
+                    "project_id": project_id,
+                    "milestone_count": len(
+                        milestones or []),
+                    "scope": final_scope,
+                    "target_date": parsed_date,
+                }
+            ).__dict__
+
+        except Exception as exc:
+            import traceback as _tb
+            _logger.error(
+                "project_create failed: %s\n%s",
+                exc, _tb.format_exc())
+            return ToolResult.fail(
+                summary="Could not create project.",
+                error_code="TASK_ERROR"
+            ).__dict__
+
+═══════════════════════════════════════════════════════
+TOOL 9 — project_update
+═══════════════════════════════════════════════════════
+
+    name = "project_update"
+    permission_tier = PermissionTier.WRITE
+
+    class ArgsSchema(BaseModel):
+        project_query: str = Field(
+            description="Project title or keyword")
+        title: str = Field(default="")
+        description: str = Field(default="")
+        target_date: str = Field(default="")
+        status: str = Field(
+            default="",
+            description="active|completed|on_hold")
+
+    Logic:
+      Find project:
+        SELECT * FROM projects
+        WHERE household_id=?
+        AND title LIKE '%query%'
+        AND status != 'completed'
+        LIMIT 1
+      If not found: return fail "No project found
+        matching '[query]'"
+      Update only non-empty fields
+      Parse target_date via _parse_due_date() if given
+      UPDATE projects SET ... WHERE id=?
+
+      Summary: "Project '[title]' updated."
+      If status=completed:
+        "✓ Project '[title]' marked complete."
+
+═══════════════════════════════════════════════════════
+TOOL 10 — milestone_complete
+═══════════════════════════════════════════════════════
+
+    name = "milestone_complete"
+    description = (
+        "Mark a project milestone as done. "
+        "If no milestone specified, completes "
+        "the next pending one."
+    )
+    permission_tier = PermissionTier.READ
+
+    class ArgsSchema(BaseModel):
+        project_query: str = Field(
+            description="Project title or keyword")
+        milestone_query: str = Field(
+            default="",
+            description=(
+                "Milestone title or keyword. "
+                "If empty, completes next pending."
+            )
+        )
+
+    Logic:
+      Find project by title LIKE '%query%'
+      If milestone_query given:
+        Find milestone WHERE project_id=?
+          AND title LIKE '%milestone_query%'
+      Else:
+        Find first pending:
+          SELECT * FROM milestones
+          WHERE project_id=?
+          AND status='pending'
+          ORDER BY order_index ASC
+          LIMIT 1
+
+      If no milestone found: return fail
+        "No pending milestones for '[project]'"
+
+      UPDATE milestones SET status='done',
+             updated_at=now WHERE id=?
+
+      Count progress:
+        total = COUNT(*) FROM milestones
+                WHERE project_id=?
+        done = COUNT(*) FROM milestones
+               WHERE project_id=? AND status='done'
+        pct = int(done/total*100)
+
+      If all done (done == total):
+        UPDATE projects SET status='completed'
+        auto_complete = True
+
+      Summary:
+        f"✓ {milestone.title}"
+        f"{project.title}: {done}/{total} milestones"
+        f"({pct}%)"
+        + "🎉 Project complete!" if auto_complete
+
+═══════════════════════════════════════════════════════
+TOOL 11 — project_status (query tool)
+═══════════════════════════════════════════════════════
+
+    name = "project_status"
+    description = (
+        "Show project progress with all milestones. "
+        "Use for 'how is [project] going' queries."
+    )
+    permission_tier = PermissionTier.READ
+
+    class ArgsSchema(BaseModel):
+        project_query: str
+
+    Logic:
+      Find project by title LIKE '%query%'
+      Fetch all milestones ORDER BY order_index
+      Build status display:
+
+        "📋 Backyard Deck
+         Target: July 4, 2026 · 🏠 Household
+         Progress: 2/4 milestones (50%)
+
+         ✓ 1. Buy materials
+         ✓ 2. Build frame
+         ○ 3. Lay boards
+         ○ 4. Stain and finish"
+
+      Status icons:
+        done:    ✓
+        active:  ▶
+        pending: ○
+
+═══════════════════════════════════════════════════════
+UPDATE TasksDomain.get_tools()
+═══════════════════════════════════════════════════════
+
+Add to get_tools() return list:
+    ProjectCreateTool(context=context),
+    ProjectUpdateTool(context=context),
+    MilestoneCompleteTool(context=context),
+    ProjectStatusTool(context=context),
+
+Total tools now: 11
+
+═══════════════════════════════════════════════════════
+REVIEW_CHECKLIST:
+═══════════════════════════════════════════════════════
+
+  [ ] "add project backyard deck by July 4"
+      → project created, target_date=2026-07-04
+      → scope=household (yard keyword)
+      → response asks about milestones
+
+  [ ] "add project woodworking bench by August"
+      with milestones: buy wood, cut pieces,
+      assemble, sand and finish
+      → project created with 4 milestones in order
+      SELECT * FROM milestones WHERE project_id=...
+      shows 4 rows with order_index 1,2,3,4
+
+  [ ] "complete phase 1 of backyard deck"
+      → first pending milestone marked done
+      → "✓ Buy materials
+         Backyard deck: 1/4 milestones (25%)"
+
+  [ ] "complete next milestone on backyard deck"
+      → second milestone done
+      → "✓ Build frame
+         Backyard deck: 2/4 milestones (50%)"
+
+  [ ] "how is backyard deck going"
+      → project_status shows all milestones:
+        ✓ 1. Buy materials
+        ✓ 2. Build frame
+        ○ 3. Lay boards
+        ○ 4. Stain and finish
+
+  [ ] Complete all 4 milestones one by one
+      → last one: "🎉 Project complete!"
+      → projects.status = 'completed'
+
+  [ ] "mark backyard deck on hold"
+      → project_update: status=on_hold
+
+  [ ] All 969+ tests pass
+      New unit tests for all 4 project tools
+
+Run: pytest tests/unit/ -x -q
+Commit message: feat: Tasks domain T4 — project_create,
+                project_update, milestone_complete,
+                project_status tools with progress
+                tracking and % complete
+═══════════════════════════════════════════════════════

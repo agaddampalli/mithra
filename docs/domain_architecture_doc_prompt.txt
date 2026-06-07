@@ -1,0 +1,585 @@
+Add section 9 to docs/ARCHITECTURE_DECISIONS.md
+covering Domain Plugin Architecture.
+Documentation only. No implementation.
+
+Read the entire existing ARCHITECTURE_DECISIONS.md
+before writing to ensure consistency with prior decisions.
+
+===============================================================
+## 9. Domain Plugin Architecture
+
+### Purpose
+This section defines how Mithra's 15 domains register
+with the LangGraph agent, expose tools, handle cross-domain
+side effects, and migrate to industry-standard protocols.
+These are the foundational decisions that gate all domain
+implementation. Every domain built must follow this spec.
+
+---
+
+### 9.1 The Protocol Landscape
+
+Three open standards govern how agents interact in 2026.
+Understanding where each fits determines what we build now
+vs what we design for later.
+
+    MCP (Model Context Protocol) — Anthropic → Linux Foundation
+      Layer: Agent ↔ Tool (external service)
+      Purpose: Standardized interface between agent and
+               external tools, databases, APIs
+      Status: 97M monthly downloads, universal adoption
+              (Anthropic, OpenAI, Google, Microsoft)
+
+    A2A (Agent-to-Agent) — Google → Linux Foundation
+      Layer: Agent ↔ Agent (cross-vendor coordination)
+      Purpose: Agents from different vendors/frameworks
+               discover each other and delegate tasks
+      Status: 150+ organizational supporters, v1.0 (2026)
+
+    LangChain + LangGraph — the execution layer
+      LangChain: building blocks (@tool, bind_tools,
+                 ToolMessage, ChatAnthropic)
+      LangGraph: orchestration (StateGraph, nodes, edges,
+                 ToolNode, conditional routing)
+      These are complementary: LangChain = bricks,
+      LangGraph = architecture
+
+### 9.2 Protocol Usage in Mithra
+
+    NOW (personal household, single process):
+      LangChain @tool    → internal domain tools
+      LangGraph          → agent orchestration
+      Domain events      → cross-domain side effects
+      Direct API calls   → Google Calendar, OneDrive
+
+      Rationale: all 15 domains run in the same Python
+      process. MCP and A2A add network overhead with zero
+      benefit for in-process communication.
+
+    PRODUCT (multi-tenant, third-party ecosystem):
+      MCP servers        → external tool providers
+                           (users bring own calendar service)
+      A2A protocol       → third-party specialist domains
+                           (medical domain from healthcare co.)
+      LangGraph subgraphs → domain specialist agents
+
+    MIGRATION PATH (zero domain code changes):
+      Internal domain → MCP server: wrap Domain in MCP
+                        adapter, domain logic unchanged
+      Domain event    → A2A task:   DomainContext.request_id
+                        maps to A2A task_id already
+
+### 9.3 LangChain vs LangGraph — Role in Mithra
+
+    LangChain provides (used in domain tools):
+      @tool decorator     define domain tools
+      args_schema         typed input via Pydantic
+      bind_tools()        attach domain tools to LLM
+      ToolMessage         tool result in message chain
+
+    LangGraph provides (used in agent orchestration):
+      StateGraph          the agent graph
+      nodes               classify_intent, tool_node, respond
+      conditional_edges   routing based on LLM output
+      ToolNode            executes tool calls
+      checkpointer        session state persistence
+
+### 9.4 Two-Stage Tool Selection
+
+Never inject all domain tools at once.
+A 60+ tool context window degrades LLM reasoning quality.
+Maximum tools per LLM call: 15.
+
+    Stage 1 — Domain classification (existing):
+      classify_intent() → domain identified
+      e.g. "dentist tuesday" → "time"
+      e.g. "call john" → "people"
+      Already working in LangGraphAdapter.
+
+    Stage 2 — Domain tool injection (new):
+      DomainRegistry.get_tools(domain_id, context)
+      Returns only that domain's tools (5-8 max)
+      llm.bind_tools(domain_tools) per request
+      LLM selects specific tool from small focused set
+
+    Multi-domain requests (rare, ~9% of requests):
+      "remind me to pay rent" → time + money
+      Inject tools from BOTH domains (still ≤15 total)
+      Single LLM chains them in one reasoning step
+
+    Supervisor pattern (future, when needed):
+      For 3+ domain requests (< 1% today)
+      Build when concrete need exists, not speculatively
+
+### 9.5 Domain Interface Contract
+
+Every domain implements this interface.
+This is a one-way door — changing it requires all domains
+to be updated simultaneously.
+
+    class Domain(ABC):
+
+        @property
+        @abstractmethod
+        def domain_id(self) -> str:
+            """Unique identifier e.g. 'time', 'people'.
+            Immutable. Used as storage domain key.
+            Must match StorageAdapter domain conventions."""
+
+        @property
+        @abstractmethod
+        def version(self) -> str:
+            """Semantic version e.g. '1.0.0'.
+            Major bump = breaking tool interface change.
+            Required for safe product-scale updates."""
+
+        @property
+        @abstractmethod
+        def display_name(self) -> str:
+            """Human-readable name e.g. 'Time & Calendar'"""
+
+        @abstractmethod
+        def get_tools(
+            self,
+            context: "DomainContext",
+        ) -> list["ToolBundle"]:
+            """Return tools for this domain.
+            Tools are bound to context at creation.
+            Max 8 tools per domain.
+            Tools must be context-bound, not stateful."""
+
+        @abstractmethod
+        async def get_dashboard_data(
+            self,
+            user_id: str,
+            household_id: str,
+        ) -> "DashboardData":
+            """Standardized summary for HA dashboard.
+            Called every 5 minutes by HA REST sensor."""
+
+        def get_context_keys(self) -> list[str]:
+            """Memory domains to load for context assembly.
+            Default: [self.domain_id]
+            Override if domain needs cross-domain memory."""
+            return [self.domain_id]
+
+        def get_event_subscriptions(self) -> list[str]:
+            """Domain events this domain reacts to.
+            e.g. MoneyDomain returns ['appointment_created']
+            Default: [] (no subscriptions)"""
+            return []
+
+        async def handle_event(
+            self,
+            event: "DomainEvent",
+            context: "DomainContext",
+        ) -> None:
+            """React to events from other domains.
+            Called AFTER autonomy confirmation.
+            Never called if user rejects confirmation."""
+            pass
+
+### 9.6 DomainContext — Immutable Request Context
+
+Frozen dataclass. Tools receive context at bind time.
+Immutable prevents tools from mutating shared state.
+This is a one-way door — tools must be pure functions
+relative to context.
+
+    @dataclass(frozen=True)
+    class DomainContext:
+        # Identity
+        user_id: str
+        household_id: str
+        household_timezone: str
+
+        # Services (injected, never imported by domains)
+        oauth_manager: Any          # OAuthManager
+        storage_adapter: Any        # StorageAdapter
+        file_router: Any            # FileStorageRouter
+        member_registry: Any        # MemberRegistry
+        file_search: Any            # FileSearchService
+
+        # Request metadata
+        request_id: str             # UUID, for tracing
+                                    # maps to A2A task_id
+        channel: str                # "telegram"|"voice"|"dashboard"
+        language: str               # "en-US"
+
+        # Autonomy override
+        autonomy_override: int | None  # if user said "just do it"
+
+### 9.7 ToolBundle and ToolMetadata
+
+Each tool has runtime logic (@tool) AND metadata.
+Metadata is how the AutononomyEngine, DashboardAPI,
+and future MCP migration know tool properties.
+
+    @dataclass
+    class ToolMetadata:
+        name: str                 # matches @tool name
+        domain_id: str            # owning domain
+        permission: PermissionTier
+        is_reversible: bool       # supports undo
+        autonomy_level: int       # default: 1=SURFACE
+                                  # 3=ACT_SILENT for safe reads
+        event_emitted: str | None # event after success
+
+    class PermissionTier(Enum):
+        READ       = "read"       # always execute, no confirm
+        WRITE      = "write"      # confirm per autonomy config
+        DESTRUCTIVE = "destructive" # ALWAYS confirm, no override
+
+    @dataclass
+    class ToolBundle:
+        tool: BaseTool            # LangChain @tool function
+        metadata: ToolMetadata    # Mithra runtime metadata
+
+    ONE-WAY DOOR: PermissionTier.DESTRUCTIVE never
+    auto-executes regardless of any autonomy override.
+    This cannot be changed without a security review.
+
+### 9.8 Tool Contract — Description Standard
+
+Tool descriptions are what the LLM reads to select tools.
+Poor descriptions = wrong tool selection = broken agent.
+Follow this pattern (from Claude Code architecture):
+
+    GOOD description:
+      """Create a calendar event in Google Calendar.
+      Use when user wants to schedule an appointment,
+      meeting, reminder, or any timed future event.
+      Requires: connected Google account.
+      Do NOT use for: past events, general notes,
+      tasks without a specific time, recurring budgets."""
+
+    BAD description:
+      """Creates an event."""
+
+    Rules:
+      1. State what it does (action + service)
+      2. State when to use it (use cases)
+      3. State prerequisites (connected account etc.)
+      4. State when NOT to use it (negative examples)
+      Max length: 3-4 sentences.
+
+    ONE-WAY DOOR: tool names use dot notation:
+      {domain_id}_{action}_{object}
+      e.g. calendar_create_event, people_get_contact
+      Changing a tool name breaks all historical logs.
+
+### 9.9 ToolResult Contract
+
+All tools return ToolResult. Never raise exceptions
+(except for infrastructure failures). LLM handles errors.
+
+    @dataclass
+    class ToolResult:
+        success: bool
+        summary: str              # ONE-WAY DOOR: always present
+                                  # LLM uses this for response
+                                  # e.g. "Created dentist appt Tuesday 3pm"
+        data: dict | None         # structured result data
+        error: str | None         # human-readable error message
+        error_code: str | None    # machine-readable error code
+                                  # e.g. "GOOGLE_NOT_CONNECTED"
+        undo_token: str | None    # if is_reversible, token to undo
+        events: list["DomainEvent"]  # side effects to emit
+
+    ONE-WAY DOOR: summary is always present.
+    Without it, LLM generates hallucinated summaries.
+    Every tool must produce a meaningful summary
+    even on failure: "Could not create event: Google not connected"
+
+### 9.10 Domain Events — Cross-Domain Side Effects
+
+Option C: AutononomyEngine wraps all tool executions.
+Post-execution hooks emit domain events.
+Other domains subscribe and react.
+
+    @dataclass
+    class DomainEvent:
+        event_type: str           # "appointment_created"
+        source_domain: str        # "time"
+        payload: dict             # event-specific data
+        user_id: str
+        household_id: str
+        request_id: str           # links to originating request
+        timestamp: str            # ISO8601
+
+    ORDERING (critical):
+      1. Tool executes → ToolResult with events list
+      2. AutononomyEngine confirms with user (if needed)
+      3. User says YES → events fire → other domains react
+      4. User says NO  → events suppressed, no side effects
+
+    ONE-WAY DOOR: events only fire after confirmation.
+    Firing before confirmation creates phantom side effects
+    (e.g. MoneyDomain records expense before user confirms booking)
+
+    EXAMPLES:
+      TimeDomain.calendar_create_event →
+        emits "appointment_created" {date, title, cost?}
+        MoneyDomain reacts → records expense if cost present
+
+      MoneyDomain.record_expense →
+        emits "expense_recorded" {amount, merchant, category}
+        (no subscriber today, reserved for analytics domain)
+
+      ShoppingDomain.add_to_cart →
+        emits "item_ordered" {item, price, eta}
+        MoneyDomain reacts → records expense
+        TimeDomain reacts → adds delivery reminder
+
+### 9.11 Autonomy Integration
+
+AutononomyEngine wraps ALL tool executions.
+Tools are pure functions with no autonomy knowledge.
+Engine uses PermissionTier + user config to decide.
+
+    EXECUTION FLOW:
+      1. LangGraph ToolNode receives tool_call from LLM
+      2. CustomToolNode looks up ToolMetadata by tool name
+      3. PermissionTier.READ → execute immediately
+      4. PermissionTier.WRITE → check user autonomy config
+         level 3 (ACT_SILENT) → execute
+         level 2 (ACT_TELL)   → execute + notify
+         level 1 (SURFACE)    → ask confirmation first
+      5. PermissionTier.DESTRUCTIVE → always ask, no override
+
+    AUTONOMY CONFIG DEFAULTS (household_config):
+      time.calendar_create_event    → SURFACE (level 1)
+      time.calendar_read_events     → ACT_SILENT (level 3)
+      money.record_expense          → ACT_TELL (level 2)
+      money.delete_expense          → SURFACE (level 1)
+      people.add_note               → ACT_TELL (level 2)
+      health.*                      → SURFACE always
+
+### 9.12 DomainRegistry
+
+Central registry. Bootstrap populates it.
+LangGraph agent queries it per request.
+
+    class DomainRegistry:
+        def register(self, domain: Domain) -> None
+
+        def get(self, domain_id: str) -> Domain | None
+
+        def get_tools(
+            self,
+            domain_ids: list[str],
+            context: DomainContext,
+        ) -> list[ToolBundle]:
+            """Return tools for requested domains.
+            Used by LangGraph to bind tools per request."""
+
+        def get_all_domain_ids(self) -> list[str]
+
+        def get_event_subscribers(
+            self,
+            event_type: str,
+        ) -> list[Domain]:
+            """Return domains subscribed to this event."""
+
+        def health(self) -> dict:
+            """Status of all registered domains."""
+
+### 9.13 Dashboard Integration
+
+Every domain exposes standardized dashboard data
+for Home Assistant Lovelace display.
+
+    @dataclass
+    class DashboardData:
+        domain: str               # domain_id
+        updated_at: str           # ISO8601
+        summary: str              # "2 events today"
+        items: list[DashboardItem]
+        alerts: list[str]         # urgent items
+        quick_actions: list[dict] # tappable actions
+
+    @dataclass
+    class DashboardItem:
+        id: str
+        title: str
+        subtitle: str | None
+        icon: str                 # HA MDI icon name
+        priority: str             # "high"|"normal"|"low"
+        action: str | None        # tool name to call on tap
+
+    GET /api/v1/dashboard/{domain_id}
+    GET /api/v1/dashboard/today  (aggregated across all domains)
+
+    HA Lovelace polls every 5 minutes via REST sensor.
+    Authenticated via read-only dashboard token stored
+    in household_config: "ha_dashboard_token"
+
+### 9.14 Time and Money as Metadata
+
+Important clarification: Time and Money are domains
+AND cross-cutting metadata. Resolves apparent complexity.
+
+    AS DOMAIN (when they are the subject):
+      "what's on my calendar?" → TimeDomain handles it
+      "how much did I spend?"  → MoneyDomain handles it
+
+    AS METADATA (when they are context):
+      "book dentist tuesday 3pm" → TimeDomain primary
+        start_time is a parameter, not a domain call
+      "buy groceries for $50"  → ShoppingDomain primary
+        amount is metadata on the shopping record
+
+    RULE: classify_intent() identifies the primary domain.
+    Time/money parameters are inputs to that domain's tool.
+    MoneyDomain is only invoked when money is the SUBJECT.
+    TimeDomain is only invoked when time is the SUBJECT.
+
+    DOMAIN EVENTS handle side effects automatically:
+      ShoppingDomain.buy_groceries →
+        emits "purchase_made" {amount: 50}
+        MoneyDomain reacts → records $50 expense
+      User never asks twice. No multi-domain orchestration.
+
+### 9.15 MCP and A2A Migration Path
+
+Design now enables migration with zero domain code changes.
+
+    MCP MIGRATION (external tool providers):
+      DomainContext → MCP request context
+      ToolBundle.tool.args_schema → MCP tool inputSchema
+        (Pydantic generates valid JSON Schema automatically)
+      ToolResult → MCP tool response
+      Domain → MCPServerAdapter(domain)
+
+      ONE-WAY DOOR: all tool inputs MUST use Pydantic
+      models as args_schema. This generates the JSON Schema
+      required for both LangChain bind_tools AND MCP servers.
+      Never use untyped **kwargs in tools.
+
+    A2A MIGRATION (third-party specialist domains):
+      domain_id → A2A Agent Card name
+      version → Agent Card version
+      DomainContext.request_id → A2A task_id
+      ToolResult {success, data, error} → A2A task result
+      Domain.handle_event() → A2A event webhook
+
+      For product: third-party domain builders expose
+      their domains as A2A agents. Mithra delegates to them
+      exactly as it delegates to internal domains today.
+
+### 9.16 Implementation Order
+
+    I1. Create mithra/domains/ package structure
+        mithra/domains/__init__.py
+        mithra/domains/base.py      (Domain ABC)
+        mithra/domains/context.py   (DomainContext)
+        mithra/domains/result.py    (ToolResult, DomainEvent)
+        mithra/domains/bundle.py    (ToolBundle, ToolMetadata)
+        mithra/domains/registry.py  (DomainRegistry)
+        mithra/domains/dashboard.py (DashboardData)
+
+    I2. Update LangGraphAdapter
+        Add stage 2: load domain tools per classified intent
+        Implement CustomToolNode with context injection
+        Wire AutononomyEngine as tool execution wrapper
+        Wire DomainRegistry for tool lookup
+
+    I3. Add dashboard route to gateway.py
+        GET /api/v1/dashboard/{domain_id}
+        GET /api/v1/dashboard/today
+
+    I4. Implement Time domain (first domain)
+        mithra/domains/time/
+        Tests first — domain logic is pure Python
+
+    I5. Each subsequent domain follows same pattern
+
+### 9.17 Alternatives Considered
+
+    MCP for internal domains (rejected):
+      Internal domains run in same process.
+      MCP adds HTTP round-trip overhead for local calls.
+      LangChain @tool is the right layer for in-process tools.
+      Revisit: when third-party domain builders need extension.
+
+    A2A for domain coordination (rejected for now):
+      All domains run in same Python process.
+      Domain events (Option C) are simpler and sufficient.
+      A2A is for cross-vendor, cross-platform agent coordination.
+      Revisit: when Mithra supports third-party specialist agents.
+
+    Supervisor pattern for all multi-domain requests (rejected):
+      90% of requests are single-domain.
+      Domain events handle side effects without orchestration.
+      Supervisor doubles token spend on routing calls.
+      Build when 3+ domain requests become common.
+
+    Swarm pattern (rejected for now):
+      Hard to debug, agents need to know about each other.
+      Domain isolation principle violated.
+      Revisit for specific well-defined pipelines (Phase 3+).
+
+    One agent with all tools loaded (rejected):
+      50+ tool context window degrades LLM reasoning.
+      Two-stage selection keeps tools per request ≤ 15.
+      Industry consensus: inject only relevant tools.
+
+---
+
+## 10. Design Principles (updated)
+
+Replace existing section 11 with:
+
+1. PRIVACY FIRST
+   Health domain: local only, never cloud. Ever.
+   PermissionTier.DESTRUCTIVE: always confirm, no override.
+   Health domain tools: never in non-health domain context.
+
+2. ABSTRACTION BOUNDARIES
+   Domain code never imports other domain code.
+   Domains communicate only via events and DomainContext.
+   Gateway never knows about tool internals.
+   Tools are pure functions relative to DomainContext.
+
+3. PRODUCT READY FROM DAY ONE
+   household_id scopes everything.
+   domain_id + version enables safe product updates.
+   Pydantic args_schema = MCP-ready JSON Schema.
+   DomainContext.request_id = A2A task_id.
+
+4. NO TACTICAL HOTFIXES
+   If a fix touches more than one domain, stop.
+   Redesign before implementing.
+   Update ARCHITECTURE_DECISIONS.md before touching code.
+
+5. TEST BEFORE SHIP
+   All domain tools have unit tests.
+   Tests use mock DomainContext injection.
+   No domain ships without passing full test suite.
+   Current baseline: 784 tests.
+
+6. DOCUMENT THE WHY
+   Every ADR records alternatives considered.
+   Tool descriptions must explain WHEN NOT to use.
+   Version changes must document what broke.
+
+7. START SIMPLE, EXTEND DELIBERATELY
+   Single agent + domain events now.
+   Supervisor pattern when 3+ domains needed.
+   MCP wrapping when third-party providers needed.
+   A2A when cross-vendor agent coordination needed.
+   Never build for scale you don't yet have.
+
+8. INDUSTRY ALIGNMENT
+   Tool contracts follow Claude Code patterns.
+   Tool schemas follow MCP/A2A JSON Schema standard.
+   Pydantic args_schema = zero-effort MCP compatibility.
+   LangChain + LangGraph = industry standard execution layer.
+
+===============================================================
+
+Commit message: docs: domain plugin architecture —
+                tool contracts, DomainContext, ToolResult,
+                autonomy integration, domain events,
+                MCP/A2A migration path, protocol landscape
+Do not run tests. Do not implement anything.

@@ -1,0 +1,1503 @@
+Implement Phase 1 Storage Infrastructure.
+Read docs/ARCHITECTURE_DECISIONS.md sections 3, 5, and 6
+before writing any code.
+
+Do steps in order. All existing 753 tests must pass
+after each step. Do not skip ahead.
+
+===============================================================
+P1-01 — Add files table to LocalStorageAdapter
+===============================================================
+
+In mithra/storage/local.py, add to the DDL that runs
+at __init__ time (after existing _IDENTITY_DDL):
+
+_FILES_DDL = """
+CREATE TABLE IF NOT EXISTS files (
+    id           TEXT PRIMARY KEY,
+    household_id TEXT NOT NULL,
+    user_id      TEXT NOT NULL,
+    domain       TEXT NOT NULL,
+    filename     TEXT NOT NULL,
+    storage      TEXT NOT NULL,
+    path         TEXT NOT NULL,
+    size_bytes   INTEGER,
+    mime_type    TEXT,
+    uploaded_at  TEXT NOT NULL,
+    metadata     TEXT,
+    chunk_ids    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_files_household
+    ON files(household_id);
+CREATE INDEX IF NOT EXISTS idx_files_domain
+    ON files(domain, household_id);
+CREATE INDEX IF NOT EXISTS idx_files_user
+    ON files(user_id, household_id);
+"""
+
+Call it in __init__ after identity tables.
+
+===============================================================
+P1-02 — FileStorageAdapter abstract base
+Create mithra/storage/file_adapter.py
+===============================================================
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Optional
+import secrets
+
+
+@dataclass
+class FileRecord:
+    """Metadata record for a stored file."""
+    id: str                      # "file_abc123"
+    household_id: str
+    user_id: str
+    domain: str                  # "money", "documents"
+    filename: str                # "costco_receipt.pdf"
+    storage: str                 # "local" | "onedrive"
+    path: str                    # storage path
+    size_bytes: Optional[int] = None
+    mime_type: Optional[str] = None
+    uploaded_at: str = ""
+    metadata: Optional[dict] = None   # domain-specific JSON
+    chunk_ids: Optional[list] = None  # ChromaDB chunk IDs
+
+    def __post_init__(self):
+        if not self.uploaded_at:
+            self.uploaded_at = datetime.now(
+                timezone.utc).isoformat()
+
+
+def generate_file_id() -> str:
+    return "file_" + secrets.token_hex(6)
+
+
+class FileStorageAdapter(ABC):
+    """Abstract base for all file storage backends.
+
+    One-way door: all file operations go through this.
+    Swapping backends (local vs OneDrive) requires zero
+    domain code changes.
+
+    Health domain MUST use LocalFileAdapter only.
+    This is enforced by FileStorageRouter, never here.
+    """
+
+    @abstractmethod
+    async def save_file(
+        self,
+        content: bytes,
+        filename: str,
+        domain: str,
+        user_id: str,
+        household_id: str,
+        metadata: Optional[dict] = None,
+        mime_type: Optional[str] = None,
+    ) -> FileRecord:
+        """Store file. Returns FileRecord with generated id."""
+
+    @abstractmethod
+    async def get_file(
+        self,
+        file_id: str,
+        household_id: str,
+    ) -> tuple[bytes, FileRecord]:
+        """Returns (content, FileRecord)."""
+
+    @abstractmethod
+    async def delete_file(
+        self,
+        file_id: str,
+        household_id: str,
+    ) -> None:
+        """Delete file and its metadata."""
+
+    @abstractmethod
+    async def list_files(
+        self,
+        household_id: str,
+        domain: str = "",
+        user_id: str = "",
+        prefix: str = "",
+    ) -> list[FileRecord]:
+        """Returns FileRecord list only, not content."""
+
+    @abstractmethod
+    async def file_exists(
+        self,
+        file_id: str,
+        household_id: str,
+    ) -> bool:
+        """Check if file exists."""
+
+    @abstractmethod
+    def health(self) -> dict:
+        """Return health status."""
+
+===============================================================
+P1-03 — LocalFileAdapter
+Create mithra/storage/local_file.py
+===============================================================
+
+Stores files at {base_path}/{domain}/{user_id}/{file_id}_{filename}
+Metadata stored in SQLite files table via LocalStorageAdapter.
+
+import json
+import logging
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+from mithra.storage.file_adapter import (
+    FileStorageAdapter, FileRecord, generate_file_id)
+
+logger = logging.getLogger(__name__)
+
+
+class LocalFileAdapter(FileStorageAdapter):
+    """File storage on local filesystem.
+
+    Always works. No network calls. No credentials.
+    Required for health domain (never cloud).
+    Used as fallback when OneDrive not connected.
+
+    Path structure:
+      {base_path}/{domain}/{user_id}/{file_id}_{filename}
+    """
+
+    def __init__(self, base_path: str, db_path: str):
+        self._base_path = Path(base_path)
+        self._db_path = db_path
+        self._base_path.mkdir(parents=True, exist_ok=True)
+
+    def _file_path(
+        self, domain: str, user_id: str,
+        file_id: str, filename: str
+    ) -> Path:
+        dir_path = self._base_path / domain / user_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        return dir_path / f"{file_id}_{filename}"
+
+    def _save_metadata(self, record: FileRecord) -> None:
+        import sqlite3
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO files
+                   (id, household_id, user_id, domain,
+                    filename, storage, path, size_bytes,
+                    mime_type, uploaded_at, metadata, chunk_ids)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (record.id, record.household_id, record.user_id,
+                 record.domain, record.filename, record.storage,
+                 record.path, record.size_bytes, record.mime_type,
+                 record.uploaded_at,
+                 json.dumps(record.metadata)
+                     if record.metadata else None,
+                 json.dumps(record.chunk_ids)
+                     if record.chunk_ids else None))
+
+    def _load_metadata(
+        self, file_id: str, household_id: str
+    ) -> Optional[FileRecord]:
+        import sqlite3
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM files WHERE id=? AND household_id=?",
+                (file_id, household_id)).fetchone()
+        if not row:
+            return None
+        return FileRecord(
+            id=row["id"],
+            household_id=row["household_id"],
+            user_id=row["user_id"],
+            domain=row["domain"],
+            filename=row["filename"],
+            storage=row["storage"],
+            path=row["path"],
+            size_bytes=row["size_bytes"],
+            mime_type=row["mime_type"],
+            uploaded_at=row["uploaded_at"],
+            metadata=json.loads(row["metadata"])
+                if row["metadata"] else None,
+            chunk_ids=json.loads(row["chunk_ids"])
+                if row["chunk_ids"] else None,
+        )
+
+    async def save_file(
+        self,
+        content: bytes,
+        filename: str,
+        domain: str,
+        user_id: str,
+        household_id: str,
+        metadata: Optional[dict] = None,
+        mime_type: Optional[str] = None,
+    ) -> FileRecord:
+        file_id = generate_file_id()
+        path = self._file_path(domain, user_id, file_id, filename)
+        path.write_bytes(content)
+        record = FileRecord(
+            id=file_id,
+            household_id=household_id,
+            user_id=user_id,
+            domain=domain,
+            filename=filename,
+            storage="local",
+            path=str(path),
+            size_bytes=len(content),
+            mime_type=mime_type,
+            metadata=metadata,
+        )
+        self._save_metadata(record)
+        logger.info(
+            f"Saved file: {file_id} domain={domain} "
+            f"user={user_id} size={len(content)}")
+        return record
+
+    async def get_file(
+        self,
+        file_id: str,
+        household_id: str,
+    ) -> tuple[bytes, FileRecord]:
+        record = self._load_metadata(file_id, household_id)
+        if not record:
+            raise FileNotFoundError(
+                f"File not found: {file_id}")
+        content = Path(record.path).read_bytes()
+        return content, record
+
+    async def delete_file(
+        self,
+        file_id: str,
+        household_id: str,
+    ) -> None:
+        record = self._load_metadata(file_id, household_id)
+        if record:
+            try:
+                Path(record.path).unlink(missing_ok=True)
+            except Exception as e:
+                logger.warning(f"Could not delete file: {e}")
+        import sqlite3
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "DELETE FROM files WHERE id=? AND household_id=?",
+                (file_id, household_id))
+        logger.info(f"Deleted file: {file_id}")
+
+    async def list_files(
+        self,
+        household_id: str,
+        domain: str = "",
+        user_id: str = "",
+        prefix: str = "",
+    ) -> list[FileRecord]:
+        import sqlite3
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            q = "SELECT * FROM files WHERE household_id=?"
+            params = [household_id]
+            if domain:
+                q += " AND domain=?"
+                params.append(domain)
+            if user_id:
+                q += " AND user_id=?"
+                params.append(user_id)
+            if prefix:
+                q += " AND filename LIKE ?"
+                params.append(f"{prefix}%")
+            q += " ORDER BY uploaded_at DESC"
+            rows = conn.execute(q, params).fetchall()
+        return [FileRecord(
+            id=r["id"], household_id=r["household_id"],
+            user_id=r["user_id"], domain=r["domain"],
+            filename=r["filename"], storage=r["storage"],
+            path=r["path"], size_bytes=r["size_bytes"],
+            mime_type=r["mime_type"], uploaded_at=r["uploaded_at"],
+            metadata=json.loads(r["metadata"])
+                if r["metadata"] else None,
+            chunk_ids=json.loads(r["chunk_ids"])
+                if r["chunk_ids"] else None,
+        ) for r in rows]
+
+    async def file_exists(
+        self,
+        file_id: str,
+        household_id: str,
+    ) -> bool:
+        return self._load_metadata(
+            file_id, household_id) is not None
+
+    def health(self) -> dict:
+        try:
+            import sqlite3
+            with sqlite3.connect(self._db_path) as conn:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM files").fetchone()[0]
+            free = os.statvfs(self._base_path).f_bavail * \
+                   os.statvfs(self._base_path).f_frsize \
+                   if hasattr(os, 'statvfs') else -1
+            return {
+                "status": "ok",
+                "file_count": count,
+                "base_path": str(self._base_path),
+                "free_bytes": free,
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+===============================================================
+P1-04 — MicrosoftGraphClient
+Create mithra/integrations/microsoft_graph.py
+===============================================================
+
+Thin wrapper around Microsoft Graph API.
+Uses OAuthManager for token — no separate auth.
+
+import logging
+from typing import Optional
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+MITHRA_ROOT = "Mithra"
+
+
+class MicrosoftGraphClient:
+    """Microsoft Graph API client for OneDrive operations.
+
+    Uses OAuthManager.get_token("microsoft", user_id).
+    No separate auth, no separate Docker service.
+
+    OneDrive folder structure:
+      /Mithra/{household_id}/{domain}/
+
+    Future: calendar, contacts, mail — add when needed.
+    """
+
+    def __init__(
+        self,
+        oauth_manager,
+        household_id: str,
+    ):
+        self._oauth = oauth_manager
+        self._household_id = household_id
+
+    async def _headers(self, user_id: str) -> dict:
+        token = await self._oauth.get_token(
+            "microsoft", user_id)
+        if not token:
+            raise RuntimeError(
+                f"No Microsoft token for {user_id}. "
+                f"Send 'connect microsoft' to Mithra.")
+        return {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+    def _onedrive_path(
+        self, domain: str, filename: str
+    ) -> str:
+        return (f"{MITHRA_ROOT}/{self._household_id}/"
+                f"{domain}/{filename}")
+
+    async def upload_file(
+        self,
+        user_id: str,
+        domain: str,
+        filename: str,
+        content: bytes,
+        mime_type: str = "application/octet-stream",
+    ) -> dict:
+        """Upload file to OneDrive. Returns Graph item dict."""
+        path = self._onedrive_path(domain, filename)
+        headers = await self._headers(user_id)
+        headers["Content-Type"] = mime_type
+        url = (f"{GRAPH_BASE}/me/drive/root:/"
+               f"{path}:/content")
+        async with httpx.AsyncClient() as client:
+            resp = await client.put(
+                url, headers=headers,
+                content=content, timeout=60)
+        resp.raise_for_status()
+        result = resp.json()
+        logger.info(
+            f"Uploaded to OneDrive: {path} "
+            f"({len(content)} bytes)")
+        return result
+
+    async def download_file(
+        self,
+        user_id: str,
+        domain: str,
+        filename: str,
+    ) -> bytes:
+        """Download file from OneDrive."""
+        path = self._onedrive_path(domain, filename)
+        headers = await self._headers(user_id)
+        url = (f"{GRAPH_BASE}/me/drive/root:/"
+               f"{path}:/content")
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                url, headers=headers, timeout=60,
+                follow_redirects=True)
+        resp.raise_for_status()
+        return resp.content
+
+    async def delete_file(
+        self,
+        user_id: str,
+        domain: str,
+        filename: str,
+    ) -> None:
+        """Delete file from OneDrive."""
+        path = self._onedrive_path(domain, filename)
+        headers = await self._headers(user_id)
+        url = (f"{GRAPH_BASE}/me/drive/root:/{path}")
+        async with httpx.AsyncClient() as client:
+            resp = await client.delete(
+                url, headers=headers, timeout=30)
+        if resp.status_code != 204:
+            resp.raise_for_status()
+        logger.info(f"Deleted from OneDrive: {path}")
+
+    async def list_folder(
+        self,
+        user_id: str,
+        domain: str,
+    ) -> list[dict]:
+        """List files in domain folder."""
+        folder = (f"{MITHRA_ROOT}/{self._household_id}/"
+                  f"{domain}")
+        headers = await self._headers(user_id)
+        url = (f"{GRAPH_BASE}/me/drive/root:/"
+               f"{folder}:/children")
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                url, headers=headers, timeout=30)
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        return resp.json().get("value", [])
+
+    async def create_folder(
+        self,
+        user_id: str,
+        path: str,
+    ) -> dict:
+        """Create folder at path under Mithra root."""
+        headers = await self._headers(user_id)
+        full_path = f"{MITHRA_ROOT}/{self._household_id}"
+        parts = path.strip("/").split("/")
+        # Create each level
+        result = {}
+        for part in parts:
+            url = (f"{GRAPH_BASE}/me/drive/root:/"
+                   f"{full_path}:/children")
+            body = {
+                "name": part,
+                "folder": {},
+                "@microsoft.graph.conflictBehavior": "fail",
+            }
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    url, headers=headers,
+                    json=body, timeout=30)
+            if resp.status_code not in (200, 201, 409):
+                resp.raise_for_status()
+            full_path = f"{full_path}/{part}"
+            if resp.status_code in (200, 201):
+                result = resp.json()
+        return result
+
+    async def get_share_link(
+        self,
+        user_id: str,
+        domain: str,
+        filename: str,
+        expires_hours: int = 1,
+    ) -> str:
+        """Get temporary share link (expires in N hours)."""
+        path = self._onedrive_path(domain, filename)
+        headers = await self._headers(user_id)
+        url = (f"{GRAPH_BASE}/me/drive/root:/{path}:/createLink")
+        from datetime import timedelta
+        import datetime as dt
+        expiry = (dt.datetime.now(dt.timezone.utc) +
+                  timedelta(hours=expires_hours)).isoformat()
+        body = {
+            "type": "view",
+            "scope": "anonymous",
+            "expirationDateTime": expiry,
+        }
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                url, headers=headers,
+                json=body, timeout=30)
+        resp.raise_for_status()
+        return resp.json().get("link", {}).get("webUrl", "")
+
+    def is_connected(self, user_id: str) -> bool:
+        return self._oauth.is_connected("microsoft", user_id)
+
+===============================================================
+P1-05 — OneDriveFileAdapter
+Create mithra/storage/onedrive_file.py
+===============================================================
+
+import json
+import logging
+from typing import Optional
+
+from mithra.storage.file_adapter import (
+    FileStorageAdapter, FileRecord, generate_file_id)
+
+logger = logging.getLogger(__name__)
+
+
+class OneDriveFileAdapter(FileStorageAdapter):
+    """File storage in user's OneDrive via Graph API.
+
+    Uses MicrosoftGraphClient for all file operations.
+    Metadata stored in SQLite files table (same as local).
+    Falls back to LocalFileAdapter handled by FileStorageRouter.
+
+    OneDrive path: /Mithra/{household_id}/{domain}/{filename}
+    """
+
+    def __init__(
+        self,
+        graph_client,       # MicrosoftGraphClient
+        db_path: str,
+        household_id: str,
+    ):
+        self._graph = graph_client
+        self._db_path = db_path
+        self._household_id = household_id
+
+    def _save_metadata(self, record: FileRecord) -> None:
+        import sqlite3
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO files
+                   (id, household_id, user_id, domain,
+                    filename, storage, path, size_bytes,
+                    mime_type, uploaded_at, metadata, chunk_ids)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (record.id, record.household_id, record.user_id,
+                 record.domain, record.filename, record.storage,
+                 record.path, record.size_bytes, record.mime_type,
+                 record.uploaded_at,
+                 json.dumps(record.metadata)
+                     if record.metadata else None,
+                 json.dumps(record.chunk_ids)
+                     if record.chunk_ids else None))
+
+    def _load_metadata(
+        self, file_id: str, household_id: str
+    ) -> Optional[FileRecord]:
+        import sqlite3
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM files WHERE id=? AND household_id=?",
+                (file_id, household_id)).fetchone()
+        if not row:
+            return None
+        return FileRecord(
+            id=row["id"], household_id=row["household_id"],
+            user_id=row["user_id"], domain=row["domain"],
+            filename=row["filename"], storage=row["storage"],
+            path=row["path"], size_bytes=row["size_bytes"],
+            mime_type=row["mime_type"],
+            uploaded_at=row["uploaded_at"],
+            metadata=json.loads(row["metadata"])
+                if row["metadata"] else None,
+            chunk_ids=json.loads(row["chunk_ids"])
+                if row["chunk_ids"] else None,
+        )
+
+    async def save_file(
+        self,
+        content: bytes,
+        filename: str,
+        domain: str,
+        user_id: str,
+        household_id: str,
+        metadata: Optional[dict] = None,
+        mime_type: Optional[str] = None,
+    ) -> FileRecord:
+        file_id = generate_file_id()
+        # OneDrive path for reference
+        od_path = (f"Mithra/{household_id}/{domain}/"
+                   f"{file_id}_{filename}")
+        try:
+            await self._graph.upload_file(
+                user_id=user_id,
+                domain=domain,
+                filename=f"{file_id}_{filename}",
+                content=content,
+                mime_type=mime_type or "application/octet-stream",
+            )
+        except Exception as e:
+            logger.error(
+                f"OneDrive upload failed: {e}")
+            raise
+        record = FileRecord(
+            id=file_id,
+            household_id=household_id,
+            user_id=user_id,
+            domain=domain,
+            filename=filename,
+            storage="onedrive",
+            path=od_path,
+            size_bytes=len(content),
+            mime_type=mime_type,
+            metadata=metadata,
+        )
+        self._save_metadata(record)
+        logger.info(
+            f"Saved to OneDrive: {file_id} "
+            f"domain={domain} user={user_id}")
+        return record
+
+    async def get_file(
+        self,
+        file_id: str,
+        household_id: str,
+    ) -> tuple[bytes, FileRecord]:
+        record = self._load_metadata(file_id, household_id)
+        if not record:
+            raise FileNotFoundError(
+                f"File not found: {file_id}")
+        content = await self._graph.download_file(
+            user_id=record.user_id,
+            domain=record.domain,
+            filename=f"{file_id}_{record.filename}",
+        )
+        return content, record
+
+    async def delete_file(
+        self,
+        file_id: str,
+        household_id: str,
+    ) -> None:
+        record = self._load_metadata(file_id, household_id)
+        if record:
+            try:
+                await self._graph.delete_file(
+                    user_id=record.user_id,
+                    domain=record.domain,
+                    filename=f"{file_id}_{record.filename}",
+                )
+            except Exception as e:
+                logger.warning(
+                    f"OneDrive delete failed: {e}")
+        import sqlite3
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "DELETE FROM files WHERE id=? AND household_id=?",
+                (file_id, household_id))
+
+    async def list_files(
+        self,
+        household_id: str,
+        domain: str = "",
+        user_id: str = "",
+        prefix: str = "",
+    ) -> list[FileRecord]:
+        # List from SQLite (metadata index)
+        import sqlite3
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            q = ("SELECT * FROM files WHERE household_id=? "
+                 "AND storage='onedrive'")
+            params = [household_id]
+            if domain:
+                q += " AND domain=?"
+                params.append(domain)
+            if user_id:
+                q += " AND user_id=?"
+                params.append(user_id)
+            q += " ORDER BY uploaded_at DESC"
+            rows = conn.execute(q, params).fetchall()
+        return [FileRecord(
+            id=r["id"], household_id=r["household_id"],
+            user_id=r["user_id"], domain=r["domain"],
+            filename=r["filename"], storage=r["storage"],
+            path=r["path"], size_bytes=r["size_bytes"],
+            mime_type=r["mime_type"],
+            uploaded_at=r["uploaded_at"],
+            metadata=json.loads(r["metadata"])
+                if r["metadata"] else None,
+            chunk_ids=json.loads(r["chunk_ids"])
+                if r["chunk_ids"] else None,
+        ) for r in rows]
+
+    async def file_exists(
+        self,
+        file_id: str,
+        household_id: str,
+    ) -> bool:
+        return self._load_metadata(
+            file_id, household_id) is not None
+
+    def health(self) -> dict:
+        return {
+            "status": "ok",
+            "storage": "onedrive",
+            "household_id": self._household_id,
+        }
+
+===============================================================
+P1-06 — FileStorageRouter
+Create mithra/storage/file_router.py
+===============================================================
+
+Same pattern as StorageRouter.
+HEALTH DOMAIN → LocalFileAdapter ONLY. Hard rule.
+
+import logging
+from mithra.storage.file_adapter import (
+    FileStorageAdapter, FileRecord)
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+HEALTH_DOMAIN = "health"
+
+
+class FileStorageRouter:
+    """Routes file operations to correct FileStorageAdapter.
+
+    HARD RULE: health domain → local ONLY, never OneDrive.
+    This cannot be configured, overridden, or bypassed.
+
+    All other domains → OneDriveFileAdapter if connected,
+    LocalFileAdapter as fallback.
+    """
+
+    def __init__(
+        self,
+        local_adapter: FileStorageAdapter,
+        onedrive_adapter: Optional[FileStorageAdapter] = None,
+    ):
+        self._local = local_adapter
+        self._onedrive = onedrive_adapter
+
+    def get_adapter(self, domain: str) -> FileStorageAdapter:
+        """Return correct adapter for domain.
+
+        Health domain: ALWAYS local. No exceptions.
+        Other domains: OneDrive if available, local fallback.
+        """
+        if domain == HEALTH_DOMAIN:
+            return self._local
+        if self._onedrive is not None:
+            return self._onedrive
+        return self._local
+
+    def is_cloud_available(self) -> bool:
+        return self._onedrive is not None
+
+    async def save_file(
+        self,
+        content: bytes,
+        filename: str,
+        domain: str,
+        user_id: str,
+        household_id: str,
+        metadata: Optional[dict] = None,
+        mime_type: Optional[str] = None,
+    ) -> FileRecord:
+        adapter = self.get_adapter(domain)
+        return await adapter.save_file(
+            content=content, filename=filename,
+            domain=domain, user_id=user_id,
+            household_id=household_id,
+            metadata=metadata, mime_type=mime_type)
+
+    async def get_file(
+        self,
+        file_id: str,
+        household_id: str,
+        domain: str = "",
+    ) -> tuple[bytes, FileRecord]:
+        # Try local first (metadata is always in SQLite)
+        try:
+            return await self._local.get_file(
+                file_id, household_id)
+        except FileNotFoundError:
+            pass
+        if self._onedrive and domain != HEALTH_DOMAIN:
+            return await self._onedrive.get_file(
+                file_id, household_id)
+        raise FileNotFoundError(f"File not found: {file_id}")
+
+    async def delete_file(
+        self,
+        file_id: str,
+        household_id: str,
+        domain: str = "",
+    ) -> None:
+        adapter = self.get_adapter(domain)
+        await adapter.delete_file(file_id, household_id)
+
+    async def list_files(
+        self,
+        household_id: str,
+        domain: str = "",
+        user_id: str = "",
+    ) -> list[FileRecord]:
+        adapter = self.get_adapter(domain)
+        return await adapter.list_files(
+            household_id=household_id,
+            domain=domain, user_id=user_id)
+
+===============================================================
+P1-07 — DocumentIndexer
+Create mithra/storage/document_indexer.py
+===============================================================
+
+Extracts text from files using Docling (fast mode default).
+Chunks text and stores in ChromaDB.
+Updates chunk_ids in SQLite files table.
+Runs async — non-blocking after file save.
+
+Add to requirements.txt: docling
+
+import asyncio
+import json
+import logging
+import sqlite3
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+HEALTH_DOMAIN = "health"
+CHUNK_SIZE_TOKENS = 500
+
+
+class DocumentIndexer:
+    """Extracts text from files, chunks, embeds in ChromaDB.
+
+    Privacy rules (one-way doors):
+      health domain → local embedding ONLY (phi3:mini)
+      all others    → LLM router (cloud ok)
+      health content NEVER sent to cloud embedding APIs
+
+    Runs in background after file save.
+    User gets file confirmation immediately.
+
+    Uses Docling in fast_mode by default (no ML models).
+    full_mode enabled for scanned images (OCR).
+    """
+
+    def __init__(
+        self,
+        file_router,          # FileStorageRouter
+        vector_store,         # VectorStore (ChromaDB)
+        db_path: str,
+        household_id: str,
+        llm_router=None,      # for embeddings
+    ):
+        self._file_router = file_router
+        self._vector_store = vector_store
+        self._db_path = db_path
+        self._household_id = household_id
+        self._llm_router = llm_router
+
+    async def index(
+        self,
+        file_id: str,
+        domain: str,
+        user_id: str,
+    ) -> None:
+        """Index a file in background. Non-blocking."""
+        asyncio.create_task(
+            self._index_task(file_id, domain, user_id))
+
+    async def _index_task(
+        self,
+        file_id: str,
+        domain: str,
+        user_id: str,
+    ) -> None:
+        """Background indexing task."""
+        try:
+            content, record = await self._file_router.get_file(
+                file_id, self._household_id, domain)
+            chunks = await self._extract_chunks(
+                content, record.filename, domain)
+            if not chunks:
+                logger.info(
+                    f"No text extracted from {file_id}")
+                return
+            chunk_ids = await self._embed_chunks(
+                chunks, file_id, domain, user_id)
+            self._update_chunk_ids(file_id, chunk_ids)
+            logger.info(
+                f"Indexed {file_id}: {len(chunk_ids)} chunks")
+        except Exception as e:
+            logger.error(
+                f"Indexing failed for {file_id}: {e}")
+
+    async def _extract_chunks(
+        self,
+        content: bytes,
+        filename: str,
+        domain: str,
+    ) -> list[str]:
+        """Extract text chunks using Docling."""
+        try:
+            import tempfile
+            import os
+            from docling.document_converter import (
+                DocumentConverter)
+            # Write to temp file (Docling needs file path)
+            suffix = self._get_suffix(filename)
+            with tempfile.NamedTemporaryFile(
+                suffix=suffix, delete=False
+            ) as f:
+                f.write(content)
+                tmp_path = f.name
+            try:
+                converter = DocumentConverter()
+                result = converter.convert(tmp_path)
+                text = result.document.export_to_markdown()
+            finally:
+                os.unlink(tmp_path)
+            return self._chunk_text(text)
+        except ImportError:
+            logger.warning(
+                "Docling not installed. "
+                "pip install docling to enable indexing.")
+            return []
+        except Exception as e:
+            logger.error(
+                f"Text extraction failed: {e}")
+            return []
+
+    def _get_suffix(self, filename: str) -> str:
+        import os
+        _, ext = os.path.splitext(filename)
+        return ext or ".bin"
+
+    def _chunk_text(
+        self, text: str, chunk_size: int = CHUNK_SIZE_TOKENS
+    ) -> list[str]:
+        """Split text into ~500 token chunks."""
+        # Simple word-based chunking
+        words = text.split()
+        if not words:
+            return []
+        chunks = []
+        current = []
+        current_size = 0
+        for word in words:
+            # Rough token estimate: 1 token ≈ 0.75 words
+            word_tokens = max(1, len(word) // 4)
+            if current_size + word_tokens > chunk_size \
+                    and current:
+                chunks.append(" ".join(current))
+                current = [word]
+                current_size = word_tokens
+            else:
+                current.append(word)
+                current_size += word_tokens
+        if current:
+            chunks.append(" ".join(current))
+        return chunks
+
+    async def _embed_chunks(
+        self,
+        chunks: list[str],
+        file_id: str,
+        domain: str,
+        user_id: str,
+    ) -> list[str]:
+        """Embed chunks and store in ChromaDB."""
+        collection = (
+            f"health_{self._household_id}"
+            if domain == HEALTH_DOMAIN
+            else f"documents_{self._household_id}"
+        )
+        chunk_ids = []
+        for i, chunk in enumerate(chunks):
+            chunk_id = f"{file_id}_chunk_{i}"
+            metadata = {
+                "file_id": file_id,
+                "chunk_index": i,
+                "domain": domain,
+                "user_id": user_id,
+                "household_id": self._household_id,
+            }
+            try:
+                await self._vector_store.write(
+                    domain=collection,
+                    key=chunk_id,
+                    text=chunk,
+                    metadata=metadata,
+                )
+                chunk_ids.append(chunk_id)
+            except Exception as e:
+                logger.error(
+                    f"Failed to embed chunk {chunk_id}: {e}")
+        return chunk_ids
+
+    def _update_chunk_ids(
+        self, file_id: str, chunk_ids: list[str]
+    ) -> None:
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                "UPDATE files SET chunk_ids=? WHERE id=?",
+                (json.dumps(chunk_ids), file_id))
+
+===============================================================
+P1-08 — FileSearchService
+Create mithra/storage/file_search.py
+===============================================================
+
+Tiered retrieval. Tier 1: SQLite. Tier 2: ChromaDB.
+
+import logging
+import sqlite3
+from dataclasses import dataclass, field
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SearchResult:
+    file_id: str
+    filename: str
+    domain: str
+    user_id: str
+    relevance: float
+    excerpt: str
+    tier_used: int
+    metadata: Optional[dict] = None
+
+
+class FileSearchService:
+    """Tiered file search.
+
+    Tier 1: SQLite metadata search (always first, free)
+      - Query files table by domain, user_id
+      - Full-text match on filename + metadata JSON
+      - Fast, no LLM involved
+
+    Tier 2: ChromaDB semantic search (when Tier 1 insufficient)
+      - Embed query, search vector store
+      - Returns chunk text + file references
+      - Costs embedding API call
+
+    Tier 3: Full file load (not implemented here)
+      - Caller loads full file for LLM summarization
+      - Most expensive, used sparingly
+
+    Privacy: health domain restricted to user_id only.
+    """
+
+    def __init__(
+        self,
+        db_path: str,
+        vector_store,       # VectorStore
+        household_id: str,
+    ):
+        self._db_path = db_path
+        self._vector_store = vector_store
+        self._household_id = household_id
+
+    async def search(
+        self,
+        query: str,
+        domain: str = "",
+        user_id: str = "",
+        tier: int = 0,    # 0=auto, 1/2/3=force
+    ) -> list[SearchResult]:
+        """Search files. tier=0 tries Tier 1 then Tier 2."""
+        results = []
+        if tier in (0, 1):
+            results = self._search_sqlite(
+                query, domain, user_id)
+            if results or tier == 1:
+                return results
+        if tier in (0, 2):
+            results = await self._search_chromadb(
+                query, domain, user_id)
+        return results
+
+    def _search_sqlite(
+        self,
+        query: str,
+        domain: str,
+        user_id: str,
+    ) -> list[SearchResult]:
+        """Tier 1: SQLite full-text search."""
+        import json as json_module
+        with sqlite3.connect(self._db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            q = ("SELECT * FROM files WHERE household_id=? "
+                 "AND (filename LIKE ? "
+                 "OR metadata LIKE ?)")
+            like = f"%{query}%"
+            params = [self._household_id, like, like]
+            if domain:
+                q += " AND domain=?"
+                params.append(domain)
+            if user_id:
+                q += " AND user_id=?"
+                params.append(user_id)
+            q += " ORDER BY uploaded_at DESC LIMIT 20"
+            rows = conn.execute(q, params).fetchall()
+        results = []
+        for row in rows:
+            meta = json_module.loads(row["metadata"]) \
+                if row["metadata"] else {}
+            results.append(SearchResult(
+                file_id=row["id"],
+                filename=row["filename"],
+                domain=row["domain"],
+                user_id=row["user_id"],
+                relevance=1.0,
+                excerpt=row["filename"],
+                tier_used=1,
+                metadata=meta,
+            ))
+        return results
+
+    async def _search_chromadb(
+        self,
+        query: str,
+        domain: str,
+        user_id: str,
+    ) -> list[SearchResult]:
+        """Tier 2: ChromaDB semantic search."""
+        collection = (
+            f"health_{self._household_id}"
+            if domain == "health"
+            else f"documents_{self._household_id}"
+        )
+        try:
+            chunks = await self._vector_store.search(
+                domain=collection,
+                query=query,
+                top_k=10,
+            )
+        except Exception as e:
+            logger.error(
+                f"ChromaDB search failed: {e}")
+            return []
+        # Group by file_id
+        seen_files: dict[str, SearchResult] = {}
+        for chunk in chunks:
+            meta = chunk.get("metadata", {})
+            file_id = meta.get("file_id", "")
+            chunk_user = meta.get("user_id", "")
+            # Health domain: only return own files
+            if domain == "health" and user_id \
+                    and chunk_user != user_id:
+                continue
+            if file_id and file_id not in seen_files:
+                seen_files[file_id] = SearchResult(
+                    file_id=file_id,
+                    filename=meta.get("filename", file_id),
+                    domain=meta.get("domain", domain),
+                    user_id=chunk_user,
+                    relevance=chunk.get("distance", 0.5),
+                    excerpt=chunk.get("text", "")[:200],
+                    tier_used=2,
+                    metadata=meta,
+                )
+        return list(seen_files.values())
+
+===============================================================
+P1-09 — Wire into bootstrap.py
+===============================================================
+
+Add _build_file_storage() helper to bootstrap.py.
+Call it after _build_oauth_manager() in build_state().
+
+def _build_file_storage(
+    state: dict,
+    local_adapter,
+    household_id: str,
+) -> None:
+    """Build file storage stack."""
+    import os
+    from mithra.storage.local_file import LocalFileAdapter
+    from mithra.storage.file_router import FileStorageRouter
+    from mithra.storage.document_indexer import DocumentIndexer
+    from mithra.storage.file_search import FileSearchService
+
+    db_path = local_adapter._db_path
+    files_path = os.environ.get(
+        "MITHRA_FILES_PATH",
+        "/data/mithra/files")
+
+    local_file = LocalFileAdapter(
+        base_path=files_path,
+        db_path=db_path,
+    )
+
+    # Build OneDriveFileAdapter if Microsoft connected
+    onedrive_file = None
+    oauth_manager = state.get("oauth_manager")
+    if oauth_manager and oauth_manager.is_provider_configured(
+            "microsoft"):
+        try:
+            from mithra.integrations.microsoft_graph import (
+                MicrosoftGraphClient)
+            from mithra.storage.onedrive_file import (
+                OneDriveFileAdapter)
+            graph_client = MicrosoftGraphClient(
+                oauth_manager=oauth_manager,
+                household_id=household_id,
+            )
+            onedrive_file = OneDriveFileAdapter(
+                graph_client=graph_client,
+                db_path=db_path,
+                household_id=household_id,
+            )
+            state["graph_client"] = graph_client
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"OneDrive file adapter unavailable: {e}")
+
+    file_router = FileStorageRouter(
+        local_adapter=local_file,
+        onedrive_adapter=onedrive_file,
+    )
+
+    # DocumentIndexer (needs vector store)
+    vector_store = state.get("vector_store")
+    indexer = DocumentIndexer(
+        file_router=file_router,
+        vector_store=vector_store,
+        db_path=db_path,
+        household_id=household_id,
+    )
+
+    # FileSearchService
+    search_service = FileSearchService(
+        db_path=db_path,
+        vector_store=vector_store,
+        household_id=household_id,
+    )
+
+    state["file_router"] = file_router
+    state["local_file_adapter"] = local_file
+    state["document_indexer"] = indexer
+    state["file_search"] = search_service
+
+    import logging
+    logging.getLogger(__name__).info(
+        f"File storage ready. Cloud: "
+        f"{'OneDrive' if onedrive_file else 'local only'}")
+
+Call in build_state() after _build_oauth_manager():
+    _build_file_storage(state, local_adapter, household_id)
+
+Also add MITHRA_FILES_PATH to .env.example:
+    MITHRA_FILES_PATH=/data/mithra/files
+
+And add volume mount to compose.yaml for api-gateway:
+    volumes:
+      - mithra-files:/data/mithra/files
+
+Add volume at bottom:
+    mithra-files:
+
+===============================================================
+P1-10 — SQLite weekly backup script
+Create scripts/backup.py
+===============================================================
+
+Runs on schedule (add to healthmonitor container).
+Backs up SQLite to OneDrive if connected.
+Falls back to local backup if not.
+
+import gzip
+import logging
+import os
+import shutil
+import sqlite3
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("backup")
+
+
+def backup_sqlite(
+    db_path: str,
+    backup_dir: str,
+    keep_count: int = 4,
+) -> str:
+    """Create compressed SQLite backup.
+    Returns path to backup file."""
+    db = Path(db_path)
+    if not db.exists():
+        raise FileNotFoundError(f"DB not found: {db_path}")
+
+    Path(backup_dir).mkdir(parents=True, exist_ok=True)
+    date_str = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%d")
+    backup_name = f"mithra_backup_{date_str}.db.gz"
+    backup_path = Path(backup_dir) / backup_name
+
+    # VACUUM first to compact
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("VACUUM")
+
+    # Compress
+    with open(db_path, "rb") as f_in:
+        with gzip.open(backup_path, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+
+    size_mb = backup_path.stat().st_size / 1024 / 1024
+    logger.info(
+        f"Backup created: {backup_name} ({size_mb:.1f}MB)")
+
+    # Keep only last N backups
+    backups = sorted(Path(backup_dir).glob(
+        "mithra_backup_*.db.gz"))
+    while len(backups) > keep_count:
+        backups[0].unlink()
+        logger.info(f"Removed old backup: {backups[0].name}")
+        backups = backups[1:]
+
+    return str(backup_path)
+
+
+def notify_telegram(message: str) -> None:
+    """Send Telegram notification to admin."""
+    import urllib.request
+    import json as json_module
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    admin_id = os.environ.get(
+        "MITHRA_ADMIN_TELEGRAM_ID", "")
+    if not token or not admin_id:
+        return
+    url = (f"https://api.telegram.org/bot{token}"
+           f"/sendMessage")
+    data = json_module.dumps({
+        "chat_id": admin_id,
+        "text": message
+    }).encode()
+    req = urllib.request.Request(
+        url, data=data,
+        headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:
+        logger.warning(f"Telegram notify failed: {e}")
+
+
+def main() -> None:
+    db_path = os.environ.get(
+        "MITHRA_DB_PATH", "/data/mithra/mithra.db")
+    backup_dir = os.environ.get(
+        "MITHRA_BACKUP_DIR", "/data/mithra/backups")
+
+    logger.info(f"Starting backup of {db_path}")
+    try:
+        backup_path = backup_sqlite(db_path, backup_dir)
+        size_mb = Path(backup_path).stat().st_size / \
+                  1024 / 1024
+        notify_telegram(
+            f"✅ Weekly backup complete\n"
+            f"📁 {Path(backup_path).name}\n"
+            f"💾 {size_mb:.1f}MB")
+        logger.info("Backup complete")
+    except Exception as e:
+        logger.error(f"Backup failed: {e}")
+        notify_telegram(f"⚠️ Backup FAILED: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+
+Add weekly backup to healthmonitor container.
+In scripts/healthcheck.py, add a weekly schedule:
+
+import time as time_module
+import datetime as dt
+
+# Track last backup time
+_last_backup = None
+
+def should_run_backup() -> bool:
+    global _last_backup
+    now = dt.datetime.now(dt.timezone.utc)
+    # Run Sunday at 2am UTC
+    if now.weekday() == 6 and now.hour == 2:
+        if (_last_backup is None or
+            (now - _last_backup).days >= 1):
+            _last_backup = now
+            return True
+    return False
+
+# In main loop, add:
+    if should_run_backup():
+        import subprocess
+        subprocess.run(
+            ["python", "/scripts/backup.py"],
+            env=os.environ.copy())
+
+===============================================================
+TESTS
+===============================================================
+
+Write unit tests:
+
+tests/unit/storage/test_file_adapter.py
+  - FileRecord generates id in post_init if not set
+  - FileRecord default uploaded_at is set to now
+  - generate_file_id() starts with "file_"
+  - FileStorageAdapter is abstract (cannot instantiate)
+
+tests/unit/storage/test_local_file.py
+  - save_file() returns FileRecord with correct fields
+  - get_file() returns (bytes, FileRecord)
+  - delete_file() removes from filesystem and SQLite
+  - list_files() filters by domain and user_id
+  - file_exists() returns True after save, False before
+  - health() returns status=ok
+
+tests/unit/storage/test_file_router.py
+  - health domain ALWAYS routes to local adapter
+  - health domain routes to local even if OneDrive available
+  - non-health routes to OneDrive when available
+  - non-health falls back to local if no OneDrive
+  - is_cloud_available() reflects OneDrive presence
+
+tests/unit/storage/test_file_search.py
+  - search() tier=1 queries SQLite only
+  - search() returns empty list on no match
+  - health domain results filtered to requesting user_id
+
+Use tmp_path fixture for all filesystem operations.
+Use in-memory SQLite for all DB operations.
+
+Run: pytest tests/unit/ -x -q
+All tests must pass including existing 753.
+Commit message: feat: Phase 1 storage — FileStorageAdapter,
+                LocalFileAdapter, OneDriveFileAdapter,
+                FileStorageRouter, DocumentIndexer,
+                FileSearchService, MicrosoftGraphClient,
+                weekly SQLite backup
+===============================================================

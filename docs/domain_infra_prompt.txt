@@ -1,0 +1,781 @@
+Implement domain plugin infrastructure.
+Read docs/ARCHITECTURE_DECISIONS.md section 9 fully
+before writing any code. Every decision there must
+be reflected exactly in this implementation.
+
+This is infrastructure only — no domain business logic.
+The Time domain comes in a separate prompt after this.
+
+===============================================================
+I1 — Create mithra/domains/ package structure
+===============================================================
+
+Create these files in order:
+
+---------------------------------------------------------------
+mithra/domains/__init__.py
+---------------------------------------------------------------
+Empty. Just marks as package.
+
+---------------------------------------------------------------
+mithra/domains/context.py
+---------------------------------------------------------------
+
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mithra.integrations.oauth_manager import OAuthManager
+    from mithra.storage.adapter import StorageAdapter
+    from mithra.storage.file_router import FileStorageRouter
+    from mithra.identity.member_registry import MemberRegistry
+    from mithra.storage.file_search import FileSearchService
+
+
+@dataclass(frozen=True)
+class DomainContext:
+    """Immutable request context injected into all domain tools.
+
+    Frozen: tools are pure functions relative to context.
+    Services are injected — domains never import them directly.
+    request_id maps to A2A task_id for future migration.
+
+    ONE-WAY DOOR: frozen=True. Context is never mutated.
+    """
+    # Identity
+    user_id: str
+    household_id: str
+    household_timezone: str
+
+    # Services — injected by bootstrap, never imported by domains
+    oauth_manager: Any          # OAuthManager
+    storage_adapter: Any        # StorageAdapter
+    file_router: Any            # FileStorageRouter
+    member_registry: Any        # MemberRegistry
+    file_search: Any            # FileSearchService
+
+    # Request metadata
+    request_id: str             # UUID per request, maps to A2A task_id
+    channel: str                # "telegram" | "voice" | "dashboard"
+    language: str = "en-US"
+
+    # Autonomy override — if user said "just do it" for this session
+    autonomy_override: int | None = None
+
+---------------------------------------------------------------
+mithra/domains/result.py
+---------------------------------------------------------------
+
+from __future__ import annotations
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+
+@dataclass
+class DomainEvent:
+    """Cross-domain side effect emitted after tool execution.
+
+    Events fire AFTER autonomy confirmation — never before.
+    If user rejects a confirmation, no events fire.
+
+    ONE-WAY DOOR: events are immutable after creation.
+    """
+    event_type: str             # e.g. "appointment_created"
+    source_domain: str          # e.g. "time"
+    payload: dict               # event-specific data
+    user_id: str
+    household_id: str
+    request_id: str             # links to originating request
+    timestamp: str = field(
+        default_factory=lambda: datetime.now(
+            timezone.utc).isoformat())
+
+
+@dataclass
+class ToolResult:
+    """Standard result returned by all domain tools.
+
+    LLM uses summary to generate response text.
+    Events are emitted by AutononomyEngine after confirmation.
+
+    ONE-WAY DOOR: summary is always present.
+    Even on failure: "Could not create event: Google not connected"
+    """
+    success: bool
+    summary: str                # REQUIRED: LLM uses this for response
+    data: dict | None = None    # structured result data
+    error: str | None = None    # human-readable error
+    error_code: str | None = None  # machine-readable e.g. "NOT_CONNECTED"
+    undo_token: str | None = None  # if reversible, token for undo
+    events: list[DomainEvent] = field(default_factory=list)
+
+    @classmethod
+    def ok(
+        cls,
+        summary: str,
+        data: dict | None = None,
+        events: list[DomainEvent] | None = None,
+        undo_token: str | None = None,
+    ) -> "ToolResult":
+        """Create a successful result."""
+        return cls(
+            success=True,
+            summary=summary,
+            data=data or {},
+            events=events or [],
+            undo_token=undo_token,
+        )
+
+    @classmethod
+    def fail(
+        cls,
+        summary: str,
+        error_code: str | None = None,
+        error: str | None = None,
+    ) -> "ToolResult":
+        """Create a failed result."""
+        return cls(
+            success=False,
+            summary=summary,
+            error=error or summary,
+            error_code=error_code,
+        )
+
+---------------------------------------------------------------
+mithra/domains/bundle.py
+---------------------------------------------------------------
+
+from __future__ import annotations
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
+
+
+class PermissionTier(Enum):
+    """Tool permission level.
+
+    ONE-WAY DOOR: DESTRUCTIVE always requires user confirmation.
+    No autonomy override can bypass DESTRUCTIVE tier.
+    This is a security guarantee, not a preference.
+    """
+    READ = "read"               # always execute, no confirm needed
+    WRITE = "write"             # execute per autonomy config
+    DESTRUCTIVE = "destructive" # ALWAYS confirm, no override possible
+
+
+@dataclass
+class ToolMetadata:
+    """Runtime metadata for a domain tool.
+
+    Separate from the @tool function itself so tool logic
+    remains clean. AutononomyEngine reads this at execution time.
+
+    name must match the @tool name exactly.
+    """
+    name: str                       # matches @tool name
+    domain_id: str                  # owning domain
+    permission: PermissionTier      # read | write | destructive
+    is_reversible: bool             # supports undo operation
+    autonomy_level: int = 1         # default confirmation level
+                                    # 1=SURFACE, 2=ACT_TELL, 3=ACT_SILENT
+    event_emitted: str | None = None  # event type after success
+
+
+@dataclass
+class ToolBundle:
+    """A LangChain tool paired with Mithra runtime metadata.
+
+    tool: the @tool decorated function for LLM invocation
+    metadata: autonomy config, permissions, event emission
+
+    Domain returns list[ToolBundle] from get_tools().
+    LangGraph extracts tools for bind_tools().
+    AutononomyEngine reads metadata at execution time.
+    """
+    tool: Any                   # LangChain BaseTool
+    metadata: ToolMetadata
+
+---------------------------------------------------------------
+mithra/domains/dashboard.py
+---------------------------------------------------------------
+
+from __future__ import annotations
+from dataclasses import dataclass, field
+
+
+@dataclass
+class DashboardItem:
+    """Single item displayed on HA Lovelace dashboard."""
+    id: str
+    title: str
+    subtitle: str | None = None
+    icon: str = "mdi:information"   # HA MDI icon name
+    priority: str = "normal"         # "high" | "normal" | "low"
+    action: str | None = None        # tool name to call on tap
+
+
+@dataclass
+class DashboardData:
+    """Standardized dashboard response for all domains.
+
+    GET /api/v1/dashboard/{domain_id} returns this.
+    HA REST sensor polls every 5 minutes.
+    summary is the sensor value_template target.
+    """
+    domain: str
+    updated_at: str             # ISO8601
+    summary: str                # "2 events today"
+    items: list[DashboardItem] = field(default_factory=list)
+    alerts: list[str] = field(default_factory=list)
+    quick_actions: list[dict] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "domain": self.domain,
+            "updated_at": self.updated_at,
+            "summary": self.summary,
+            "items": [
+                {
+                    "id": item.id,
+                    "title": item.title,
+                    "subtitle": item.subtitle,
+                    "icon": item.icon,
+                    "priority": item.priority,
+                    "action": item.action,
+                }
+                for item in self.items
+            ],
+            "alerts": self.alerts,
+            "quick_actions": self.quick_actions,
+        }
+
+---------------------------------------------------------------
+mithra/domains/base.py
+---------------------------------------------------------------
+
+from __future__ import annotations
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mithra.domains.context import DomainContext
+    from mithra.domains.bundle import ToolBundle
+    from mithra.domains.result import DomainEvent
+    from mithra.domains.dashboard import DashboardData
+
+
+class Domain(ABC):
+    """Abstract base class for all Mithra domains.
+
+    Every domain implements this interface.
+    Tools are pure functions — no state stored in domain.
+    Cross-domain communication via domain events only.
+    Domains never import other domain modules.
+
+    ONE-WAY DOOR: this interface. Changing it requires
+    updating all domains simultaneously.
+
+    MCP migration: Domain wraps into MCPServerAdapter.
+    A2A migration: Domain becomes A2A specialist agent.
+    Both migrations require zero changes to domain logic.
+    """
+
+    @property
+    @abstractmethod
+    def domain_id(self) -> str:
+        """Unique identifier e.g. 'time', 'people', 'money'.
+        Immutable. Used as StorageAdapter domain key.
+        Matches domain naming convention in section 7."""
+
+    @property
+    @abstractmethod
+    def version(self) -> str:
+        """Semantic version e.g. '1.0.0'.
+        Major bump = breaking tool interface change.
+        Required for safe product-scale updates."""
+
+    @property
+    @abstractmethod
+    def display_name(self) -> str:
+        """Human-readable name e.g. 'Time & Calendar'"""
+
+    @abstractmethod
+    def get_tools(
+        self,
+        context: "DomainContext",
+    ) -> list["ToolBundle"]:
+        """Return tools bound to this request context.
+
+        Tools are context-bound at creation.
+        Max 8 tools per domain (prevents context bloat).
+        Each tool must use Pydantic args_schema.
+        Each tool must return ToolResult as dict.
+        """
+
+    @abstractmethod
+    async def get_dashboard_data(
+        self,
+        user_id: str,
+        household_id: str,
+    ) -> "DashboardData":
+        """Standardized summary for HA Lovelace dashboard.
+        Called every 5 minutes. Must be fast (<500ms).
+        Return empty DashboardData if no data available."""
+
+    def get_context_keys(self) -> list[str]:
+        """Memory domains to load for context assembly.
+        Override if domain needs cross-domain memory.
+        Default: [self.domain_id]"""
+        return [self.domain_id]
+
+    def get_event_subscriptions(self) -> list[str]:
+        """Domain events this domain reacts to.
+        e.g. MoneyDomain returns ['appointment_created']
+        Default: [] (no subscriptions)"""
+        return []
+
+    async def handle_event(
+        self,
+        event: "DomainEvent",
+        context: "DomainContext",
+    ) -> None:
+        """React to events from other domains.
+
+        Called AFTER autonomy confirmation only.
+        If user rejects confirmation, this is never called.
+        Default: no-op.
+        """
+        pass
+
+    def health(self) -> dict:
+        """Domain health status for monitoring."""
+        return {
+            "domain_id": self.domain_id,
+            "version": self.version,
+            "status": "ok",
+        }
+
+---------------------------------------------------------------
+mithra/domains/registry.py
+---------------------------------------------------------------
+
+from __future__ import annotations
+import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mithra.domains.base import Domain
+    from mithra.domains.context import DomainContext
+    from mithra.domains.bundle import ToolBundle
+
+logger = logging.getLogger(__name__)
+
+
+class DomainRegistry:
+    """Central registry for all Mithra domains.
+
+    Bootstrap populates this at startup.
+    LangGraph agent queries it per request.
+    AutononomyEngine uses it to look up tool metadata.
+    """
+
+    def __init__(self) -> None:
+        self._domains: dict[str, "Domain"] = {}
+        self._tool_metadata_index: dict[str, object] = {}
+
+    def register(self, domain: "Domain") -> None:
+        """Register a domain. Called once at bootstrap."""
+        self._domains[domain.domain_id] = domain
+        logger.info(
+            f"Registered domain: {domain.domain_id} "
+            f"v{domain.version} "
+            f"({domain.display_name})")
+
+    def get(self, domain_id: str) -> "Domain | None":
+        """Get domain by id."""
+        return self._domains.get(domain_id)
+
+    def get_all_domain_ids(self) -> list[str]:
+        """Return all registered domain ids."""
+        return list(self._domains.keys())
+
+    def get_tools(
+        self,
+        domain_ids: list[str],
+        context: "DomainContext",
+    ) -> list["ToolBundle"]:
+        """Return ToolBundles for requested domains.
+
+        Used by LangGraph to bind tools per request.
+        Indexes metadata for AutononomyEngine lookups.
+        """
+        bundles: list["ToolBundle"] = []
+        for domain_id in domain_ids:
+            domain = self._domains.get(domain_id)
+            if not domain:
+                logger.warning(
+                    f"Domain not found: {domain_id}")
+                continue
+            domain_bundles = domain.get_tools(context)
+            for bundle in domain_bundles:
+                # Index by tool name for fast lookup
+                self._tool_metadata_index[
+                    bundle.tool.name] = bundle.metadata
+            bundles.extend(domain_bundles)
+        return bundles
+
+    def get_tool_metadata(
+        self, tool_name: str
+    ) -> object | None:
+        """Get ToolMetadata by tool name.
+        Called by AutononomyEngine at execution time."""
+        return self._tool_metadata_index.get(tool_name)
+
+    def get_event_subscribers(
+        self, event_type: str
+    ) -> list["Domain"]:
+        """Return domains subscribed to this event type."""
+        return [
+            domain
+            for domain in self._domains.values()
+            if event_type in domain.get_event_subscriptions()
+        ]
+
+    def health(self) -> dict:
+        """Health of all registered domains."""
+        return {
+            "registered_domains": len(self._domains),
+            "domain_ids": self.get_all_domain_ids(),
+            "domains": {
+                domain_id: domain.health()
+                for domain_id, domain in self._domains.items()
+            },
+        }
+
+===============================================================
+I2 — Update LangGraphAdapter for two-stage tool selection
+mithra/agent/langgraph_adapter.py
+===============================================================
+
+This is the critical change. LangGraphAdapter must:
+1. Accept DomainRegistry in constructor
+2. After classify_intent, extract domain from intent
+3. Load domain tools from registry
+4. Bind tools to LLM for that request
+5. Use CustomToolNode that injects DomainContext
+
+The existing 4-node graph becomes:
+  classify_intent → load_domain_tools → llm_with_tools
+                 → custom_tool_node → generate_response
+
+UPDATE __init__ to accept domain_registry:
+
+    def __init__(
+        self,
+        llm_router,
+        storage_router=None,
+        domain_registry=None,     # NEW
+        household_timezone: str = "UTC",
+    ):
+        self._llm_router = llm_router
+        self._storage_router = storage_router
+        self._domain_registry = domain_registry
+        self._household_timezone = household_timezone
+
+ADD _build_domain_context() helper:
+
+    def _build_domain_context(
+        self,
+        user_id: str,
+        household_id: str,
+        request_id: str,
+        channel: str,
+        state: dict,
+    ) -> "DomainContext":
+        """Build immutable DomainContext for this request."""
+        from mithra.domains.context import DomainContext
+        return DomainContext(
+            user_id=user_id,
+            household_id=household_id,
+            household_timezone=self._household_timezone,
+            oauth_manager=state.get("oauth_manager"),
+            storage_adapter=state.get("storage_adapter"),
+            file_router=state.get("file_router"),
+            member_registry=state.get("member_registry"),
+            file_search=state.get("file_search"),
+            request_id=request_id,
+            channel=channel,
+        )
+
+ADD _extract_domain_ids() helper:
+
+    def _extract_domain_ids(
+        self, intent: str
+    ) -> list[str]:
+        """Extract domain ids from classified intent.
+
+        intent format: "time.calendar_create_event" or "time"
+        Returns: ["time"]
+
+        Multi-domain: "time,money" returns ["time", "money"]
+        Unknown intent: returns [] (no tools loaded)
+        """
+        if not intent or "." not in intent and "," not in intent:
+            # Check if intent prefix is a known domain
+            parts = intent.split(".")
+            if parts:
+                return [parts[0]]
+        # Multi-domain: "time,money"
+        if "," in intent:
+            return [d.strip() for d in intent.split(",")]
+        # Standard: "time.calendar_create_event"
+        return [intent.split(".")[0]]
+
+ADD _execute_with_autonomy() helper:
+
+    async def _execute_with_autonomy(
+        self,
+        tool_name: str,
+        tool_input: dict,
+        domain_context: "DomainContext",
+    ) -> dict:
+        """Execute tool via AutononomyEngine.
+
+        Looks up ToolMetadata → checks permission tier →
+        confirms with user if needed → executes → emits events.
+
+        Returns ToolResult as dict for LLM consumption.
+        """
+        from mithra.domains.result import ToolResult
+
+        # Look up metadata
+        metadata = None
+        if self._domain_registry:
+            metadata = self._domain_registry.get_tool_metadata(
+                tool_name)
+
+        # Check permission tier
+        if metadata:
+            from mithra.domains.bundle import PermissionTier
+            if metadata.permission == PermissionTier.DESTRUCTIVE:
+                # Always surface for confirmation
+                # AutononomyEngine handles the confirmation flow
+                pass
+            elif metadata.permission == PermissionTier.READ:
+                # Execute immediately, no confirmation
+                pass
+
+        # For now: execute and return result
+        # Full autonomy integration in next sprint
+        # TODO: wire full AutononomyEngine confirmation flow
+        try:
+            tool_func = None
+            if self._domain_registry:
+                for bundle in self._domain_registry._tool_metadata_index.values():
+                    pass
+            # Execute via existing autonomy engine path
+            result = {"success": True, "summary": f"Executed {tool_name}"}
+            return result
+        except Exception as e:
+            return ToolResult.fail(
+                summary=f"Tool execution failed: {e}",
+                error_code="TOOL_ERROR",
+            ).__dict__
+
+Note: The full autonomy integration in tool execution
+will be completed when the first domain is implemented.
+For now the infrastructure is wired and the path is clear.
+The existing execute_tool node handles execution as before.
+
+===============================================================
+I3 — Add dashboard routes to mithra/api/gateway.py
+===============================================================
+
+Add these routes after the existing auth routes:
+
+    @app.get("/api/v1/dashboard/{domain_id}")
+    async def domain_dashboard(
+        request: Request,
+        domain_id: str,
+        user_id: str = "",
+    ):
+        """Get dashboard data for a specific domain.
+
+        Used by HA Lovelace REST sensor.
+        Polled every 5 minutes.
+        """
+        domain_registry = _state.get("domain_registry")
+        if not domain_registry:
+            return {"domain": domain_id, "summary": "Loading...",
+                    "items": [], "alerts": [], "quick_actions": []}
+
+        domain = domain_registry.get(domain_id)
+        if not domain:
+            from fastapi import HTTPException
+            raise HTTPException(
+                404, f"Domain '{domain_id}' not found")
+
+        household_id = _state.get("household_id", "")
+        # Use requesting user or household default
+        uid = user_id or _state.get("default_user_id", "")
+
+        try:
+            data = await domain.get_dashboard_data(
+                user_id=uid,
+                household_id=household_id,
+            )
+            return data.to_dict()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(
+                f"Dashboard error for {domain_id}: {e}")
+            return {
+                "domain": domain_id,
+                "summary": "Unavailable",
+                "items": [],
+                "alerts": [str(e)],
+                "quick_actions": [],
+            }
+
+    @app.get("/api/v1/dashboard/today")
+    async def today_dashboard(request: Request):
+        """Aggregate dashboard data across all domains.
+
+        GET /api/v1/dashboard/today
+        Returns today view: events, birthdays, alerts etc.
+        Used as primary HA dashboard screen.
+        """
+        domain_registry = _state.get("domain_registry")
+        household_id = _state.get("household_id", "")
+
+        if not domain_registry:
+            return {
+                "summary": "Mithra starting...",
+                "sections": [],
+                "alerts": [],
+            }
+
+        sections = []
+        all_alerts = []
+
+        for domain_id in domain_registry.get_all_domain_ids():
+            domain = domain_registry.get(domain_id)
+            try:
+                data = await domain.get_dashboard_data(
+                    user_id="",  # household-level
+                    household_id=household_id,
+                )
+                if data.items or data.alerts:
+                    sections.append(data.to_dict())
+                    all_alerts.extend(data.alerts)
+            except Exception:
+                pass
+
+        return {
+            "summary": f"{len(sections)} domains active",
+            "sections": sections,
+            "alerts": all_alerts,
+            "updated_at": __import__("datetime").datetime.now(
+                __import__("datetime").timezone.utc).isoformat(),
+        }
+
+Also add domain_registry health to /api/v1/health:
+
+In the existing health endpoint, add:
+    "domains": _state["domain_registry"].health()
+              if "domain_registry" in _state else
+              {"registered_domains": 0}
+
+===============================================================
+I4 — Wire DomainRegistry into bootstrap.py
+===============================================================
+
+In build_state(), after file storage is built:
+
+    from mithra.domains.registry import DomainRegistry
+    domain_registry = DomainRegistry()
+    state["domain_registry"] = domain_registry
+
+    # Domains register themselves here.
+    # First domain (Time) added in next sprint.
+    # Pattern:
+    #   from mithra.domains.time import TimeDomain
+    #   domain_registry.register(TimeDomain())
+    logger.info(
+        f"DomainRegistry ready. "
+        f"Domains: {domain_registry.get_all_domain_ids()}")
+
+===============================================================
+TESTS
+===============================================================
+
+Write unit tests in tests/unit/domains/:
+
+tests/unit/domains/__init__.py (empty)
+
+tests/unit/domains/test_context.py
+  - DomainContext is frozen (raises FrozenInstanceError on set)
+  - DomainContext fields are accessible
+  - DomainContext with all required fields
+
+tests/unit/domains/test_result.py
+  - ToolResult.ok() sets success=True
+  - ToolResult.ok() requires summary
+  - ToolResult.fail() sets success=False
+  - ToolResult.fail() sets error field
+  - ToolResult always has summary (assert non-empty)
+  - DomainEvent has timestamp set automatically
+
+tests/unit/domains/test_bundle.py
+  - PermissionTier has READ, WRITE, DESTRUCTIVE values
+  - ToolMetadata instantiates with required fields
+  - ToolBundle holds tool and metadata
+
+tests/unit/domains/test_registry.py
+  - register() adds domain
+  - get() returns domain by id
+  - get() returns None for unknown id
+  - get_all_domain_ids() returns registered ids
+  - get_event_subscribers() returns matching domains
+  - health() returns domain count and ids
+  - get_tools() returns empty list for unknown domain_id
+  - get_tool_metadata() returns None for unknown tool
+
+tests/unit/domains/test_base.py
+  - Domain cannot be instantiated directly (ABC)
+  - Concrete domain with all abstract methods passes
+  - get_context_keys() default returns [domain_id]
+  - get_event_subscriptions() default returns []
+  - handle_event() default is no-op (no exception)
+
+tests/unit/domains/test_dashboard.py
+  - DashboardData.to_dict() returns correct structure
+  - DashboardData with empty items returns valid dict
+  - DashboardItem fields accessible
+
+Create a TestDomain fixture used across domain tests:
+
+    class TestDomain(Domain):
+        @property
+        def domain_id(self): return "test"
+        @property
+        def version(self): return "1.0.0"
+        @property
+        def display_name(self): return "Test Domain"
+        def get_tools(self, context): return []
+        async def get_dashboard_data(self, user_id, household_id):
+            from mithra.domains.dashboard import DashboardData
+            from datetime import datetime, timezone
+            return DashboardData(
+                domain="test",
+                updated_at=datetime.now(timezone.utc).isoformat(),
+                summary="Test domain",
+            )
+
+Run: pytest tests/unit/ -x -q
+All 784 existing tests plus new domain tests must pass.
+Commit message: feat: domain plugin infrastructure —
+                Domain ABC, DomainContext, ToolResult,
+                ToolBundle, DomainRegistry, dashboard routes
+===============================================================

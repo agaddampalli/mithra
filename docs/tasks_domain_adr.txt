@@ -1,0 +1,783 @@
+Add section 11 to docs/ARCHITECTURE_DECISIONS.md covering
+the Tasks domain completely. Also update TRACKER.md with
+DoD and next steps. Documentation only. No implementation.
+
+Read all existing ARCHITECTURE_DECISIONS.md sections
+before writing, especially sections 9, 10, and 10.15.
+
+===============================================================
+PART 1 — docs/ARCHITECTURE_DECISIONS.md section 11
+===============================================================
+
+## 11. Tasks Domain
+
+### 11.1 Purpose and Value Proposition
+
+The Tasks domain is Mithra's accountability system for
+things that need to happen but don't have a fixed time.
+Its core value: nothing important slips because everything
+has an owner, a priority, and visibility.
+
+Distinct from Time domain (section 10.15):
+  Time domain: things that MUST happen at a specific time
+  Tasks domain: things YOU decide when to do
+
+### 11.2 Entity Types
+
+Three distinct entities with different behavior:
+
+    TASKS — one-time action items
+      Created once, completed once, archived.
+      May have deadline (hard or soft) or none.
+      Examples: fix ceiling fan, return Amazon package,
+                call insurance, install dining room light
+
+    PROJECTS + MILESTONES — multi-step work
+      Project is a container with a target date.
+      Milestones are ordered phases within a project.
+      Progress tracked as % milestones complete.
+      Examples: backyard deck, woodworking bench,
+                bathroom renovation
+
+    ROUTINES — daily-reset checklists
+      Same items every day. Both household members
+      can mark done. Resets at configured time (midnight
+      default or custom e.g. 9pm for evening routines).
+      NOT tasks — they recur without being recreated.
+      Examples: mix baby formula, warm water for baby,
+                soak lentils, evening wind-down checklist
+
+### 11.3 Schema
+
+Five tables. Add to SQLite via local.py DDL.
+Safe migrations for existing installs.
+
+    tasks (
+        id              TEXT PRIMARY KEY,
+        household_id    TEXT NOT NULL,
+        user_id         TEXT NOT NULL,        -- owner
+        title           TEXT NOT NULL,
+        notes           TEXT,                 -- context, instructions
+        scope           TEXT DEFAULT 'personal',  -- personal|household
+        priority        TEXT DEFAULT 'normal',    -- urgent|high|normal|someday
+        status          TEXT DEFAULT 'inbox',     -- see 11.4
+        due_date        TEXT,                 -- ISO8601 date, nullable
+        project_id      TEXT,                 -- FK → projects.id
+        milestone_id    TEXT,                 -- FK → milestones.id
+        snoozed_until   TEXT,                 -- ISO8601, nullable
+        source          TEXT DEFAULT 'manual',    -- manual|gmail|calendar
+        source_ref      TEXT,                 -- email_id, event_id etc.
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL,
+        completed_at    TEXT                  -- nullable
+    );
+
+    CREATE INDEX idx_tasks_household ON tasks(household_id, status);
+    CREATE INDEX idx_tasks_user ON tasks(user_id, status);
+    CREATE INDEX idx_tasks_due ON tasks(household_id, due_date);
+    CREATE INDEX idx_tasks_priority ON tasks(household_id, priority, status);
+
+    projects (
+        id              TEXT PRIMARY KEY,
+        household_id    TEXT NOT NULL,
+        user_id         TEXT NOT NULL,
+        title           TEXT NOT NULL,
+        description     TEXT,
+        scope           TEXT DEFAULT 'personal',
+        status          TEXT DEFAULT 'active',  -- active|completed|on_hold
+        target_date     TEXT,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    );
+
+    milestones (
+        id              TEXT PRIMARY KEY,
+        project_id      TEXT NOT NULL,          -- FK → projects.id
+        household_id    TEXT NOT NULL,
+        title           TEXT NOT NULL,
+        order_index     INTEGER NOT NULL,        -- 1,2,3...
+        status          TEXT DEFAULT 'pending',  -- pending|active|done
+        target_date     TEXT,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL
+    );
+
+    routines (
+        id              TEXT PRIMARY KEY,
+        household_id    TEXT NOT NULL,
+        title           TEXT NOT NULL,
+        scope           TEXT DEFAULT 'household', -- personal|household
+        reset_time      TEXT DEFAULT '00:00',      -- HH:MM local time
+        active          INTEGER DEFAULT 1,
+        created_at      TEXT NOT NULL
+    );
+
+    routine_completions (
+        id              TEXT PRIMARY KEY,
+        routine_id      TEXT NOT NULL,            -- FK → routines.id
+        household_id    TEXT NOT NULL,
+        completed_by    TEXT NOT NULL,            -- user_id
+        completion_date TEXT NOT NULL,            -- DATE YYYY-MM-DD
+        completed_at    TEXT NOT NULL             -- full ISO8601 timestamp
+    );
+
+    CREATE UNIQUE INDEX idx_routine_completion_day
+        ON routine_completions(routine_id, completion_date);
+
+    conversation_state (
+        user_id         TEXT PRIMARY KEY,
+        last_task_id    TEXT,     -- task being captured/enriched
+        capture_step    TEXT,     -- which question we're on
+        context_json    TEXT,     -- arbitrary JSON for context
+        updated_at      TEXT NOT NULL
+    );
+
+### 11.4 Task Status Flow
+
+    INBOX → just captured, missing details
+      Default for quick capture ("add task X")
+      Mithra asks follow-up questions to enrich
+      Shows in inbox view, not daily view
+
+    ACTIVE → has enough info, ready to work on
+      Set when user provides priority/deadline
+      Shows in daily view based on priority
+
+    SCHEDULED → has a calendar block (opt-in only)
+      User explicitly asked Mithra to block time
+      Linked to Google Calendar event via source_ref
+      Time domain creates the block, Tasks domain tracks it
+
+    WAITING → blocked on something external
+      "Waiting for Amazon response"
+      Hidden from daily view until user updates
+      Auto-resurfaces after 7 days with follow-up
+
+    SNOOZED → intentionally deferred
+      Hidden until snoozed_until date
+      Then auto-returns to ACTIVE
+      "Snooze ceiling fan to next month"
+
+    DONE → completed
+      completed_at timestamp set
+      Stays in history
+      Shows in "completed this week" view
+
+    CANCELLED → decided not to do
+      Stays in history (not deleted)
+      Different from DONE — intentional abandonment
+
+### 11.5 Priority Model
+
+    URGENT   — deadline ≤ 7 days OR explicitly set
+               Mithra surfaces EVERY DAY
+               Auto-promoted: NORMAL→URGENT when ≤7 days
+               Example: ceiling fan warranty June 15
+
+    HIGH     — important, want done this month
+               Mithra surfaces WEEKLY
+               Example: install dining room light
+
+    NORMAL   — want to do at some point
+               Mithra surfaces MONTHLY or on request
+               Example: research NAS for home backup
+
+    SOMEDAY  — nice to have, no commitment
+               NEVER surfaced unless explicitly asked
+               Example: learn woodworking technique X
+
+    Auto-promotion rules:
+      NORMAL with due_date ≤ 7 days → URGENT
+      HIGH with due_date ≤ 3 days → URGENT
+      Mithra sends Telegram: "Ceiling fan moved to urgent —
+                              warranty expires in 5 days"
+
+### 11.6 Capture Flow — Conversational Enrichment
+
+    "add task fix ceiling fan"
+
+    Step 1: task_create runs IMMEDIATELY
+      title="Fix ceiling fan"
+      status=INBOX, priority=NORMAL
+      Task ID: tsk_abc123 stored in SQLite
+      conversation_state: last_task_id=tsk_abc123,
+                          capture_step="deadline"
+
+    Step 2: Response with ONE question + options
+      "Added: Fix ceiling fan ✓
+       Any deadline? [This week] [This month] [Custom] [Skip]"
+
+    Step 3: User taps or types
+      → task_update(tsk_abc123, due_date=...)
+      → Next question: priority (if not inferred)
+      → Then: notes/context (optional, user can skip)
+
+    Step 4: User says "done" or "skip" or changes topic
+      → conversation_state cleared
+      → Task finalized in ACTIVE status
+
+    KEY PRINCIPLE:
+      Task exists from Step 1 even if user stops.
+      Questions are enrichment, not prerequisites.
+      Even an INBOX task is better than no task.
+      Never require all fields before creating.
+
+    RICH CAPTURE (single message):
+      "add task return Amazon package deadline Friday urgent
+       notes: QR code in email, drop off at UPS"
+      → All fields extracted in one shot
+      → No follow-up questions needed
+      → status=ACTIVE immediately
+
+### 11.7 Tool Set
+
+13 tools. All use Pydantic args_schema. All return ToolResult.
+
+    task_create          WRITE    autonomy=1 (SURFACE)
+      Creates task immediately with available info.
+      Stores last_task_id in conversation_state.
+      Asks follow-up questions in response.
+      Never waits for all fields before creating.
+
+    task_list            READ     autonomy=3 (ACT_SILENT)
+      Queries: today|inbox|overdue|urgent|household|personal
+      period: today|week|month|all
+      scope: personal|household|all
+
+    task_complete        WRITE    autonomy=2 (ACT_TELL)
+      Marks task done, sets completed_at.
+      Low friction — executes and notifies, no confirm.
+      "Mark ceiling fan done" → done immediately.
+
+    task_update          WRITE    autonomy=1 (SURFACE)
+      Updates: priority|due_date|status|notes|title|owner
+      Used in capture flow and explicit updates.
+
+    task_snooze          WRITE    autonomy=2 (ACT_TELL)
+      Sets snoozed_until, status=SNOOZED.
+      "Snooze ceiling fan to next Monday"
+
+    task_delete          DESTRUCTIVE   always confirm
+      Soft delete or hard delete.
+      Always requires confirmation.
+
+    task_suggest         READ     autonomy=3 (ACT_SILENT)
+      "What should I work on today?"
+      Returns top 3 suggestions based on:
+      priority, deadline proximity, last activity.
+
+    project_create       WRITE    autonomy=1 (SURFACE)
+      Creates project + asks about milestones.
+      "Add project backyard deck by July 4"
+
+    project_update       WRITE    autonomy=1 (SURFACE)
+      Updates project status, target date, description.
+
+    milestone_complete   WRITE    autonomy=2 (ACT_TELL)
+      Marks milestone done, updates project % complete.
+      "Complete phase 1 of backyard deck"
+
+    routine_create       WRITE    autonomy=1 (SURFACE)
+      Creates routine with reset_time and scope.
+      "Add daily routine mix baby formula for household"
+
+    routine_complete     READ     autonomy=3 (ACT_SILENT)
+      Marks today's routine completion for user.
+      Also callable via HA tablet REST endpoint.
+      "Mark baby formula done"
+
+    routine_list         READ     autonomy=3 (ACT_SILENT)
+      Shows today's routines with done/not-done state.
+      "What routines are done today?"
+
+### 11.8 Scope Classification
+
+    classify_task_scope(title, user_text) → personal|household
+
+    HOUSEHOLD KEYWORDS:
+      household, family, both, we, us, everyone,
+      kids, children, baby, shared,
+      trash, recycling, garbage,
+      rent, mortgage, utilities,
+      school, pickup, dropoff,
+      pest control, plumber, contractor,
+      lawn, yard, garden (when shared)
+
+    PERSONAL KEYWORDS (override household default for recurring):
+      gym, workout, run, yoga, meditation,
+      medication, therapy, doctor, dentist,
+      commute, work, office
+
+    DEFAULT: personal (safer — user can override)
+
+### 11.9 Multi-Turn Capture State
+
+    conversation_state table tracks active capture:
+
+    When task_create fires:
+      INSERT OR REPLACE INTO conversation_state
+      (user_id, last_task_id, capture_step, updated_at)
+      VALUES (uid, task_id, 'deadline', now)
+
+    When task_update fires (from follow-up):
+      Reads conversation_state to find which task
+      Updates task, advances capture_step
+      Clears state when capture complete
+
+    Capture steps: deadline → priority → notes → done
+
+    State cleared when:
+      User says "done", "skip", "that's it"
+      User changes topic (classify_intent → different domain)
+      24 hours pass (stale state auto-cleared)
+
+### 11.10 Proactive Surfacing
+
+    DAILY (morning briefing, same time as calendar):
+      "You have 2 urgent tasks:
+       • Ceiling fan — warranty expires in 5 days
+       • Return package — window closes tomorrow"
+
+    DEADLINE ALERT (3 days before):
+      "⚠️ Ceiling fan warranty expires in 3 days.
+       Mark done or snooze?"
+
+    WAITING FOLLOW-UP (after 7 days):
+      "Any update on ceiling fan?
+       Still waiting for Amazon? [Yes] [No — mark done]"
+
+    WEEKLY INBOX SUMMARY (Sunday morning):
+      "You have 8 inbox tasks unprocessed.
+       Want to go through them? [Yes] [Later]"
+
+    AUTO-PROMOTION ALERT:
+      "Ceiling fan moved to URGENT —
+       deadline is in 5 days."
+
+    Scheduler: APScheduler in healthmonitor container
+    (same infrastructure as calendar briefing scheduler)
+
+### 11.11 API Layer
+
+    Business logic never returns HA-specific formats.
+    API layer handles all format translation.
+    This decouples domain from any display consumer.
+
+    GET /api/v1/tasks/today
+      Returns Mithra format:
+      {tasks: [...], count: N, urgent_count: N}
+
+    GET /api/v1/tasks/inbox
+      Unprocessed tasks (status=INBOX)
+
+    GET /api/v1/tasks/overdue
+      Past due_date, not done
+
+    GET /api/v1/dashboard/tasks
+      DashboardData format (same as Time domain)
+      summary: "3 urgent, 2 overdue"
+      items: today's active tasks
+      alerts: expiring deadlines
+      quick_actions: add task, show inbox
+
+    GET /api/v1/routines/today
+      Today's routines with completion state
+      Both personal and household for user
+      {routines: [{id, title, done, done_by, done_at}]}
+
+    POST /api/v1/routines/{id}/complete
+      Mark routine done via HTTP (HA tablet tap)
+      No Telegram needed
+      Body: {user_id: "usr_ba6d9199"}
+
+    ONE-WAY DOOR: no HA-specific format in domain tools.
+    /api/v1/routines/today is Mithra's format.
+    If HA needs different format, API adapter translates.
+
+### 11.12 Time vs Tasks Boundary (reference to 10.15)
+
+    See section 10.15 for complete boundary rules.
+    Summary:
+      Has specific clock time → Time domain
+      No clock time → Tasks domain
+      Bridge (calendar block for task) → opt-in only
+
+### 11.13 Gmail Integration — Phase 2
+
+#### Why Gmail
+    Gmail is a source that auto-generates tasks:
+      Return labels     → "Return [item] by [date]"
+      Flight bookings   → Travel domain (Phase 3)
+      Package shipping  → Shopping domain (Phase 4)
+      Receipts          → Money domain (Phase 3)
+
+    For Tasks domain specifically:
+      Return labels → task with deadline
+      Any actionable email user flags → task
+
+#### Sync Method
+    NOT polling every 30 seconds (exhausts API quota).
+    NOT Google Cloud Pub/Sub (requires GCP, overkill
+    for self-hosted household).
+
+    RECOMMENDED (per Google docs for personal use):
+    historyId incremental sync — same pattern as
+    Google Calendar syncToken.
+
+      FIRST RUN:
+        GET /gmail/v1/users/me/messages (full sync)
+        Extract actionable emails
+        Store historyId in household_config:
+          key: "gmail_history_id_{user_id}"
+
+      EVERY 15 MINUTES (scheduler):
+        GET /gmail/v1/users/me/history?startHistoryId=xxx
+        Get only new messages since last check
+        Classify each new email via LLM
+        Route actionable emails to correct domain
+        Store new historyId
+
+    API quota: ~200 calls/day. Well within free tier.
+
+#### Email Classification
+    LLM classifies each new email:
+      "return_label"       → Tasks: create return task
+      "flight_booking"     → Travel domain (Phase 3)
+      "hotel_booking"      → Travel domain (Phase 3)
+      "package_shipped"    → Shopping domain (Phase 4)
+      "receipt"            → Money domain (Phase 3)
+      "bill_statement"     → Money domain (Phase 3)
+      "appointment_confirm"→ Time domain (create event)
+      "other"              → ignore
+
+#### Return Task Auto-Creation
+    Gmail email: "Your return label for [product]"
+
+    Mithra extracts:
+      Product name from subject/body
+      Return deadline from email body (LLM extracts)
+      Return method (UPS, FedEx, USPS)
+
+    Creates task:
+      title: "Return [product] to [retailer]"
+      due_date: extracted deadline
+      priority: URGENT if <7 days, HIGH if <30 days
+      notes: "Return label in Gmail"
+      source: "gmail"
+      source_ref: email_message_id
+      scope: personal
+
+    Telegram notification:
+      "📦 Return label found: [product]
+       Created task — return by [date]. [View task]"
+
+#### Gmail OAuth Scope
+    Current scope: calendar only
+    Gmail needs: gmail.readonly
+    Added separately from Calendar auth
+    User authorizes independently:
+      "connect gmail" → OAuth flow
+      Only read access, never write
+
+#### Architecture
+    mithra/integrations/gmail/
+      gmail_client.py       → Gmail API wrapper
+                               historyId sync
+                               email body extraction
+      email_classifier.py   → LLM classifies email type
+      email_processor.py    → routes to domain handlers
+
+    Scheduler (in healthmonitor or FastAPI background):
+      Every 15 minutes per connected user
+      Reads historyId from household_config
+      Processes new emails
+      Updates historyId
+
+### 11.14 Implementation Order
+
+    T0. Pre-implementation (done separately):
+        INTENT_DOMAIN_MAP: task/todo/routine/project → tasks
+        conversation_state table in SQLite
+        source + source_ref columns in tasks table
+
+    T1. Schema — all 5 tables + indexes
+        tasks, projects, milestones,
+        routines, routine_completions
+        Migration safe for existing installs
+
+    T2. classify_task_scope() + classify_task_priority()
+        Keyword heuristics
+        Auto-promotion logic
+
+    T3. Core task tools (tested first)
+        task_create (with conversation_state)
+        task_list (today/inbox/overdue/urgent)
+        task_complete
+        task_update (used in capture flow)
+        task_snooze
+
+    T4. Project + milestone tools
+        project_create (asks about milestones)
+        project_update
+        milestone_complete
+
+    T5. Routine tools
+        routine_create
+        routine_complete
+        routine_list
+
+    T6. task_delete + task_suggest
+
+    T7. TasksDomain class implementing Domain ABC
+        get_tools(context)
+        get_dashboard_data()
+        get_event_subscriptions()
+
+    T8. Register TasksDomain in bootstrap
+
+    T9. API routes
+        GET /api/v1/tasks/today
+        GET /api/v1/tasks/inbox
+        GET /api/v1/tasks/overdue
+        GET /api/v1/dashboard/tasks
+        GET /api/v1/routines/today
+        POST /api/v1/routines/{id}/complete
+
+    T10. DoD verification (all manual tests)
+
+    T11. Gmail integration (Phase 2 — separate sprint)
+         gmail_client.py + email_classifier.py
+         gmail.readonly OAuth scope
+         Return task auto-creation
+         historyId sync scheduler
+
+### 11.15 Alternatives Considered
+
+    Google Tasks as backend (rejected):
+      No task sharing between accounts.
+      Household tasks require sharing — breaks immediately.
+      No priorities, projects, milestones, or routines.
+      Source of truth must be Mithra.
+
+    Vikunja self-hosted (rejected):
+      Designed for software teams, not households.
+      Separate UI conflicts with "one interface" goal.
+      Every feature we need would be custom anyway.
+      SQLite in Mithra is simpler and fully controlled.
+
+    Google Cloud Pub/Sub for Gmail (rejected for Phase 1):
+      Requires GCP account, topic setup, service accounts.
+      Overkill for 2-user household.
+      historyId polling at 15-min intervals is sufficient.
+      Revisit for product at scale.
+
+    Calendar blocking automatic (rejected):
+      Auto-blocking creates calendar noise.
+      User should decide when to work on a task.
+      Bridge is always opt-in and user-initiated.
+      See section 10.15.
+
+===============================================================
+PART 2 — Update docs/TRACKER.md
+===============================================================
+
+Add Tasks domain section with complete DoD:
+
+## Tasks Domain
+
+### Definition of Done
+
+CODE COMPLETE:
+  Schema:
+  [ ] tasks table — all fields including source, source_ref
+  [ ] projects table
+  [ ] milestones table
+  [ ] routines table
+  [ ] routine_completions table
+  [ ] conversation_state table
+  [ ] All indexes
+  [ ] Migration safe for existing installs
+
+  Domain tools (13 total):
+  [ ] task_create — captures immediately, asks questions
+  [ ] task_list — today/inbox/overdue/urgent/household
+  [ ] task_complete — low friction, ACT_TELL
+  [ ] task_update — used in capture flow + direct updates
+  [ ] task_snooze — defer to date
+  [ ] task_delete — DESTRUCTIVE, always confirms
+  [ ] task_suggest — "what should I work on today?"
+  [ ] project_create — with milestone prompting
+  [ ] project_update — status/target date
+  [ ] milestone_complete — marks phase done
+  [ ] routine_create — household or personal
+  [ ] routine_complete — today's completion
+  [ ] routine_list — today's done/not-done state
+
+  Autonomy:
+  [ ] task_create → WRITE → confirms
+  [ ] task_complete → WRITE → ACT_TELL (no confirm)
+  [ ] task_delete → DESTRUCTIVE → always confirms
+  [ ] routine_complete → READ → immediate
+
+  Classification:
+  [ ] classify_task_scope() keyword heuristic
+  [ ] classify_task_priority() from title+context
+  [ ] Auto-promotion: normal/high → urgent near deadline
+  [ ] Waiting follow-up after 7 days
+
+  Capture flow:
+  [ ] Quick capture: "add task X" → creates immediately
+  [ ] conversation_state tracks enrichment questions
+  [ ] One question at a time with Telegram buttons
+  [ ] Rich capture: all fields in one message
+  [ ] State clears when user done or changes topic
+
+  API:
+  [ ] GET /api/v1/tasks/today
+  [ ] GET /api/v1/tasks/inbox
+  [ ] GET /api/v1/tasks/overdue
+  [ ] GET /api/v1/dashboard/tasks → DashboardData
+  [ ] GET /api/v1/routines/today
+  [ ] POST /api/v1/routines/{id}/complete
+
+  Proactive:
+  [ ] Morning task briefing (urgent + overdue)
+  [ ] Deadline alert 3 days before
+  [ ] Waiting follow-up 7 days
+  [ ] Weekly inbox summary Sunday
+  [ ] Auto-promotion Telegram notification
+
+TESTS COMPLETE:
+  [ ] Unit tests all 5 tables
+  [ ] Unit tests all 13 tools
+  [ ] Unit tests classify_task_scope()
+  [ ] Unit tests classify_task_priority()
+  [ ] Unit tests auto-promotion logic
+  [ ] Unit tests routine reset
+  [ ] Unit tests conversation_state flow
+  [ ] Unit tests all API endpoints
+  [ ] Minimum 60 new tests
+  [ ] All existing tests pass (798+)
+
+MANUAL VERIFICATION:
+  Capture:
+  [ ] "add task fix ceiling fan"
+      → task created in INBOX immediately
+      → Mithra asks deadline (with buttons)
+      → User sets June 15 → asks priority
+      → User taps Urgent → task ACTIVE
+      → status=active, priority=urgent, due=June 15
+
+  [ ] "add task return amazon package deadline friday urgent"
+      → single message capture, no questions
+      → status=active immediately
+
+  [ ] "add household task schedule pest control"
+      → scope=household
+
+  [ ] "add project backyard deck by July 4"
+      → project created, asks milestones
+
+  [ ] "add daily routine mix baby formula for household"
+      → routine created, scope=household
+      → resets at midnight
+
+  Querying:
+  [ ] "what tasks do I have today"
+      → urgent + overdue + due today
+
+  [ ] "show my inbox"
+      → tasks with status=inbox
+
+  [ ] "what's overdue"
+      → due_date < today, not done
+
+  [ ] "how is backyard deck going"
+      → project + milestone % complete
+
+  [ ] "what routines are done today"
+      → today's completions
+
+  Updating:
+  [ ] "mark ceiling fan done"
+      → status=done, completed_at set
+      → no confirmation needed
+
+  [ ] "snooze insurance call to next Monday"
+      → snoozed_until=next Monday
+
+  [ ] "ceiling fan is waiting for Amazon"
+      → status=waiting
+
+  [ ] "change ceiling fan to urgent"
+      → priority=urgent
+
+  Projects:
+  [ ] "complete phase 1 of backyard deck"
+      → milestone done, project shows 25%
+
+  Routines:
+  [ ] Wife marks "baby formula done"
+      → routine_completions row for wife
+  [ ] You check routines
+      → shows baby formula done by wife at X time
+  [ ] Next morning: resets, all unchecked
+
+  API:
+  [ ] GET /api/v1/dashboard/tasks → 200 with tasks
+  [ ] GET /api/v1/routines/today → completion state
+  [ ] POST /api/v1/routines/xxx/complete → marks done
+      GET again → shows done
+
+  Boundary:
+  [ ] "add task call mom sunday" → tasks (no clock time)
+  [ ] "remind me to call mom sunday at 3pm" → time domain
+  [ ] task_create never writes to calendar_events
+  [ ] No calendar tool creates tasks
+
+  Proactive (test after scheduler added):
+  [ ] Morning briefing mentions urgent tasks
+  [ ] Alert fires 3 days before deadline
+  [ ] Waiting task resurfaces after 7 days
+
+ARCHITECTURE VERIFIED:
+  [ ] Tasks domain never imports Time domain
+  [ ] No HA-specific format in domain tools
+  [ ] API layer handles format translation
+  [ ] DomainContext.local_db_path used for SQLite writes
+  [ ] PermissionTier.DESTRUCTIVE on task_delete
+  [ ] REVIEW_CHECKLIST.md completed before marking done
+
+### Gmail Integration (Phase 2 — after Tasks domain stable)
+
+  [ ] Add gmail.readonly to Google OAuth scope
+  [ ] mithra/integrations/gmail/gmail_client.py
+      historyId incremental sync (15 min scheduler)
+      email body extraction + JSON-LD parsing
+  [ ] mithra/integrations/gmail/email_classifier.py
+      LLM classifies email type
+      return_label|flight_booking|receipt|other
+  [ ] Return task auto-creation
+      Extract product name + deadline from email
+      Create task with source="gmail" source_ref=message_id
+      Telegram notification with [View task] button
+  [ ] historyId stored in household_config
+  [ ] DoD: Amazon return email → task created automatically
+
+### Current Focus
+  → Step 1: ADR committed ✓ (this commit)
+  → Step 2: T0 pre-implementation fixes (INTENT_DOMAIN_MAP,
+             conversation_state table, source columns)
+  → Step 3: Implementation prompt (T1-T10)
+  → Step 4: DoD verification
+  → Step 5: Gmail Phase 2
+
+===============================================================
+
+Do not run tests. Do not implement anything.
+Commit message: docs: Tasks domain complete ADR —
+                schema, 13 tools, capture flow,
+                multi-turn state, routines, projects,
+                Gmail Phase 2 integration design,
+                complete definition of done
+===============================================================
