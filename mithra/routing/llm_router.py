@@ -557,7 +557,13 @@ class LiteLLMRouterAdapter(LLMRouter):
                     "'project status' → project.status, "
                     "'complete phase N of [project]' → project.complete, "
                     "'add milestone to [project]' → project.update, "
-                    "'mark [project] done' → project.complete."
+                    "'mark [project] done' → project.complete. "
+                    "Routine queries: "
+                    "'add routine X' / 'add daily routine X' → routine.create, "
+                    "'baby formula done' / 'X done today' / 'mark X done' (recurring) → routine.complete, "
+                    "'show routines' / 'what routines today' / 'what's left to do' → routine.list. "
+                    "Distinction: 'mark ceiling fan done' → task.complete (one-time task); "
+                    "'baby formula done' / 'soak lentils done' → routine.complete (daily repeat)."
                 ),
             },
             {"role": "user", "content": text},

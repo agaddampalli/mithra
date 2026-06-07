@@ -14,6 +14,9 @@ from mithra.domains.tasks.tools import (
     ProjectCreateTool,
     ProjectStatusTool,
     ProjectUpdateTool,
+    RoutineCompleteTool,
+    RoutineCreateTool,
+    RoutineListTool,
     TaskCompleteTool,
     TaskCreateTool,
     TaskDeleteTool,
@@ -695,9 +698,9 @@ class TestTaskSuggestTool:
 # ---------------------------------------------------------------------------
 
 class TestBuildTasksTools:
-    def test_returns_11_bundles(self, ctx):
+    def test_returns_14_bundles_legacy(self, ctx):
         bundles = build_tasks_tools(ctx)
-        assert len(bundles) == 11
+        assert len(bundles) == 14
 
     def test_tool_names(self, ctx):
         names = {b.metadata.name for b in build_tasks_tools(ctx)}
@@ -705,6 +708,7 @@ class TestBuildTasksTools:
             "task_create", "task_list", "task_complete",
             "task_update", "task_snooze", "task_delete", "task_suggest",
             "project_create", "project_update", "milestone_complete", "project_status",
+            "routine_create", "routine_complete", "routine_list",
         }
         assert names == expected
 
@@ -1193,3 +1197,306 @@ class TestProjectStatusTool:
         _seed_milestone(db, "ms_s8a", "prj_s8", "Step", order_index=1, status="done")
         result = tool._run(project_query="Gate")
         assert result.data["pct"] == 100
+
+
+# ---------------------------------------------------------------------------
+# Routine seed helper
+# ---------------------------------------------------------------------------
+
+def _seed_routine(db_path, routine_id, title, scope="household",
+                  reset_time="00:00", active=1, household_id="hh_test"):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO routines
+               (id, household_id, title, scope, reset_time, active, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (routine_id, household_id, title, scope, reset_time, active, now),
+        )
+
+
+def _seed_routine_completion(db_path, routine_id, completion_date,
+                              completed_by="usr_test", household_id="hh_test"):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO routine_completions
+               (id, routine_id, household_id, completed_by, completion_date, completed_at)
+               VALUES (?,?,?,?,?,?)""",
+            (f"rc_{routine_id}", routine_id, household_id, completed_by, completion_date, now),
+        )
+
+
+# ---------------------------------------------------------------------------
+# RoutineCreateTool
+# ---------------------------------------------------------------------------
+
+class TestRoutineCreateTool:
+    @pytest.fixture()
+    def tool(self, ctx):
+        return RoutineCreateTool(context=ctx)
+
+    def test_creates_household_routine(self, tool, db):
+        result = tool._run(title="mix baby formula", scope="household")
+        assert result.success
+        assert "mix baby formula" in result.summary
+        assert "🏠 Household" in result.summary
+
+    def test_creates_personal_routine(self, tool, db):
+        result = tool._run(title="morning meditation", scope="personal")
+        assert result.success
+        assert "👤 Personal" in result.summary
+
+    def test_auto_classifies_household_via_keyword(self, tool, db):
+        result = tool._run(title="warm water for baby")
+        assert result.success
+        assert result.data["scope"] == "household"
+
+    def test_auto_classifies_personal_via_keyword(self, tool, db):
+        result = tool._run(title="gym workout")
+        assert result.success
+        assert result.data["scope"] == "personal"
+
+    def test_midnight_reset_label(self, tool, db):
+        result = tool._run(title="soak lentils", scope="household")
+        assert "Resets daily at midnight" in result.summary
+
+    def test_custom_reset_time_label(self, tool, db):
+        result = tool._run(title="evening wind-down", scope="household", reset_time="21:00")
+        assert "Resets at 21:00" in result.summary
+        assert result.data["reset_time"] == "21:00"
+
+    def test_invalid_reset_time_defaults_to_midnight(self, tool, db):
+        result = tool._run(title="morning check", scope="household", reset_time="badtime")
+        assert result.data["reset_time"] == "00:00"
+
+    def test_routine_id_in_data(self, tool, db):
+        result = tool._run(title="mix formula", scope="household")
+        assert result.data["routine_id"].startswith("rtn_")
+
+    def test_routine_persisted_in_db(self, tool, db):
+        tool._run(title="soak lentils", scope="household")
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT title, scope FROM routines WHERE title='soak lentils'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "soak lentils"
+        assert row[1] == "household"
+
+    def test_emits_routine_created_event(self, tool, db):
+        result = tool._run(title="evening check", scope="household")
+        assert any(e.event_type == "routine_created" for e in result.events)
+
+    def test_no_db_path_returns_fail(self, ctx):
+        ctx2 = DomainContext(
+            user_id=ctx.user_id, household_id=ctx.household_id,
+            household_timezone=ctx.household_timezone,
+            oauth_manager=None, storage_adapter=None, file_router=None,
+            member_registry=None, file_search=None,
+            request_id="", channel="telegram", local_db_path="",
+        )
+        result = RoutineCreateTool(context=ctx2)._run(title="test")
+        assert not result.success
+
+    def test_returns_14_bundles(self, ctx):
+        bundles = build_tasks_tools(ctx)
+        assert len(bundles) == 14
+
+    def test_routine_tool_names_in_factory(self, ctx):
+        bundles = build_tasks_tools(ctx)
+        names = {b.metadata.name for b in bundles}
+        assert {"routine_create", "routine_complete", "routine_list"}.issubset(names)
+
+    def test_routine_create_is_write(self, ctx):
+        from mithra.domains.bundle import PermissionTier
+        bundles = build_tasks_tools(ctx)
+        b = next(b for b in bundles if b.metadata.name == "routine_create")
+        assert b.metadata.permission == PermissionTier.WRITE
+
+    def test_routine_complete_is_read(self, ctx):
+        from mithra.domains.bundle import PermissionTier
+        bundles = build_tasks_tools(ctx)
+        b = next(b for b in bundles if b.metadata.name == "routine_complete")
+        assert b.metadata.permission == PermissionTier.READ
+
+    def test_routine_list_is_read(self, ctx):
+        from mithra.domains.bundle import PermissionTier
+        bundles = build_tasks_tools(ctx)
+        b = next(b for b in bundles if b.metadata.name == "routine_list")
+        assert b.metadata.permission == PermissionTier.READ
+
+
+# ---------------------------------------------------------------------------
+# RoutineCompleteTool
+# ---------------------------------------------------------------------------
+
+class TestRoutineCompleteTool:
+    @pytest.fixture()
+    def tool(self, ctx):
+        return RoutineCompleteTool(context=ctx)
+
+    def test_marks_routine_done(self, tool, db):
+        _seed_routine(db, "rtn_c1", "mix baby formula")
+        result = tool._run(routine_query="baby formula")
+        assert result.success
+        assert "✓" in result.summary
+        assert "mix baby formula" in result.summary
+
+    def test_completion_row_written(self, tool, db):
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        _seed_routine(db, "rtn_c2", "soak lentils")
+        tool._run(routine_query="lentils")
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT completion_date FROM routine_completions WHERE routine_id='rtn_c2'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == today
+
+    def test_idempotent_same_user(self, tool, db):
+        _seed_routine(db, "rtn_c3", "warm water")
+        tool._run(routine_query="warm water")
+        result = tool._run(routine_query="warm water")
+        assert result.success
+        assert "already marked done today" in result.summary
+
+    def test_idempotent_different_user(self, tool, db, ctx):
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        _seed_routine(db, "rtn_c4", "baby formula dup")
+        _seed_routine_completion(db, "rtn_c4", today, completed_by="usr_wife")
+        result = tool._run(routine_query="baby formula dup")
+        assert result.success
+        assert "by another member" in result.summary
+
+    def test_no_match_returns_fail(self, tool, db):
+        result = tool._run(routine_query="totally nonexistent xyz")
+        assert not result.success
+        assert "No routine found" in result.summary
+
+    def test_inactive_routine_not_matched(self, tool, db):
+        _seed_routine(db, "rtn_c5", "old routine", active=0)
+        result = tool._run(routine_query="old routine")
+        assert not result.success
+
+    def test_completion_date_uses_household_timezone(self, tool, db, ctx):
+        _seed_routine(db, "rtn_c6", "tz routine")
+        result = tool._run(routine_query="tz routine")
+        assert result.success
+        # completion_date is a YYYY-MM-DD string (in household tz = UTC for test)
+        from datetime import datetime, timezone
+        expected = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        assert result.data["completion_date"] == expected
+
+    def test_no_db_path_returns_fail(self, ctx):
+        ctx2 = DomainContext(
+            user_id=ctx.user_id, household_id=ctx.household_id,
+            household_timezone=ctx.household_timezone,
+            oauth_manager=None, storage_adapter=None, file_router=None,
+            member_registry=None, file_search=None,
+            request_id="", channel="telegram", local_db_path="",
+        )
+        result = RoutineCompleteTool(context=ctx2)._run(routine_query="anything")
+        assert not result.success
+
+
+# ---------------------------------------------------------------------------
+# RoutineListTool
+# ---------------------------------------------------------------------------
+
+class TestRoutineListTool:
+    @pytest.fixture()
+    def tool(self, ctx):
+        return RoutineListTool(context=ctx)
+
+    def test_empty_returns_friendly_message(self, tool, db):
+        result = tool._run()
+        assert result.success
+        assert "No routines" in result.summary
+
+    def test_shows_pending_routines(self, tool, db):
+        _seed_routine(db, "rtn_l1", "mix baby formula")
+        result = tool._run()
+        assert "○" in result.summary
+        assert "mix baby formula" in result.summary
+
+    def test_shows_done_routines(self, tool, db):
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        _seed_routine(db, "rtn_l2", "soak lentils")
+        _seed_routine_completion(db, "rtn_l2", today)
+        result = tool._run()
+        assert "✓" in result.summary
+        assert "soak lentils" in result.summary
+
+    def test_done_pending_split(self, tool, db):
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        _seed_routine(db, "rtn_l3", "formula")
+        _seed_routine(db, "rtn_l4", "lentils")
+        _seed_routine_completion(db, "rtn_l3", today)
+        result = tool._run()
+        assert "1/2 done" in result.summary
+
+    def test_pending_listed_before_done(self, tool, db):
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        _seed_routine(db, "rtn_l5", "Alpha routine")
+        _seed_routine(db, "rtn_l6", "Beta routine")
+        _seed_routine_completion(db, "rtn_l5", today)
+        result = tool._run()
+        # Beta (pending) should appear before Alpha (done)
+        assert result.summary.index("Beta routine") < result.summary.index("Alpha routine")
+
+    def test_household_badge_shown(self, tool, db):
+        _seed_routine(db, "rtn_l7", "household task", scope="household")
+        result = tool._run()
+        assert "🏠" in result.summary
+
+    def test_personal_no_household_badge(self, tool, db):
+        _seed_routine(db, "rtn_l8", "my yoga", scope="personal")
+        result = tool._run()
+        assert "my yoga" in result.summary
+        # Personal routines get no 🏠 badge
+        assert "🏠" not in result.summary
+
+    def test_scope_filter_household(self, tool, db):
+        _seed_routine(db, "rtn_l9a", "household item", scope="household")
+        _seed_routine(db, "rtn_l9b", "personal item", scope="personal")
+        result = tool._run(scope_filter="household")
+        assert "household item" in result.summary
+        assert "personal item" not in result.summary
+
+    def test_scope_filter_personal(self, tool, db):
+        _seed_routine(db, "rtn_l10a", "household item2", scope="household")
+        _seed_routine(db, "rtn_l10b", "personal item2", scope="personal")
+        result = tool._run(scope_filter="personal")
+        assert "personal item2" in result.summary
+        assert "household item2" not in result.summary
+
+    def test_data_fields_present(self, tool, db):
+        _seed_routine(db, "rtn_l11", "check data")
+        result = tool._run()
+        assert "count" in result.data
+        assert "done_count" in result.data
+        assert "date" in result.data
+
+    def test_inactive_routine_excluded(self, tool, db):
+        _seed_routine(db, "rtn_l12", "inactive one", active=0)
+        result = tool._run()
+        assert "inactive one" not in result.summary
+
+    def test_no_db_path_returns_fail(self, ctx):
+        ctx2 = DomainContext(
+            user_id=ctx.user_id, household_id=ctx.household_id,
+            household_timezone=ctx.household_timezone,
+            oauth_manager=None, storage_adapter=None, file_router=None,
+            member_registry=None, file_search=None,
+            request_id="", channel="telegram", local_db_path="",
+        )
+        result = RoutineListTool(context=ctx2)._run()
+        assert not result.success

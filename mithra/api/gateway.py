@@ -95,6 +95,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
         if (
             p == "/api/v1/health"
             or p.startswith("/api/v1/dashboard")
+            or p.startswith("/api/v1/routines")   # HA tablet tap — no auth
             or p.startswith("/api/v1/webhook/")
             or p.startswith("/connect/")
             or p.startswith("/oauth/")
@@ -384,6 +385,118 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             return {"ok": True, "provider": provider, "user_id": user_id}
 
         raise HTTPException(status_code=400, detail="OAuth code exchange failed")
+
+    # -----------------------------------------------------------------------
+    # Routine routes — HA tablet tap, no auth required
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/v1/routines/today")
+    async def get_routines_today(scope: str = "household"):
+        """Return today's routine completion state for the HA dashboard.
+
+        scope: household|personal|all
+        """
+        import sqlite3
+        import pytz
+        from datetime import datetime as _dt
+
+        local_adapter = _state.get("local_adapter")
+        if not local_adapter:
+            return JSONResponse({"error": "Storage not available"}, status_code=503)
+
+        db_path = local_adapter.db_path
+        hid = _state.get("household_id", "")
+        household_tz = _state.get("household_timezone", "UTC")
+        tz = pytz.timezone(household_tz)
+        today = _dt.now(tz).strftime("%Y-%m-%d")
+
+        scope_clause = ""
+        if scope == "household":
+            scope_clause = "AND r.scope='household'"
+        elif scope == "personal":
+            scope_clause = "AND r.scope='personal'"
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    f"""SELECT r.id, r.title, r.scope, r.reset_time,
+                               CASE WHEN rc.id IS NOT NULL THEN 1 ELSE 0 END AS done,
+                               rc.completed_by,
+                               rc.completed_at
+                        FROM routines r
+                        LEFT JOIN routine_completions rc
+                            ON rc.routine_id = r.id
+                            AND rc.completion_date = ?
+                            AND rc.household_id = r.household_id
+                        WHERE r.household_id = ?
+                          AND r.active = 1
+                          {scope_clause}
+                        ORDER BY r.created_at ASC""",
+                    (today, hid),
+                ).fetchall()
+            routines = [dict(r) for r in rows]
+            done_count = sum(1 for r in routines if r["done"])
+            return JSONResponse({
+                "date": today,
+                "routines": routines,
+                "done_count": done_count,
+                "total": len(routines),
+            })
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.post("/api/v1/routines/{routine_id}/complete")
+    async def complete_routine_by_id(routine_id: str, request: Request):
+        """Mark a routine done via HTTP tap (HA tablet).
+
+        Body: {"user_id": "usr_xxx"} — optional, falls back to default_user_id.
+        Returns {"status": "done"|"already_done", "routine": title, "date": today}.
+        """
+        import sqlite3
+        import pytz
+        from datetime import datetime as _dt
+        from mithra.domains.tasks.tools import new_routine_completion_id, now_iso
+
+        local_adapter = _state.get("local_adapter")
+        if not local_adapter:
+            return JSONResponse({"error": "Storage not available"}, status_code=503)
+
+        db_path = local_adapter.db_path
+        hid = _state.get("household_id", "")
+        household_tz = _state.get("household_timezone", "UTC")
+        tz = pytz.timezone(household_tz)
+        today = _dt.now(tz).strftime("%Y-%m-%d")
+        now = now_iso()
+
+        body: dict = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+        user_id = body.get("user_id") or _state.get("default_user_id", "")
+
+        try:
+            with sqlite3.connect(db_path) as conn:
+                routine = conn.execute(
+                    "SELECT id, title FROM routines WHERE id=? AND household_id=? AND active=1",
+                    (routine_id, hid),
+                ).fetchone()
+                if not routine:
+                    return JSONResponse({"error": "Routine not found"}, status_code=404)
+
+                try:
+                    conn.execute(
+                        """INSERT INTO routine_completions
+                           (id, routine_id, household_id, completed_by, completion_date, completed_at)
+                           VALUES (?,?,?,?,?,?)""",
+                        (new_routine_completion_id(), routine_id, hid, user_id, today, now),
+                    )
+                    return JSONResponse({"status": "done", "routine": routine[1], "date": today})
+                except sqlite3.IntegrityError:
+                    return JSONResponse({"status": "already_done", "routine": routine[1], "date": today})
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
 
     # Webhook routes — Telegram and future inbound webhooks.
     from mithra.api.routes.webhooks import router as _webhooks_router

@@ -152,6 +152,10 @@ def new_routine_id() -> str:
     return "rtn_" + uuid.uuid4().hex[:12]
 
 
+def new_routine_completion_id() -> str:
+    return "rc_" + uuid.uuid4().hex[:12]
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1402,11 +1406,298 @@ class ProjectStatusTool(BaseTool):
 
 
 # ---------------------------------------------------------------------------
-# Factory — build all 11 ToolBundles for a given DomainContext
+# Tool 12 — routine_create
+# ---------------------------------------------------------------------------
+
+class _RoutineCreateArgs(BaseModel):
+    title: str = Field(description="Routine title")
+    scope: str = Field(
+        default="",
+        description="personal|household. Defaults to household for baby/family routines.",
+    )
+    reset_time: str = Field(
+        default="00:00",
+        description=(
+            "HH:MM when routine resets for a new day. Default 00:00 (midnight). "
+            "Use 21:00 for evening routines that reset at 9pm."
+        ),
+    )
+
+
+class RoutineCreateTool(BaseTool):
+    name: str = "routine_create"
+    description: str = (
+        "Create a daily recurring routine checklist item. "
+        "Use for things that repeat every day and need to be checked off. "
+        "Examples: 'mix baby formula', 'warm water for baby', 'soak lentils', "
+        "'evening wind-down checklist'. "
+        "Different from tasks (one-time) or calendar events (specific time)."
+    )
+    args_schema: Type[BaseModel] = _RoutineCreateArgs
+    _ctx: DomainContext
+
+    def __init__(self, context: DomainContext, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        object.__setattr__(self, "_ctx", context)
+
+    def _run(self, title: str, scope: str = "", reset_time: str = "00:00") -> ToolResult:
+        import sqlite3
+
+        ctx = self._ctx
+        if not ctx.local_db_path:
+            return ToolResult.fail("Tasks storage not available.", error_code="NO_DB_PATH")
+
+        if not re.match(r"^\d{2}:\d{2}$", reset_time):
+            reset_time = "00:00"
+
+        final_scope = scope if scope in ("household", "personal") else classify_task_scope(title)
+        routine_id = new_routine_id()
+        now = now_iso()
+
+        try:
+            with sqlite3.connect(ctx.local_db_path) as conn:
+                conn.execute(
+                    """INSERT INTO routines
+                       (id, household_id, title, scope, reset_time, active, created_at)
+                       VALUES (?,?,?,?,?,1,?)""",
+                    (routine_id, ctx.household_id, title, final_scope, reset_time, now),
+                )
+        except Exception as exc:
+            _logger.error("routine_create DB error", exc_info=True)
+            return ToolResult.fail("Could not create routine.", error=str(exc))
+
+        scope_label = "🏠 Household" if final_scope == "household" else "👤 Personal"
+        reset_label = f"Resets at {reset_time}" if reset_time != "00:00" else "Resets daily at midnight"
+        summary = f"Routine added: {title}\n{scope_label} · {reset_label}"
+
+        _logger.info("routine_create: %s title=%r scope=%s", routine_id, title, final_scope)
+        return ToolResult.ok(
+            summary,
+            data={
+                "routine_id": routine_id,
+                "title": title,
+                "scope": final_scope,
+                "reset_time": reset_time,
+            },
+            events=[
+                DomainEvent(
+                    event_type="routine_created",
+                    source_domain="tasks",
+                    payload={"routine_id": routine_id, "title": title, "scope": final_scope},
+                    user_id=ctx.user_id,
+                    household_id=ctx.household_id,
+                    request_id="",
+                )
+            ],
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tool 13 — routine_complete
+# ---------------------------------------------------------------------------
+
+class _RoutineCompleteArgs(BaseModel):
+    routine_query: str = Field(description="Routine title or keyword")
+
+
+class RoutineCompleteTool(BaseTool):
+    name: str = "routine_complete"
+    description: str = (
+        "Mark a routine as done for today. Either household member can mark done. "
+        "Examples: 'baby formula done', 'mark warm water done', 'done with soak lentils'."
+    )
+    args_schema: Type[BaseModel] = _RoutineCompleteArgs
+    _ctx: DomainContext
+
+    def __init__(self, context: DomainContext, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        object.__setattr__(self, "_ctx", context)
+
+    def _run(self, routine_query: str) -> ToolResult:
+        import sqlite3
+        import pytz
+
+        ctx = self._ctx
+        if not ctx.local_db_path:
+            return ToolResult.fail("Tasks storage not available.", error_code="NO_DB_PATH")
+
+        tz = pytz.timezone(ctx.household_timezone or "UTC")
+        today = datetime.now(tz).strftime("%Y-%m-%d")
+        now = now_iso()
+
+        try:
+            with sqlite3.connect(ctx.local_db_path) as conn:
+                conn.row_factory = sqlite3.Row
+
+                routine = conn.execute(
+                    "SELECT * FROM routines WHERE household_id=? AND title LIKE ? AND active=1 LIMIT 1",
+                    (ctx.household_id, f"%{routine_query}%"),
+                ).fetchone()
+
+                if not routine:
+                    return ToolResult.fail(
+                        f"No routine found matching '{routine_query}'. "
+                        "Say 'show routines' to see your list."
+                    )
+
+                routine = dict(routine)
+                routine_id = routine["id"]
+
+                try:
+                    conn.execute(
+                        """INSERT INTO routine_completions
+                           (id, routine_id, household_id, completed_by, completion_date, completed_at)
+                           VALUES (?,?,?,?,?,?)""",
+                        (
+                            new_routine_completion_id(),
+                            routine_id,
+                            ctx.household_id,
+                            ctx.user_id,
+                            today,
+                            now,
+                        ),
+                    )
+                    summary = f"✓ {routine['title']} — done today"
+                except sqlite3.IntegrityError:
+                    prev = conn.execute(
+                        "SELECT completed_by FROM routine_completions "
+                        "WHERE routine_id=? AND completion_date=? LIMIT 1",
+                        (routine_id, today),
+                    ).fetchone()
+                    if prev and prev[0] != ctx.user_id:
+                        summary = f"✓ {routine['title']} — already done today (by another member)"
+                    else:
+                        summary = f"✓ {routine['title']} — already marked done today"
+
+        except Exception as exc:
+            _logger.error("routine_complete DB error", exc_info=True)
+            return ToolResult.fail("Could not mark routine done.", error=str(exc))
+
+        _logger.info(
+            "routine_complete: %s today=%s user=%s", routine_id, today, ctx.user_id
+        )
+        return ToolResult.ok(
+            summary,
+            data={
+                "routine_id": routine_id,
+                "title": routine["title"],
+                "completion_date": today,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tool 14 — routine_list
+# ---------------------------------------------------------------------------
+
+class _RoutineListArgs(BaseModel):
+    scope_filter: str = Field(
+        default="all",
+        description="all|household|personal",
+    )
+
+
+class RoutineListTool(BaseTool):
+    name: str = "routine_list"
+    description: str = (
+        "Show today's routines with done/not-done status. "
+        "Use for 'what routines are done today', 'show my routines', "
+        "'what's left to do today'."
+    )
+    args_schema: Type[BaseModel] = _RoutineListArgs
+    _ctx: DomainContext
+
+    def __init__(self, context: DomainContext, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        object.__setattr__(self, "_ctx", context)
+
+    def _run(self, scope_filter: str = "all") -> ToolResult:
+        import sqlite3
+        import pytz
+
+        ctx = self._ctx
+        if not ctx.local_db_path:
+            return ToolResult.fail("Tasks storage not available.", error_code="NO_DB_PATH")
+
+        tz = pytz.timezone(ctx.household_timezone or "UTC")
+        today = datetime.now(tz).strftime("%Y-%m-%d")
+
+        scope_clause = ""
+        if scope_filter == "household":
+            scope_clause = "AND r.scope='household'"
+        elif scope_filter == "personal":
+            scope_clause = "AND r.scope='personal'"
+
+        try:
+            with sqlite3.connect(ctx.local_db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                routines = conn.execute(
+                    f"""SELECT r.*,
+                               rc.completed_by,
+                               rc.completed_at
+                        FROM routines r
+                        LEFT JOIN routine_completions rc
+                            ON rc.routine_id = r.id
+                            AND rc.completion_date = ?
+                            AND rc.household_id = r.household_id
+                        WHERE r.household_id = ?
+                          AND r.active = 1
+                          {scope_clause}
+                        ORDER BY r.created_at ASC""",
+                    (today, ctx.household_id),
+                ).fetchall()
+        except Exception as exc:
+            _logger.error("routine_list DB error", exc_info=True)
+            return ToolResult.fail("Could not list routines.", error=str(exc))
+
+        if not routines:
+            return ToolResult.ok(
+                "No routines set up yet. Add one: 'add routine mix baby formula'",
+                data={"routines": [], "count": 0, "done_count": 0, "date": today},
+            )
+
+        done: list[dict] = []
+        pending: list[dict] = []
+        for r in routines:
+            rd = dict(r)
+            if rd.get("completed_by") is not None:
+                done.append(rd)
+            else:
+                pending.append(rd)
+
+        lines: list[str] = []
+        for r in pending:
+            badge = " 🏠" if r["scope"] == "household" else ""
+            lines.append(f"○ {r['title']}{badge}")
+        for r in done:
+            badge = " 🏠" if r["scope"] == "household" else ""
+            lines.append(f"✓ {r['title']}{badge}")
+
+        total = len(routines)
+        done_count = len(done)
+        summary = f"Today's routines ({done_count}/{total} done):\n" + "\n".join(lines)
+
+        _logger.info(
+            "routine_list: household=%s date=%s %d/%d done",
+            ctx.household_id, today, done_count, total,
+        )
+        return ToolResult.ok(
+            summary,
+            data={
+                "routines": [dict(r) for r in routines],
+                "count": total,
+                "done_count": done_count,
+                "date": today,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# Factory — build all 14 ToolBundles for a given DomainContext
 # ---------------------------------------------------------------------------
 
 def build_tasks_tools(context: DomainContext) -> list[ToolBundle]:
-    """Construct all 11 Tasks domain tools bound to the given context."""
+    """Construct all 14 Tasks domain tools bound to the given context."""
     return [
         ToolBundle(
             tool=TaskCreateTool(context=context),
@@ -1516,6 +1807,38 @@ def build_tasks_tools(context: DomainContext) -> list[ToolBundle]:
             tool=ProjectStatusTool(context=context),
             metadata=ToolMetadata(
                 name="project_status",
+                domain_id="tasks",
+                permission=PermissionTier.READ,
+                is_reversible=False,
+                autonomy_level=3,
+            ),
+        ),
+        ToolBundle(
+            tool=RoutineCreateTool(context=context),
+            metadata=ToolMetadata(
+                name="routine_create",
+                domain_id="tasks",
+                permission=PermissionTier.WRITE,
+                is_reversible=True,
+                autonomy_level=1,
+                event_emitted="routine_created",
+            ),
+        ),
+        ToolBundle(
+            tool=RoutineCompleteTool(context=context),
+            metadata=ToolMetadata(
+                name="routine_complete",
+                domain_id="tasks",
+                permission=PermissionTier.READ,
+                is_reversible=False,
+                autonomy_level=2,
+                event_emitted="routine_completed",
+            ),
+        ),
+        ToolBundle(
+            tool=RoutineListTool(context=context),
+            metadata=ToolMetadata(
+                name="routine_list",
                 domain_id="tasks",
                 permission=PermissionTier.READ,
                 is_reversible=False,

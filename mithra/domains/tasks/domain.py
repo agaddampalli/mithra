@@ -75,10 +75,10 @@ class TasksDomain(Domain):
             )
 
         try:
-            items, alerts = self._load_dashboard(household_id, user_id, today)
+            items, alerts, routine_summary = self._load_dashboard(household_id, user_id, today)
         except Exception as exc:
             _logger.warning("tasks dashboard query failed: %s", exc)
-            items, alerts = [], []
+            items, alerts, routine_summary = [], [], ""
 
         inbox_count = sum(1 for i in items if i.get("status") == "inbox")
         urgent_count = sum(1 for i in items if i.get("priority") == "urgent")
@@ -92,7 +92,8 @@ class TasksDomain(Domain):
         if inbox_count:
             parts.append(f"{inbox_count} in inbox")
 
-        summary = "Tasks: " + ", ".join(parts) if parts else "No open tasks"
+        task_summary = "Tasks: " + ", ".join(parts) if parts else "No open tasks"
+        summary = f"{task_summary} · {routine_summary}" if routine_summary else task_summary
 
         return DashboardData(
             domain="tasks",
@@ -109,9 +110,10 @@ class TasksDomain(Domain):
 
     def _load_dashboard(
         self, household_id: str, user_id: str, today: str
-    ) -> tuple[list[dict], list[dict]]:
+    ) -> tuple[list[dict], list[dict], str]:
         items: list[dict] = []
         alerts: list[dict] = []
+        routine_summary: str = ""
 
         with sqlite3.connect(self._local_db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -165,4 +167,27 @@ class TasksDomain(Domain):
                     "severity": "low",
                 })
 
-        return items, alerts
+            # Routine summary — household routines done today
+            try:
+                r_total = conn.execute(
+                    "SELECT COUNT(*) FROM routines WHERE household_id=? AND active=1 AND scope='household'",
+                    (household_id,),
+                ).fetchone()[0]
+                r_done = conn.execute(
+                    "SELECT COUNT(*) FROM routine_completions rc "
+                    "JOIN routines r ON r.id=rc.routine_id "
+                    "WHERE rc.household_id=? AND rc.completion_date=? AND r.scope='household'",
+                    (household_id, today),
+                ).fetchone()[0]
+                if r_total > 0:
+                    routine_summary = f"{r_done}/{r_total} routines done"
+                    if r_done < r_total:
+                        alerts.append({
+                            "type": "routines_pending",
+                            "message": f"{r_total - r_done} routine(s) not done today",
+                            "severity": "low",
+                        })
+            except Exception:
+                pass  # routines table may not exist in older DBs
+
+        return items, alerts, routine_summary
