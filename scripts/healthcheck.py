@@ -19,11 +19,10 @@ SERVICES = {
         "timeout": 5,
     },
     "llm-router": {
-        "url": "http://llm-router:4000/health",
-        "headers": {
-            "Authorization": f"Bearer {os.environ.get('LITELLM_MASTER_KEY', '')}",
-        },
-        "timeout": 5,  # was hardcoded 5s globally — now explicit per-service
+        # /health/liveliness requires no auth; /health returns 401 without Bearer token
+        "url": "http://llm-router:4000/health/liveliness",
+        "headers": {},
+        "timeout": 5,
     },
 }
 
