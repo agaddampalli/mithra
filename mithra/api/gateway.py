@@ -565,11 +565,64 @@ _NEW_COMMAND_PREFIXES: tuple[str, ...] = (
 )
 
 
+async def _apply_milestone_capture(agent_request, state: dict, db_path: str, handler) -> None:
+    """Parse comma-separated milestone text and insert milestones into the project."""
+    import sqlite3
+    from mithra.domains.tasks.tools import _clear_capture_state, new_milestone_id, now_iso
+
+    logger = logging.getLogger(__name__)
+    text = (agent_request.text or "").strip()
+    project_id = state["task_id"]  # conversation_state.last_task_id holds project_id
+    user_id = agent_request.user_id
+
+    milestone_titles = [m.strip() for m in text.split(",") if m.strip()]
+    if not milestone_titles:
+        _clear_capture_state(db_path, user_id)
+        if handler:
+            await handler.send(agent_request, "Project saved ✓")
+        return
+
+    now = now_iso()
+    try:
+        with sqlite3.connect(db_path) as conn:
+            proj_row = conn.execute(
+                "SELECT household_id, title FROM projects WHERE id=?", (project_id,)
+            ).fetchone()
+            if not proj_row:
+                _clear_capture_state(db_path, user_id)
+                return
+            household_id, proj_title = proj_row
+
+            row = conn.execute(
+                "SELECT MAX(order_index) FROM milestones WHERE project_id=?", (project_id,)
+            ).fetchone()
+            start_index = (row[0] or 0) + 1
+
+            for i, title in enumerate(milestone_titles, start_index):
+                conn.execute(
+                    """INSERT INTO milestones
+                       (id, project_id, household_id, title, order_index, status, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (new_milestone_id(), project_id, household_id, title, i, "pending", now, now),
+                )
+    except Exception as exc:
+        logger.error("_apply_milestone_capture DB error", exc_info=True)
+        _clear_capture_state(db_path, user_id)
+        return
+
+    _clear_capture_state(db_path, user_id)
+    ms_lines = "\n".join(f"  {i}. {t}" for i, t in enumerate(milestone_titles, start_index))
+    response = f"{len(milestone_titles)} milestone(s) added to {proj_title}:\n{ms_lines}"
+    logger.info("milestone_capture: %d milestones added to %s", len(milestone_titles), project_id)
+    if handler:
+        await handler.send(agent_request, response)
+
+
 async def _check_and_apply_capture(agent_request, db_path: str, handler) -> bool:
     """Decide whether to intercept a message as a capture follow-up, then apply it.
 
-    Reads the active capture step from DB first so the interception logic is
-    step-aware:
+    Step-aware routing:
+      - milestone step: intercept comma list or skip; new commands fall through
       - notes step: intercept any text that isn't a clear new command
       - due_date / priority steps: intercept only if _is_capture_response matches
 
@@ -588,6 +641,18 @@ async def _check_and_apply_capture(agent_request, db_path: str, handler) -> bool
 
     step = state["step"]
     text_lower = text.lower()
+
+    if step == "milestone":
+        if text_lower in {"skip", "no", "none", "done"}:
+            _clear_capture_state(db_path, agent_request.user_id)
+            if handler:
+                await handler.send(agent_request, "Project saved ✓")
+            return True
+        if any(text_lower.startswith(p) for p in _NEW_COMMAND_PREFIXES):
+            _clear_capture_state(db_path, agent_request.user_id)
+            return False
+        await _apply_milestone_capture(agent_request, state, db_path, handler)
+        return True
 
     if step == "notes":
         # New commands start a fresh pipeline; everything else is a note

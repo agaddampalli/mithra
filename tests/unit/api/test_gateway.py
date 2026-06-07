@@ -529,3 +529,156 @@ class TestCheckAndApplyCapture:
         )
         result = asyncio.run(gw._check_and_apply_capture(request, db_path, None))
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Milestone capture flow — _apply_milestone_capture + gateway gate
+# ---------------------------------------------------------------------------
+
+class TestMilestoneCaptureGateway:
+    def _setup_project(self, tmp_path, project_id: str, title: str = "Backyard Deck"):
+        """Create a real DB with one project and a milestone capture state."""
+        import sqlite3
+        from datetime import datetime, timezone
+        from mithra.storage.local import LocalStorageAdapter
+        from mithra.domains.tasks.tools import _store_capture_state
+
+        LocalStorageAdapter(str(tmp_path), str(tmp_path / "test.db"))
+        db_path = str(tmp_path / "test.db")
+        now = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO projects (id, household_id, user_id, title, scope, status, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (project_id, "hh_test", "usr_test", title, "household", "active", now, now),
+            )
+        _store_capture_state(db_path, "usr_test", project_id, "milestone", {})
+        return db_path
+
+    def test_comma_list_creates_milestones(self, tmp_path):
+        import asyncio
+        import sqlite3
+        from unittest.mock import AsyncMock
+        from mithra.api import gateway as gw
+        from mithra.agent.interface import AgentRequest as AR, InputChannel
+
+        db_path = self._setup_project(tmp_path, "prj_mc1")
+        handler = MagicMock()
+        handler.send = AsyncMock()
+
+        request = AR(
+            user_id="usr_test", device_id="phone",
+            input_channel=InputChannel.TELEGRAM,
+            text="buy materials, build frame, lay boards, stain and finish",
+        )
+        result = asyncio.run(gw._check_and_apply_capture(request, db_path, handler))
+        assert result is True
+
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT title FROM milestones WHERE project_id='prj_mc1' ORDER BY order_index"
+            ).fetchall()
+        assert len(rows) == 4
+        assert rows[0][0] == "buy materials"
+        assert rows[3][0] == "stain and finish"
+
+    def test_comma_list_clears_capture_state(self, tmp_path):
+        import asyncio
+        from unittest.mock import AsyncMock
+        from mithra.api import gateway as gw
+        from mithra.agent.interface import AgentRequest as AR, InputChannel
+        from mithra.domains.tasks.tools import _get_capture_state
+
+        db_path = self._setup_project(tmp_path, "prj_mc2")
+        handler = MagicMock()
+        handler.send = AsyncMock()
+
+        request = AR(
+            user_id="usr_test", device_id="phone",
+            input_channel=InputChannel.TELEGRAM,
+            text="Phase 1, Phase 2",
+        )
+        asyncio.run(gw._check_and_apply_capture(request, db_path, handler))
+        assert _get_capture_state(db_path, "usr_test") is None
+
+    def test_comma_list_sends_confirmation(self, tmp_path):
+        import asyncio
+        from unittest.mock import AsyncMock
+        from mithra.api import gateway as gw
+        from mithra.agent.interface import AgentRequest as AR, InputChannel
+
+        db_path = self._setup_project(tmp_path, "prj_mc3", title="Garden Wall")
+        handler = MagicMock()
+        handler.send = AsyncMock()
+
+        request = AR(
+            user_id="usr_test", device_id="phone",
+            input_channel=InputChannel.TELEGRAM,
+            text="Dig foundation, Pour concrete",
+        )
+        asyncio.run(gw._check_and_apply_capture(request, db_path, handler))
+        handler.send.assert_called_once()
+        response_text = handler.send.call_args[0][1]
+        assert "Garden Wall" in response_text
+        assert "2 milestone(s)" in response_text
+
+    def test_skip_clears_state_and_confirms(self, tmp_path):
+        import asyncio
+        from unittest.mock import AsyncMock
+        from mithra.api import gateway as gw
+        from mithra.agent.interface import AgentRequest as AR, InputChannel
+        from mithra.domains.tasks.tools import _get_capture_state
+
+        db_path = self._setup_project(tmp_path, "prj_mc4")
+        handler = MagicMock()
+        handler.send = AsyncMock()
+
+        request = AR(
+            user_id="usr_test", device_id="phone",
+            input_channel=InputChannel.TELEGRAM,
+            text="skip",
+        )
+        result = asyncio.run(gw._check_and_apply_capture(request, db_path, handler))
+        assert result is True
+        assert _get_capture_state(db_path, "usr_test") is None
+        handler.send.assert_called_once()
+        assert "saved" in handler.send.call_args[0][1].lower()
+
+    def test_new_command_falls_through(self, tmp_path):
+        import asyncio
+        from mithra.api import gateway as gw
+        from mithra.agent.interface import AgentRequest as AR, InputChannel
+        from mithra.domains.tasks.tools import _get_capture_state
+
+        db_path = self._setup_project(tmp_path, "prj_mc5")
+        request = AR(
+            user_id="usr_test", device_id="phone",
+            input_channel=InputChannel.TELEGRAM,
+            text="add task call doctor",
+        )
+        result = asyncio.run(gw._check_and_apply_capture(request, db_path, None))
+        assert result is False
+        assert _get_capture_state(db_path, "usr_test") is None
+
+    def test_order_index_sequential(self, tmp_path):
+        import asyncio
+        import sqlite3
+        from unittest.mock import AsyncMock
+        from mithra.api import gateway as gw
+        from mithra.agent.interface import AgentRequest as AR, InputChannel
+
+        db_path = self._setup_project(tmp_path, "prj_mc6")
+        handler = MagicMock()
+        handler.send = AsyncMock()
+
+        request = AR(
+            user_id="usr_test", device_id="phone",
+            input_channel=InputChannel.TELEGRAM,
+            text="Step A, Step B, Step C",
+        )
+        asyncio.run(gw._check_and_apply_capture(request, db_path, handler))
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT order_index FROM milestones WHERE project_id='prj_mc6' ORDER BY order_index"
+            ).fetchall()
+        assert [r[0] for r in rows] == [1, 2, 3]

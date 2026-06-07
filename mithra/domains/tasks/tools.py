@@ -1052,6 +1052,7 @@ class ProjectCreateTool(BaseTool):
                 "\n\nAdd milestones? List them or say 'skip'.\n"
                 "e.g. 'Buy materials, Build frame, Paint'"
             )
+            _store_capture_state(ctx.local_db_path, ctx.user_id, project_id, "milestone", {})
 
         return ToolResult.ok(
             summary,

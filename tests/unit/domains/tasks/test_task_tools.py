@@ -889,6 +889,21 @@ class TestProjectCreateTool:
         result = tool._run(title="Proj", milestones=["A", "B"])
         assert result.data["milestone_count"] == 2
 
+    def test_capture_state_stored_when_no_milestones(self, tool, db):
+        from mithra.domains.tasks.tools import _get_capture_state
+        result = tool._run(title="New Project")
+        assert result.success
+        state = _get_capture_state(db, "usr_test")
+        assert state is not None
+        assert state["step"] == "milestone"
+        assert state["task_id"] == result.data["project_id"]
+
+    def test_no_capture_state_when_milestones_provided(self, tool, db):
+        from mithra.domains.tasks.tools import _get_capture_state
+        tool._run(title="Bench", milestones=["A", "B"])
+        state = _get_capture_state(db, "usr_test")
+        assert state is None
+
 
 # ---------------------------------------------------------------------------
 # ProjectUpdateTool
