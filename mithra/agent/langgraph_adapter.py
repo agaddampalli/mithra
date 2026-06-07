@@ -309,6 +309,16 @@ class LangGraphAdapter(AgentInterface):
                 "_node_llm_tool_selection: forcing tool=%r for cancel/delete intent", force_tool
             )
 
+        # Force task_delete when user clearly wants to delete a task and tasks domain is loaded.
+        # Calendar check above runs first and wins if both domains are loaded (correct precedence).
+        if not force_tool:
+            has_task_delete = any(b.tool.name == "task_delete" for b in domain_bundles)
+            if has_task_delete and any(k in user_text_lower for k in _CANCEL_KEYWORDS):
+                force_tool = "task_delete"
+                _logger.info(
+                    "_node_llm_tool_selection: forcing tool='task_delete' for delete intent"
+                )
+
         tool_choice: Any
         if force_tool:
             tool_choice = {"type": "function", "function": {"name": force_tool}}
