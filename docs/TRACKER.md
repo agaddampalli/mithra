@@ -1,8 +1,8 @@
-# Mithra — Work Tracker (Updated 2026-06-06)
+# Mithra — Work Tracker (Updated 2026-06-07)
 
 ## SESSION HANDOFF (update after each session)
 
-Last updated: 2026-06-06
+Last updated: 2026-06-07
 
 ### Current State
   Stack: Docker Compose on Windows laptop
@@ -16,18 +16,17 @@ Last updated: 2026-06-06
   Phase 1 storage: COMPLETE
   Time domain: COMPLETE (all 8 tools verified)
   Domain plugin architecture: COMPLETE
-  Tasks domain T1+T2+T3 + capture flow fixes: COMPLETE (7 core tools, 141 tests)
-  Tests passing: 141 new (tasks/ + routing/)
+  Tasks domain T1+T2+T3 + capture flow fixes: COMPLETE (7 core tools)
+  Tasks domain T4 (projects/milestones): COMPLETE (4 tools, 1044 tests passing)
 
 ### In Progress
-  Tasks domain: capture flow complete, next T4 (projects/milestones/routines tools)
+  Tasks domain T5 — routine_create, routine_complete, routine_list
 
 ### Immediate Next Steps
-  1. T4 — project_create, project_update, milestone_complete (3 tools)
-  2. T5 — routine_create, routine_complete, routine_list (3 tools)
-  3. T6 — API routes (tasks/today, tasks/inbox, tasks/overdue, routines/today)
-  4. T7 — Proactive surfacing (morning briefing, deadline alerts)
-  5. HA setup (after Tasks domain fully complete)
+  1. T5 — routine_create, routine_complete, routine_list (3 tools)
+  2. T6 — API routes (tasks/today, tasks/inbox, tasks/overdue, routines/today)
+  3. T7 — Proactive surfacing (morning briefing, deadline alerts)
+  4. HA setup (after Tasks domain fully complete)
 
 ### Key Decisions Made
   - Mithra SQLite as source of truth (not Google Tasks)
@@ -270,7 +269,7 @@ Last updated: 2026-06-06
 
   Time domain closed: 2026-06-06. All DoD items verified end to end.
 
-## Current Focus → Tasks Domain (T4: projects/milestones/routines tools)
+## Current Focus → Tasks Domain T5: routine tools
 
 ## Tasks Domain
 
@@ -294,6 +293,19 @@ Last updated: 2026-06-06
   [x] should_auto_promote() — NORMAL≤7d→urgent, HIGH≤3d→urgent
   [x] new_task_id(), new_project_id(), new_milestone_id(), new_routine_id()
   [x] 56 unit tests all passing
+
+  ### T4 — Project and milestone tools (COMPLETE 2026-06-07)
+  [x] project_create — milestone capture flow (gateway intercepts comma list)
+  [x] project_update — title/status/target_date, SET clause dynamic
+  [x] milestone_complete — ordinal resolution (phase 1/2/first/second → order_index)
+                           title LIKE → ordinal → next-pending fallback chain
+  [x] project_status — ✓/○ milestone format, % complete
+  [x] _find_project() — LEFT JOIN milestones, milestone-rich project wins
+  [x] _resolve_milestone() — title LIKE → digit/ordinal → next-pending
+  [x] Milestone capture gateway flow (project_create stores step=milestone)
+  [x] INTENT_DOMAIN_MAP: project/milestone prefixes → tasks domain
+  [x] classify_intent low-confidence project keyword fallback (0.75)
+  [x] 1044 tests passing
 
   ### T3 — Core task tools (COMPLETE 2026-06-06)
   [x] task_create — scope+priority auto-classify, ISO due date, emits event
@@ -326,9 +338,11 @@ Last updated: 2026-06-06
     [x] task_snooze
     [x] task_delete
     [x] task_suggest
-    [ ] project_create — with milestone prompting
-    [ ] project_update — status/target date
-    [ ] milestone_complete — marks phase done
+    [x] project_create — with milestone prompting
+    [x] project_update — status/target date
+    [x] milestone_complete — marks phase done
+        phase 1/2/next all resolve correctly
+    [x] project_status — shows ✓/○ milestone format
     [ ] routine_create — household or personal
     [ ] routine_complete — today's completion
     [ ] routine_list — today's done/not-done state
@@ -494,7 +508,7 @@ Last updated: 2026-06-06
   [ ] Check-in reminder automation
 
 ## Test Baseline
-  798 tests passing (2026-06-06)
+  1044 tests passing (2026-06-07)
 
 ## Infra Cleanup (deferred to end of Phase 1)
   Automate as part of closing infrastructure phases.
