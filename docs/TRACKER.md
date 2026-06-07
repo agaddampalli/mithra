@@ -19,6 +19,7 @@ Last updated: 2026-06-07
   Tasks domain T1+T2+T3 + capture flow fixes: COMPLETE (7 core tools)
   Tasks domain T4 (projects/milestones): COMPLETE (4 tools, 1044 tests passing)
   Tasks domain T5 (routines): COMPLETE (3 tools + 2 API routes, 1080 tests passing)
+  Section 12 Response Standards: COMPLETE — ADR + all Time/Tasks tools updated, 1085 tests passing
 
 ### In Progress
   Tasks domain T6 — verify task_delete + task_suggest (already in T3),
