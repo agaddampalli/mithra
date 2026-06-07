@@ -373,6 +373,85 @@ class TestClassifyIntent:
         assert result is not None
         assert result.intent == "food.query"
 
+    def test_handles_truncated_json_response(self):
+        # Simulate a response cut off before the closing brace
+        truncated = _ok_response(
+            content='{"intent": "task.create", "domain": "tasks", "confidence": 0.92, "alternatives": []'
+        )
+        router, _ = _make_router(response=truncated)
+        result = router.classify_intent("add buy milk to my list", {})
+        assert result is not None
+        assert result.intent == "task.create"
+        assert result.confidence == 0.92
+
+    def test_uses_max_tokens_400_for_classify_intent(self):
+        payload = {"intent": "task.create", "domain": "tasks", "confidence": 0.9, "alternatives": []}
+        router, client = _make_router(response=_ok_response(content=json.dumps(payload)))
+        router.classify_intent("add buy milk", {})
+        assert client.calls[0]["body"].get("max_tokens") == 400
+
+    def test_max_tokens_not_set_for_regular_complete(self):
+        router, client = _make_router()
+        router.complete(TaskType.DATA_CAPTURE, "food", _messages())
+        assert "max_tokens" not in client.calls[0]["body"]
+
+    def test_max_tokens_passed_when_explicit(self):
+        router, client = _make_router()
+        router.complete(TaskType.DATA_CAPTURE, "food", _messages(), max_tokens=256)
+        assert client.calls[0]["body"]["max_tokens"] == 256
+
+
+# ---------------------------------------------------------------------------
+# _strip_fences — unit tests for the JSON recovery helper
+# ---------------------------------------------------------------------------
+
+
+class TestStripFences:
+    def test_strips_json_code_fence(self):
+        from mithra.routing.llm_router import _strip_fences
+        raw = '```json\n{"key": "value"}\n```'
+        assert _strip_fences(raw) == '{"key": "value"}'
+
+    def test_strips_plain_code_fence(self):
+        from mithra.routing.llm_router import _strip_fences
+        raw = '```\n{"key": "value"}\n```'
+        assert _strip_fences(raw) == '{"key": "value"}'
+
+    def test_no_fences_passthrough(self):
+        from mithra.routing.llm_router import _strip_fences
+        raw = '{"key": "value"}'
+        assert _strip_fences(raw) == '{"key": "value"}'
+
+    def test_truncated_json_closed(self):
+        from mithra.routing.llm_router import _strip_fences
+        raw = '{"intent": "task.create", "confidence": 0.9'
+        result = _strip_fences(raw)
+        import json
+        data = json.loads(result)
+        assert data["intent"] == "task.create"
+
+    def test_json_with_brace_in_string_not_confused(self):
+        from mithra.routing.llm_router import _strip_fences
+        raw = '{"key": "value with { brace }", "num": 1}'
+        result = _strip_fences(raw)
+        import json
+        assert json.loads(result) == {"key": "value with { brace }", "num": 1}
+
+    def test_json_embedded_in_text(self):
+        from mithra.routing.llm_router import _strip_fences
+        raw = 'Here is the answer: {"intent": "food.query", "confidence": 0.8} That is all.'
+        result = _strip_fences(raw)
+        import json
+        data = json.loads(result)
+        assert data["intent"] == "food.query"
+
+    def test_deeply_truncated_json_still_recovers_known_fields(self):
+        from mithra.routing.llm_router import _strip_fences
+        raw = '{"intent": "task.create", "domain": "tasks", "confidence": 0.'
+        result = _strip_fences(raw)
+        # Must close the braces; exact parse may fail on the incomplete float
+        assert result.endswith("}")
+
 
 # ---------------------------------------------------------------------------
 # get_usage

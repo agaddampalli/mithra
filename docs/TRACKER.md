@@ -16,11 +16,11 @@ Last updated: 2026-06-06
   Phase 1 storage: COMPLETE
   Time domain: COMPLETE (all 8 tools verified)
   Domain plugin architecture: COMPLETE
-  Tasks domain T1+T2+T3: COMPLETE (7 core tools, 121 tests)
-  Tests passing: 121 new (tasks/)
+  Tasks domain T1+T2+T3 + capture flow fixes: COMPLETE (7 core tools, 141 tests)
+  Tests passing: 141 new (tasks/ + routing/)
 
 ### In Progress
-  Tasks domain: T1+T2+T3 complete, next T4 (projects/milestones/routines tools)
+  Tasks domain: capture flow complete, next T4 (projects/milestones/routines tools)
 
 ### Immediate Next Steps
   1. T4 — project_create, project_update, milestone_complete (3 tools)
@@ -309,6 +309,11 @@ Last updated: 2026-06-06
   [x] 65 unit tests all passing (121 total in tasks/)
   [x] _parse_due_date() helper (dateparser, ISO passthrough)
   [x] capture state helpers (_store/_get/_clear/_next_question)
+  [x] FIX: _strip_fences handles truncated JSON + JSON embedded in text
+  [x] FIX: classify_intent max_tokens=400 (prevents truncation)
+  [x] FIX: task_create writes conversation_state after insert
+  [x] FIX: task_update reads capture state when task_id empty, advances step
+  [x] FIX: gateway _check_capture_context routes follow-up replies before agent.run
 
   ### Definition of Done
 

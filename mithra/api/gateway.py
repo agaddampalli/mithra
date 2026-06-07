@@ -393,6 +393,158 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
 
 # ---------------------------------------------------------------------------
+# Multi-turn capture helpers
+# ---------------------------------------------------------------------------
+
+def _is_capture_response(text: str) -> bool:
+    """Return True if the entire message is a capture enrichment answer, not a new intent.
+
+    Uses fullmatch patterns so the entire text must be a date/priority expression.
+    Single-word day names, priority levels, and short date phrases qualify.
+    Sentences that happen to contain a date word are correctly rejected.
+    """
+    if not text:
+        return False
+    import re
+    lower = text.lower().strip()
+
+    # Single-word tokens
+    _SINGLE = frozenset({
+        "skip", "done", "no", "nope", "nothing", "finish",
+        "urgent", "high", "normal", "someday",
+        "today", "tomorrow",
+        "monday", "tuesday", "wednesday", "thursday",
+        "friday", "saturday", "sunday",
+    })
+    if lower in _SINGLE:
+        return True
+
+    # ISO date
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", lower):
+        return True
+
+    # Two-word date phrases: "next friday", "this week", "next month"
+    _DAY_OR_PERIOD = (
+        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+        r"week|month|weekend"
+    )
+    if re.fullmatch(rf"(next|this) ({_DAY_OR_PERIOD})", lower):
+        return True
+
+    # "in N days/weeks"
+    if re.fullmatch(r"in \d+ (day|days|week|weeks)", lower):
+        return True
+
+    return False
+
+
+def _update_capture_field(db_path: str, task_id: str, field: str, value: str) -> None:
+    """Update a single task field during a capture flow."""
+    import sqlite3
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            f"UPDATE tasks SET {field}=?, updated_at=? WHERE id=?",
+            (value, now, task_id),
+        )
+
+
+def _finalize_capture_task(db_path: str, task_id: str) -> None:
+    """Promote task from inbox to active once capture is complete."""
+    import sqlite3
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE tasks SET status='active', updated_at=? WHERE id=? AND status='inbox'",
+            (now, task_id),
+        )
+
+
+async def _check_capture_context(agent_request, db_path: str, handler) -> bool:
+    """Handle a reply that belongs to an active multi-turn capture flow.
+
+    Returns True if the reply was consumed here (caller should skip agent.run).
+    Returns False if no active capture or user changed topic (caller proceeds normally).
+    """
+    from mithra.domains.tasks.tools import (
+        _clear_capture_state,
+        _get_capture_state,
+        _next_capture_question,
+        _parse_due_date,
+        _store_capture_state,
+    )
+
+    logger = logging.getLogger(__name__)
+    text = (agent_request.text or "").strip()
+    if not text:
+        return False
+
+    state = _get_capture_state(db_path, agent_request.user_id)
+    if not state:
+        return False
+
+    task_id = state["task_id"]
+    step = state["step"]
+    text_lower = text.lower()
+
+    # Explicit skip/finish — clear state and confirm
+    if text_lower in {"skip", "done", "finish", "that's it", "no", "nope", "nothing"}:
+        _clear_capture_state(db_path, agent_request.user_id)
+        _finalize_capture_task(db_path, task_id)
+        if handler:
+            await handler.send(agent_request, "Got it, task saved.")
+        return True
+
+    # Not a capture-like answer → user changed topic; clear stale state and fall through
+    if not _is_capture_response(text):
+        _clear_capture_state(db_path, agent_request.user_id)
+        return False
+
+    # Apply the answer to the current step
+    response_text = ""
+    next_step: str | None = None
+    _STEP_ORDER = {"due_date": "priority", "priority": "notes", "notes": "done"}
+
+    if step == "due_date":
+        parsed = _parse_due_date(text)
+        if parsed:
+            _update_capture_field(db_path, task_id, "due_date", parsed)
+            next_step = _STEP_ORDER["due_date"]
+        else:
+            response_text = f"Couldn't parse that as a date. {_next_capture_question(step)}"
+    elif step == "priority":
+        if text_lower in {"urgent", "high", "normal", "someday"}:
+            _update_capture_field(db_path, task_id, "priority", text_lower)
+            next_step = _STEP_ORDER["priority"]
+        else:
+            response_text = f"Priority should be urgent / high / normal / someday. {_next_capture_question(step)}"
+    elif step == "notes":
+        _update_capture_field(db_path, task_id, "notes", text)
+        next_step = _STEP_ORDER["notes"]
+
+    if response_text:
+        # Validation failed — re-ask the same question
+        if handler:
+            await handler.send(agent_request, response_text)
+        return True
+
+    if next_step == "done" or next_step is None:
+        _clear_capture_state(db_path, agent_request.user_id)
+        _finalize_capture_task(db_path, task_id)
+        response_text = "Task saved!"
+    else:
+        _store_capture_state(db_path, agent_request.user_id, task_id, next_step, state["context"])
+        response_text = _next_capture_question(next_step)
+
+    logger.info("Capture step %s → %s for task %s", step, next_step, task_id)
+    if handler:
+        await handler.send(agent_request, response_text)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Request lifecycle
 # ---------------------------------------------------------------------------
 
@@ -424,7 +576,19 @@ async def _process_request(agent_request) -> None:
         except Exception as exc:
             logger.error("Context assembly failed: %s", exc, exc_info=True)
 
-    # 3. Run agent
+    # 3. Check for active multi-turn capture state before routing to agent
+    local_adapter = _state.get("local_adapter")
+    if local_adapter and agent_request.text:
+        db_path = getattr(local_adapter, "db_path", None)
+        if db_path:
+            try:
+                handled = await _check_capture_context(agent_request, db_path, handler)
+                if handled:
+                    return
+            except Exception as exc:
+                logger.warning("Capture context check failed: %s", exc)
+
+    # 4. Run agent
     agent = _state.get("agent")
     if not agent:
         logger.error("No agent in state")
@@ -439,7 +603,7 @@ async def _process_request(agent_request) -> None:
         logger.error("Agent.run failed: %s", exc, exc_info=True)
         return
 
-    # 4. Run autonomy engine
+    # 5. Run autonomy engine
     engine = _state.get("engine")
     executor = _state.get("executor")
     receipt = None
@@ -453,11 +617,11 @@ async def _process_request(agent_request) -> None:
         except Exception as exc:
             logger.error("Engine.process failed: %s", exc, exc_info=True)
 
-    # 5. Engine response takes priority over agent response
+    # 6. Engine response takes priority over agent response
     if receipt and receipt.response_text:
         result.response_text = receipt.response_text
 
-    # 6. Send response — all channel knowledge stays in the handler
+    # 7. Send response — all channel knowledge stays in the handler
     if result.response_text and handler:
         actions = None
         if receipt and receipt.pending:

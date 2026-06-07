@@ -246,6 +246,36 @@ class TestTaskCreateTool:
             row = conn.execute("SELECT notes FROM tasks WHERE title=?", ("Important task",)).fetchone()
         assert row[0] == "Some details here"
 
+    def test_capture_state_written_when_no_deadline(self, create_tool, db):
+        result = create_tool._run(title="Fix ceiling fan")
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT last_task_id, capture_step FROM conversation_state WHERE user_id=?",
+                ("usr_test",),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == result.data["task_id"]
+        assert row[1] == "due_date"
+
+    def test_capture_state_written_when_no_priority(self, create_tool, db):
+        result = create_tool._run(title="Fix ceiling fan", due_date="2026-12-01")
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT capture_step FROM conversation_state WHERE user_id=?",
+                ("usr_test",),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "priority"
+
+    def test_no_capture_state_when_all_fields_given(self, create_tool, db):
+        create_tool._run(title="Fix ceiling fan", due_date="2026-12-01", priority="urgent")
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT last_task_id FROM conversation_state WHERE user_id=?",
+                ("usr_test",),
+            ).fetchone()
+        assert row is None
+
 
 # ---------------------------------------------------------------------------
 # TaskListTool
@@ -435,6 +465,63 @@ class TestTaskUpdateTool:
         _seed_task(db, task_id="tsk_upd6", title="My Task")
         result = update_tool._run(task_id="tsk_upd6", priority="high")
         assert "My Task" in result.summary
+
+    def test_no_task_id_and_no_capture_state_returns_fail(self, update_tool):
+        result = update_tool._run(task_id="", priority="urgent")
+        assert not result.success
+
+    def test_capture_state_due_date_step_updates_task(self, update_tool, db):
+        from mithra.domains.tasks.tools import _store_capture_state
+        _seed_task(db, task_id="tsk_cap1", title="Fix ceiling fan")
+        _store_capture_state(db, "usr_test", "tsk_cap1", "due_date", {"title": "Fix ceiling fan"})
+
+        result = update_tool._run(task_id="", due_date="2026-12-01")
+        assert result.success
+        with sqlite3.connect(db) as conn:
+            row = conn.execute("SELECT due_date FROM tasks WHERE id=?", ("tsk_cap1",)).fetchone()
+        assert row[0] == "2026-12-01"
+
+    def test_capture_state_advances_from_due_date_to_priority(self, update_tool, db):
+        from mithra.domains.tasks.tools import _store_capture_state, _get_capture_state
+        _seed_task(db, task_id="tsk_cap2", title="Fix roof")
+        _store_capture_state(db, "usr_test", "tsk_cap2", "due_date", {})
+
+        update_tool._run(task_id="", due_date="2026-12-01")
+
+        state = _get_capture_state(db, "usr_test")
+        assert state is not None
+        assert state["step"] == "priority"
+
+    def test_capture_state_advances_from_priority_to_notes(self, update_tool, db):
+        from mithra.domains.tasks.tools import _store_capture_state, _get_capture_state
+        _seed_task(db, task_id="tsk_cap3", title="Fix gate")
+        _store_capture_state(db, "usr_test", "tsk_cap3", "priority", {})
+
+        update_tool._run(task_id="", priority="high")
+
+        state = _get_capture_state(db, "usr_test")
+        assert state is not None
+        assert state["step"] == "notes"
+
+    def test_capture_state_cleared_after_notes_step(self, update_tool, db):
+        from mithra.domains.tasks.tools import _store_capture_state, _get_capture_state
+        _seed_task(db, task_id="tsk_cap4", title="Fix fence")
+        _store_capture_state(db, "usr_test", "tsk_cap4", "notes", {})
+
+        result = update_tool._run(task_id="", notes="Call contractor first")
+
+        state = _get_capture_state(db, "usr_test")
+        assert state is None
+        assert result.success
+
+    def test_capture_next_question_in_summary(self, update_tool, db):
+        from mithra.domains.tasks.tools import _store_capture_state
+        _seed_task(db, task_id="tsk_cap5", title="Fix HVAC")
+        _store_capture_state(db, "usr_test", "tsk_cap5", "due_date", {})
+
+        result = update_tool._run(task_id="", due_date="2026-12-01")
+
+        assert "urgent" in result.summary.lower() or "priority" in result.summary.lower()
 
 
 # ---------------------------------------------------------------------------

@@ -365,11 +365,24 @@ class TaskCreateTool(BaseTool):
             summary_parts.append("(household)")
         summary = " · ".join(summary_parts)
 
-        # Append one enrichment question when key info is missing
+        # Determine initial capture step and write state for follow-up routing
         if not parsed_due:
+            initial_step: Optional[str] = "due_date"
             summary += "\n\nAny deadline?"
         elif not priority:
+            initial_step = "priority"
             summary += "\n\nPriority? (urgent / high / normal / someday)"
+        else:
+            initial_step = None  # all fields provided, no follow-up needed
+
+        if initial_step:
+            _store_capture_state(
+                ctx.local_db_path,
+                ctx.user_id,
+                task_id,
+                initial_step,
+                {"title": title},
+            )
 
         return ToolResult.ok(
             summary,
@@ -591,7 +604,12 @@ class TaskCompleteTool(BaseTool):
 # ---------------------------------------------------------------------------
 
 class _TaskUpdateArgs(BaseModel):
-    task_id: str = Field(description="Task ID to update (tsk_...). Use task_list to find it.")
+    task_id: str = Field(
+        default="",
+        description="Task ID to update (tsk_...). Use task_list to find it. "
+                    "Leave empty when responding to a capture follow-up question — "
+                    "the last created task is used automatically.",
+    )
     title: str = Field(default="", description="New title. Leave empty to keep current.")
     due_date: str = Field(
         default="",
@@ -623,7 +641,7 @@ class TaskUpdateTool(BaseTool):
 
     def _run(
         self,
-        task_id: str,
+        task_id: str = "",
         title: str = "",
         due_date: str = "",
         priority: str = "",
@@ -635,6 +653,15 @@ class TaskUpdateTool(BaseTool):
         ctx = self._ctx
         if not ctx.local_db_path:
             return ToolResult.fail("Tasks storage not available.", error_code="NO_DB_PATH")
+
+        # If no task_id, look up the active capture state for this user
+        _capture: Optional[dict] = None
+        if not task_id:
+            _capture = _get_capture_state(ctx.local_db_path, ctx.user_id)
+            if _capture:
+                task_id = _capture["task_id"]
+            else:
+                return ToolResult.fail("No task ID provided. Use task_list to find the task ID.")
 
         updates: list[tuple[str, Any]] = []
         now = now_iso()
@@ -681,8 +708,28 @@ class TaskUpdateTool(BaseTool):
 
         _logger.info("task_update: %s fields=%s", task_id, [c for c, _ in updates])
         changed = ", ".join(f"{col}→{val}" for col, val in updates)
+        summary = f'Updated "{old_title}": {changed}'
+
+        # Advance capture step if this update came from a follow-up flow
+        if _capture:
+            _STEP_ORDER = {"due_date": "priority", "priority": "notes", "notes": "done"}
+            next_step = _STEP_ORDER.get(_capture["step"], "done")
+            if next_step == "done":
+                _clear_capture_state(ctx.local_db_path, ctx.user_id)
+            else:
+                _store_capture_state(
+                    ctx.local_db_path,
+                    ctx.user_id,
+                    task_id,
+                    next_step,
+                    _capture["context"],
+                )
+                question = _next_capture_question(next_step)
+                if question:
+                    summary += f"\n\n{question}"
+
         return ToolResult.ok(
-            f'Updated "{old_title}": {changed}',
+            summary,
             data={"task_id": task_id, "updated_fields": dict(updates)},
         )
 

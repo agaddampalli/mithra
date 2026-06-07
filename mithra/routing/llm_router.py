@@ -165,6 +165,7 @@ class LLMRouter(ABC):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         stream: bool = False,
+        max_tokens: int | None = None,
     ) -> LLMResponse | Generator[LLMStreamChunk, None, LLMResponse]:
         """Send a completion request. domain is required and validated independently.
 
@@ -268,16 +269,56 @@ def _route_label(model: str, fallback_triggered: bool, task_type: TaskType) -> s
 
 
 def _strip_fences(raw: str) -> str:
-    """Strip markdown code fences from an LLM response before JSON parsing.
+    """Strip markdown code fences and recover from truncated JSON responses.
 
-    Claude and other models sometimes wrap JSON in ```json\\n...\\n``` blocks.
+    Handles three cases:
+    1. ```json ... ``` markdown fences wrapping the JSON
+    2. JSON embedded within surrounding text (finds the first { ... })
+    3. Truncated JSON (response cut off before closing }) — closed with balancing braces
     """
     raw = raw.strip()
+    # Strip markdown fences
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1]
     if raw.endswith("```"):
         raw = raw.rsplit("```", 1)[0]
-    return raw.strip()
+    raw = raw.strip()
+
+    # Find the first JSON object boundary
+    start = raw.find("{")
+    if start == -1:
+        return raw
+
+    # Walk from start, tracking balanced braces (ignoring braces inside strings)
+    depth = 0
+    end = -1
+    in_string = False
+    escape_next = False
+    for i, ch in enumerate(raw[start:], start):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\" and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+
+    if end != -1:
+        return raw[start : end + 1]
+
+    # Truncated response: close all remaining open braces
+    return raw[start:] + "}" * depth
 
 
 def _fit_context(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -348,6 +389,7 @@ class LiteLLMRouterAdapter(LLMRouter):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         stream: bool = False,
+        max_tokens: int | None = None,
     ) -> LLMResponse | Generator[LLMStreamChunk, None, LLMResponse]:
         start = time.time()
         task_type_mismatch = False
@@ -390,7 +432,7 @@ class LiteLLMRouterAdapter(LLMRouter):
         error_str: str | None = None
         logger.debug("LLM call: task=%s domain=%s model=%s", task_type.value, domain, model)
         try:
-            raw = self._call(model, messages, tools)
+            raw = self._call(model, messages, tools, max_tokens=max_tokens)
         except Exception as exc:
             error_str = str(exc)
             logger.warning("LLM call failed: model=%s error=%s", model, error_str)
@@ -412,7 +454,7 @@ class LiteLLMRouterAdapter(LLMRouter):
                     "Local→cloud fallback: model=%s task=%s", cloud_model, task_type.value
                 )
                 try:
-                    raw = self._call(cloud_model, messages, tools)
+                    raw = self._call(cloud_model, messages, tools, max_tokens=max_tokens)
                     model = cloud_model
                     break
                 except Exception as exc:
@@ -437,7 +479,7 @@ class LiteLLMRouterAdapter(LLMRouter):
                     model, cloud_model,
                 )
                 try:
-                    raw = self._call(cloud_model, messages, tools)
+                    raw = self._call(cloud_model, messages, tools, max_tokens=max_tokens)
                     model = cloud_model
                     break
                 except Exception as exc:
@@ -517,6 +559,7 @@ class LiteLLMRouterAdapter(LLMRouter):
             TaskType.INTENT_CLASSIFICATION,
             context.get("domain", "general"),
             messages,
+            max_tokens=400,
         )
         if not response.success:  # type: ignore[union-attr]
             logger.warning("classify_intent LLM call failed: %s", response.error)
@@ -685,6 +728,7 @@ class LiteLLMRouterAdapter(LLMRouter):
         messages: list[dict],
         tools: list[dict] | None = None,
         tool_choice: Any = None,
+        max_tokens: int | None = None,
     ) -> Any:
         url = f"{self._base_url}/v1/chat/completions"
         body: dict[str, Any] = {"model": model, "messages": messages}
@@ -692,6 +736,8 @@ class LiteLLMRouterAdapter(LLMRouter):
             body["tools"] = tools
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         headers = {"Content-Type": "application/json"}
         if self._litellm_key:
             headers["Authorization"] = f"Bearer {self._litellm_key}"
