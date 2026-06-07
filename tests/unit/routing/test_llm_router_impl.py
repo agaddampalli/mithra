@@ -400,6 +400,35 @@ class TestClassifyIntent:
         router.complete(TaskType.DATA_CAPTURE, "food", _messages(), max_tokens=256)
         assert client.calls[0]["body"]["max_tokens"] == 256
 
+    def test_project_keyword_fallback_when_low_confidence(self):
+        low_conf = _ok_response(
+            content=json.dumps({"intent": "general.query", "domain": "general", "confidence": 0.5, "alternatives": []})
+        )
+        router, _ = _make_router(response=low_conf)
+        result = router.classify_intent("how is the backyard deck going", {})
+        assert result is not None
+        assert result.intent == "project.status"
+        assert result.domain == "tasks"
+        assert result.confidence == 0.75
+
+    def test_project_keyword_fallback_not_triggered_above_07(self):
+        mid_conf = _ok_response(
+            content=json.dumps({"intent": "food.query", "domain": "food", "confidence": 0.72, "alternatives": []})
+        )
+        router, _ = _make_router(response=mid_conf)
+        # confidence 0.72 >= 0.7, so fallback must NOT fire (text has no project kw either)
+        result = router.classify_intent("what should i eat for dinner", {})
+        assert result is None  # 0.72 still below 0.75 threshold, no fallback
+
+    def test_non_project_low_confidence_still_returns_none(self):
+        low_conf = _ok_response(
+            content=json.dumps({"intent": "food.query", "domain": "food", "confidence": 0.4, "alternatives": []})
+        )
+        router, _ = _make_router(response=low_conf)
+        # "what should i eat" has no project keywords → no fallback → None
+        result = router.classify_intent("what should i eat", {})
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # _strip_fences — unit tests for the JSON recovery helper

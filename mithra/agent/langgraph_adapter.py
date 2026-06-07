@@ -75,6 +75,8 @@ INTENT_DOMAIN_MAP: dict[str, str] = {
     "routines":         "tasks",
     "project":          "tasks",
     "projects":         "tasks",
+    "milestone":        "tasks",
+    "milestones":       "tasks",
     "checklist":        "tasks",
     "habit":            "tasks",
     "inbox":            "tasks",

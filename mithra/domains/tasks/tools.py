@@ -278,6 +278,30 @@ def _next_capture_question(step: str) -> str:
     return questions.get(step, "")
 
 
+def _find_project(conn, household_id: str, query: str) -> Optional[dict]:
+    """Return best-matching active project for a title keyword query.
+
+    When multiple projects match the LIKE pattern, the one with the most
+    milestones wins — it is most likely the intended project rather than
+    an empty project with a similar name.
+    """
+    row = conn.execute(
+        """
+        SELECT p.*, COUNT(m.id) AS milestone_count
+        FROM projects p
+        LEFT JOIN milestones m ON m.project_id = p.id
+        WHERE p.household_id = ?
+          AND p.title LIKE ?
+          AND p.status != 'completed'
+        GROUP BY p.id
+        ORDER BY milestone_count DESC, p.created_at DESC
+        LIMIT 1
+        """,
+        (household_id, f"%{query}%"),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 # ---------------------------------------------------------------------------
 # Tool 1 — task_create
 # ---------------------------------------------------------------------------
@@ -1107,14 +1131,10 @@ class ProjectUpdateTool(BaseTool):
         try:
             with sqlite3.connect(ctx.local_db_path) as conn:
                 conn.row_factory = sqlite3.Row
-                row = conn.execute(
-                    "SELECT * FROM projects WHERE household_id=? AND title LIKE ? AND status != 'completed' LIMIT 1",
-                    (ctx.household_id, f"%{project_query}%"),
-                ).fetchone()
-                if not row:
+                project = _find_project(conn, ctx.household_id, project_query)
+                if not project:
                     return ToolResult.fail(f"No project found matching '{project_query}'")
 
-                project = dict(row)
                 project_id = project["id"]
                 now = now_iso()
 
@@ -1191,14 +1211,10 @@ class MilestoneCompleteTool(BaseTool):
             with sqlite3.connect(ctx.local_db_path) as conn:
                 conn.row_factory = sqlite3.Row
 
-                project_row = conn.execute(
-                    "SELECT * FROM projects WHERE household_id=? AND title LIKE ? LIMIT 1",
-                    (ctx.household_id, f"%{project_query}%"),
-                ).fetchone()
-                if not project_row:
+                project = _find_project(conn, ctx.household_id, project_query)
+                if not project:
                     return ToolResult.fail(f"No project found matching '{project_query}'")
 
-                project = dict(project_row)
                 project_id = project["id"]
 
                 if milestone_query:
@@ -1296,14 +1312,10 @@ class ProjectStatusTool(BaseTool):
             with sqlite3.connect(ctx.local_db_path) as conn:
                 conn.row_factory = sqlite3.Row
 
-                project_row = conn.execute(
-                    "SELECT * FROM projects WHERE household_id=? AND title LIKE ? LIMIT 1",
-                    (ctx.household_id, f"%{project_query}%"),
-                ).fetchone()
-                if not project_row:
+                project = _find_project(conn, ctx.household_id, project_query)
+                if not project:
                     return ToolResult.fail(f"No project found matching '{project_query}'")
 
-                project = dict(project_row)
                 project_id = project["id"]
 
                 ms_rows = conn.execute(

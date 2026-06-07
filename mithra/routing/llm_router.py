@@ -550,7 +550,14 @@ class LiteLLMRouterAdapter(LLMRouter):
                     "task.* → tasks domain, "
                     "routine.* → tasks domain, "
                     "project.* → tasks domain, "
-                    "inbox.* → tasks domain."
+                    "inbox.* → tasks domain. "
+                    "Project queries: "
+                    "'how is [project] going' → project.status, "
+                    "'show project [name]' → project.status, "
+                    "'project status' → project.status, "
+                    "'complete phase N of [project]' → project.complete, "
+                    "'add milestone to [project]' → project.update, "
+                    "'mark [project] done' → project.complete."
                 ),
             },
             {"role": "user", "content": text},
@@ -567,6 +574,19 @@ class LiteLLMRouterAdapter(LLMRouter):
         try:
             data = json.loads(_strip_fences(response.content))  # type: ignore[union-attr]
             confidence = float(data.get("confidence", 0.0))
+
+            # Fallback: project status queries are often under-scored by small LLMs.
+            # When confidence is very low but the text mentions project-related keywords,
+            # lock to project.status so the user gets a useful response.
+            _PROJECT_QUERY_KEYWORDS = frozenset({
+                "project", "milestone", "phase", "going", "progress", "status",
+            })
+            if confidence < 0.7 and any(kw in text.lower() for kw in _PROJECT_QUERY_KEYWORDS):
+                data["intent"] = "project.status"
+                data["domain"] = "tasks"
+                confidence = 0.75
+                logger.info("classify_intent: project keyword fallback applied for: %s", text[:60])
+
             if confidence < 0.75:
                 logger.info("classify_intent low confidence %.2f for: %s", confidence, text[:60])
                 return None

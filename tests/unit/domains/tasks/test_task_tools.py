@@ -777,6 +777,60 @@ class TestBuildTasksTools:
 
 
 # ---------------------------------------------------------------------------
+# _find_project — disambiguation helper
+# ---------------------------------------------------------------------------
+
+class TestFindProject:
+    def test_prefers_project_with_milestones(self, db):
+        import sqlite3
+        from mithra.domains.tasks.tools import _find_project
+        _seed_project(db, project_id="prj_empty", title="Backyard Deck")
+        _seed_project(db, project_id="prj_rich", title="Build Backyard Deck")
+        _seed_milestone(db, "ms_r1", "prj_rich", "Phase 1")
+        _seed_milestone(db, "ms_r2", "prj_rich", "Phase 2")
+        with sqlite3.connect(db) as conn:
+            conn.row_factory = sqlite3.Row
+            result = _find_project(conn, "hh_test", "backyard deck")
+        assert result is not None
+        assert result["id"] == "prj_rich"
+
+    def test_returns_only_match_when_one_project(self, db):
+        import sqlite3
+        from mithra.domains.tasks.tools import _find_project
+        _seed_project(db, project_id="prj_solo", title="Garden Wall")
+        with sqlite3.connect(db) as conn:
+            conn.row_factory = sqlite3.Row
+            result = _find_project(conn, "hh_test", "Garden Wall")
+        assert result is not None
+        assert result["id"] == "prj_solo"
+
+    def test_returns_none_when_no_match(self, db):
+        import sqlite3
+        from mithra.domains.tasks.tools import _find_project
+        with sqlite3.connect(db) as conn:
+            conn.row_factory = sqlite3.Row
+            result = _find_project(conn, "hh_test", "Nonexistent XYZ")
+        assert result is None
+
+    def test_excludes_completed_projects(self, db):
+        import sqlite3
+        from mithra.domains.tasks.tools import _find_project
+        _seed_project(db, project_id="prj_done", title="Finished Deck", status="completed")
+        with sqlite3.connect(db) as conn:
+            conn.row_factory = sqlite3.Row
+            result = _find_project(conn, "hh_test", "Finished Deck")
+        assert result is None
+
+    def test_milestone_complete_uses_milestone_rich_project(self, db, ctx):
+        _seed_project(db, project_id="prj_empty2", title="Deck")
+        _seed_project(db, project_id="prj_rich2", title="Backyard Deck")
+        _seed_milestone(db, "ms_e1", "prj_rich2", "Buy materials")
+        result = MilestoneCompleteTool(context=ctx)._run(project_query="deck")
+        assert result.success
+        assert "Buy materials" in result.summary
+
+
+# ---------------------------------------------------------------------------
 # Helpers shared by project tool tests
 # ---------------------------------------------------------------------------
 
