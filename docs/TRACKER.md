@@ -18,14 +18,16 @@ Last updated: 2026-06-07
   Domain plugin architecture: COMPLETE
   Tasks domain T1+T2+T3 + capture flow fixes: COMPLETE (7 core tools)
   Tasks domain T4 (projects/milestones): COMPLETE (4 tools, 1044 tests passing)
+  Tasks domain T5 (routines): COMPLETE (3 tools + 2 API routes, 1080 tests passing)
 
 ### In Progress
-  Tasks domain T5 — routine_create, routine_complete, routine_list
+  Tasks domain T6 — verify task_delete + task_suggest (already in T3),
+                    then T7-T10 to close Tasks domain DoD
 
 ### Immediate Next Steps
-  1. T5 — routine_create, routine_complete, routine_list (3 tools)
-  2. T6 — API routes (tasks/today, tasks/inbox, tasks/overdue, routines/today)
-  3. T7 — Proactive surfacing (morning briefing, deadline alerts)
+  1. T6 — task_delete + task_suggest verify; then T7 proactive surfacing
+  2. T7 — Morning briefing, deadline alerts, auto-promotion notifications
+  3. T8-T10 — API routes, HA integration, DoD gate
   4. HA setup (after Tasks domain fully complete)
 
 ### Key Decisions Made
@@ -269,7 +271,7 @@ Last updated: 2026-06-07
 
   Time domain closed: 2026-06-06. All DoD items verified end to end.
 
-## Current Focus → Tasks Domain T5: routine tools
+## Current Focus → Tasks Domain T6: verify task_delete/task_suggest, then T7-T10 to close DoD
 
 ## Tasks Domain
 
@@ -293,6 +295,25 @@ Last updated: 2026-06-07
   [x] should_auto_promote() — NORMAL≤7d→urgent, HIGH≤3d→urgent
   [x] new_task_id(), new_project_id(), new_milestone_id(), new_routine_id()
   [x] 56 unit tests all passing
+
+  ### T5 — Routine tools (COMPLETE 2026-06-07)
+  [x] routine_create — scope auto-classify, reset_time HH:MM, WRITE tier
+  [x] routine_complete — household timezone date, idempotent (IntegrityError),
+                         detects same-user vs other-member duplicate
+  [x] routine_list — LEFT JOIN completions, pending before done, 🏠 badge,
+                     scope filter (all|household|personal)
+  [x] GET /api/v1/routines/today — unauthenticated, HA tablet
+  [x] POST /api/v1/routines/{id}/complete — idempotent, done|already_done
+  [x] Auth middleware exclusion for /api/v1/routines
+  [x] Dashboard summary extended with routine done count
+  [x] classify_intent prompt: routine.create / routine.complete / routine.list
+  [x] 1080 tests passing (36 new)
+  Manual checks verified:
+    show routines → correct done/pending split
+    baby formula done → immediate, no confirm
+    double-mark → "already marked done today" (friendly, no crash)
+    API /routines/today → correct JSON
+    dashboard includes "2/3 routines done"
 
   ### T4 — Project and milestone tools (COMPLETE 2026-06-07)
   [x] project_create — milestone capture flow (gateway intercepts comma list)
@@ -330,7 +351,7 @@ Last updated: 2026-06-07
   ### Definition of Done
 
   CODE COMPLETE:
-    Domain tools (13 total):
+    Domain tools (14 total):
     [x] task_create
     [x] task_list
     [x] task_complete
@@ -343,15 +364,15 @@ Last updated: 2026-06-07
     [x] milestone_complete — marks phase done
         phase 1/2/next all resolve correctly
     [x] project_status — shows ✓/○ milestone format
-    [ ] routine_create — household or personal
-    [ ] routine_complete — today's completion
-    [ ] routine_list — today's done/not-done state
+    [x] routine_create — household or personal
+    [x] routine_complete — today's completion (idempotent)
+    [x] routine_list — today's done/not-done state
 
     Autonomy:
     [x] task_create → WRITE (autonomy_level=2)
     [x] task_complete → WRITE, ACT_TELL (autonomy_level=2)
     [x] task_delete → DESTRUCTIVE → always confirms
-    [ ] routine_complete → READ → immediate
+    [x] routine_complete → READ → immediate
 
     Classification:
     [x] classify_task_scope() keyword heuristic
@@ -363,8 +384,8 @@ Last updated: 2026-06-07
     [ ] GET /api/v1/tasks/inbox
     [ ] GET /api/v1/tasks/overdue
     [x] GET /api/v1/dashboard/tasks → DashboardData (via DomainRegistry)
-    [ ] GET /api/v1/routines/today
-    [ ] POST /api/v1/routines/{id}/complete
+    [x] GET /api/v1/routines/today
+    [x] POST /api/v1/routines/{id}/complete
 
     Proactive:
     [ ] Morning task briefing (urgent + overdue)
@@ -508,7 +529,7 @@ Last updated: 2026-06-07
   [ ] Check-in reminder automation
 
 ## Test Baseline
-  1044 tests passing (2026-06-07)
+  1080 tests passing (2026-06-07)
 
 ## Infra Cleanup (deferred to end of Phase 1)
   Automate as part of closing infrastructure phases.
