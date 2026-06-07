@@ -3594,7 +3594,81 @@ Safe migrations for existing installs.
 
 ---
 
-## 12. Design Principles
+## 12. Response Message Standards
+
+These apply to ALL domain tools. Enforce in every tool, every domain.
+New domains inherit these rules automatically.
+
+### 12.1 Success Messages
+
+Every success message follows this template:
+  ✓ {Title} — {Key Detail}
+
+Rules:
+  - Start with ✓ for all confirmed actions
+  - No quotes around titles
+  - Use — (em dash + spaces) to separate title from detail
+  - One line where possible; second line only for grouped items
+  - No verbose system text ("Added to Google Calendar", "Done successfully")
+  - No internal IDs, field names, filter labels, or tool names in output
+  - Scope emoji (🏠) always at end of line, never in the middle
+
+Examples:
+  ✓ Dentist — Tuesday June 2, 3pm
+  ✓ Trash Reminder — every Thursday 8pm 🏠
+  ✓ Fix ceiling fan — removed
+  ✓ Buy Materials — done (2/3 milestones)
+
+### 12.2 Empty State Messages
+
+Never expose internal filter names, query parameters, or field names.
+
+  Bad:  "No tasks for filter 'today'."
+  Bad:  "No events matching 'urgent'."
+  Good: "You're all clear for today! 🎉"
+  Good: "No urgent tasks."
+  Good: "Inbox is empty."
+
+Per-filter empty states for task_list:
+  today:     "You're all clear for today! 🎉"
+  inbox:     "Inbox is empty."
+  overdue:   "Nothing overdue. ✓"
+  urgent:    "No urgent tasks."
+  household: "No household tasks."
+  done:      "No completed tasks yet."
+  waiting:   "No waiting tasks."
+  all:       "No tasks found."
+  personal:  "No personal tasks."
+
+### 12.3 Confirmation Messages
+
+When asking for confirmation (WRITE/DESTRUCTIVE tier):
+  - Plain English, no JSON, no IDs
+  - Start with the action verb: "Add", "Delete", "Move"
+  - Include the title and key detail only
+
+  Bad:  "Confirm: calendar_create_event {'title': 'Dentist', ...}"
+  Good: "Add Dentist to Tuesday June 2 at 3pm?"
+  Good: "Delete Fix ceiling fan?"
+
+### 12.4 Scope Emoji
+
+  Household scope:  append 🏠 at end of line
+  Personal scope:   no emoji (personal is the default, unmarked)
+  Always at end of line, after all other content
+
+### 12.5 List Headers
+
+Headers use Title Case labels, not internal field values.
+Count format: "N tasks" (never "N task(s)").
+
+  Bad:  "3 task(s) — today:"
+  Good: "Today — 3 tasks:"
+  Good: "Inbox — 1 task:"
+
+---
+
+## 13. Design Principles
 
 These apply to ALL future decisions.
 

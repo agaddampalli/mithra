@@ -518,12 +518,12 @@ class CalendarCreateEventTool(BaseTool):
         tz = pytz.timezone(ctx.household_timezone)
         local_start = start_dt.astimezone(tz)
         date_str = local_start.strftime("%A %B %-d")
-        time_str = local_start.strftime("%-I:%M %p %Z")
+        _h = local_start.hour % 12 or 12
+        _m = local_start.minute
+        _ap = "am" if local_start.hour < 12 else "pm"
+        smart_time = f"{_h}:{_m:02d}{_ap}" if _m else f"{_h}{_ap}"
 
-        summary = (
-            f"Created '{title}' for {date_str} at {time_str} "
-            f"({duration_minutes} min). Added to Google Calendar."
-        )
+        summary = f"✓ {title} — {date_str}, {smart_time}"
         domain_event = DomainEvent(
             event_type="appointment_created",
             source_domain="time",
@@ -684,18 +684,15 @@ class CalendarCreateRecurringTool(BaseTool):
         import pytz
         tz = pytz.timezone(ctx.household_timezone)
         local_start = start_dt.astimezone(tz)
-        first_date = local_start.strftime("%B %-d, %Y")
         freq_display = {
-            "daily": "every day", "weekly": f"every week",
+            "daily": "every day", "weekly": "every week",
             "monthly": "every month", "yearly": "every year",
         }.get(freq_key, frequency)
         if interval > 1:
             freq_display = f"every {interval} {freq_key.rstrip('ly')}s"
+        scope_badge = " 🏠" if classify_event_scope(title, is_recurring=True) == "household" else ""
 
-        summary = (
-            f"Created recurring '{title}' {freq_display}. "
-            f"First occurrence {first_date}."
-        )
+        summary = f"✓ {title} — {freq_display}{scope_badge}"
         domain_event = DomainEvent(
             event_type="recurring_event_created",
             source_domain="time",
@@ -830,11 +827,15 @@ class CalendarUpdateEventTool(BaseTool):
             import pytz
             tz = pytz.timezone(ctx.household_timezone)
             local = event.start.astimezone(tz)
-            time_str = f"to {local.strftime('%A %B %-d at %-I:%M %p')}"
+            _h = local.hour % 12 or 12
+            _m = local.minute
+            _ap = "am" if local.hour < 12 else "pm"
+            _smart = f"{_h}:{_m:02d}{_ap}" if _m else f"{_h}{_ap}"
+            move_str = f"moved to {local.strftime('%A %B %-d')}, {_smart}"
         else:
-            time_str = ""
+            move_str = ""
 
-        summary = f"Updated '{display_title}'" + (f" {time_str}" if time_str else "") + "."
+        summary = f"✓ {display_title}" + (f" — {move_str}" if move_str else " — updated")
 
         domain_event = DomainEvent(
             event_type="appointment_updated",
@@ -930,16 +931,7 @@ class CalendarDeleteEventTool(BaseTool):
             _logger.error("calendar_delete_event failed: %s", exc, exc_info=True)
             return ToolResult.fail(f"Could not delete event: {exc}", error_code="CALENDAR_ERROR")
 
-        start_str = ""
-        if original_start:
-            if isinstance(original_start, datetime):
-                import pytz
-                tz = pytz.timezone(ctx.household_timezone)
-                start_str = f" on {original_start.astimezone(tz).strftime('%B %-d')}"
-            else:
-                start_str = f" on {original_start}"
-
-        summary = f"Deleted '{title}'{start_str}."
+        summary = f"✓ {title} — removed from calendar"
         domain_event = DomainEvent(
             event_type="appointment_cancelled",
             source_domain="time",

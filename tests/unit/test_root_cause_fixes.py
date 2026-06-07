@@ -1117,8 +1117,8 @@ class TestFix8FuzzyEventMatching:
 class TestFix9TimezoneMessages:
     """Confirmation message and success message must include timezone abbreviation."""
 
-    def test_success_message_includes_timezone(self):
-        """Created event summary must show timezone abbreviation (CST/CDT)."""
+    def test_success_message_section12_format(self):
+        """Created event summary follows Section 12: ✓ Title — date, time (no verbose system text)."""
         from mithra.domains.time.tools import CalendarCreateEventTool
         from mithra.domains.context import DomainContext
         from tests.unit.domains.time.conftest import MockCalendarService
@@ -1140,9 +1140,10 @@ class TestFix9TimezoneMessages:
 
         assert result.success is True
         summary = result.summary
-        assert any(tz in summary for tz in ("CST", "CDT", "CT", "UTC")), (
-            f"Expected timezone abbreviation in success message, got: {summary!r}"
+        assert summary.startswith("✓ Dentist"), (
+            f"Expected '✓ Dentist — ...' format (Section 12), got: {summary!r}"
         )
+        assert "Added to Google Calendar" not in summary, "Verbose system text not allowed per Section 12"
 
     def test_format_confirmation_message_uses_start_time_display(self):
         """_format_confirmation_message must prefer start_time_display over start_time."""

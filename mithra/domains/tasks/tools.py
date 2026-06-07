@@ -427,15 +427,15 @@ class TaskCreateTool(BaseTool):
 
         _logger.info("task_create: %s scope=%s priority=%s", task_id, task_scope, task_priority)
 
-        # Build summary line
-        summary_parts = [f'Added: "{title}"']
+        # Build summary per Section 12 response standards — no quotes, ✓ prefix
+        detail_parts = []
         if parsed_due:
-            summary_parts.append(f"due {parsed_due}")
+            detail_parts.append(f"due {parsed_due}")
         if task_priority not in ("normal", ""):
-            summary_parts.append(task_priority)
-        if task_scope == "household":
-            summary_parts.append("(household)")
-        summary = " · ".join(summary_parts)
+            detail_parts.append(task_priority)
+        scope_badge = " 🏠" if task_scope == "household" else ""
+        detail = " · ".join(detail_parts)
+        summary = f"✓ {title}" + (f" — {detail}" if detail else "") + scope_badge
 
         # Determine initial capture step and write state for follow-up routing
         if not parsed_due:
@@ -525,16 +525,16 @@ class TaskListTool(BaseTool):
             with sqlite3.connect(ctx.local_db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 if filter == "today":
-                    # "today" = tasks due today + all urgent + all overdue
+                    # "today" = urgent + high priority + due today + overdue
+                    # Snoozed tasks excluded — user asked to hide them
                     rows = conn.execute(
                         """SELECT * FROM tasks
-                           WHERE household_id=? AND status NOT IN ('done','cancelled')
-                             AND (due_date=? OR priority='urgent'
-                                  OR (due_date IS NOT NULL AND due_date<?))
+                           WHERE household_id=? AND status NOT IN ('done','cancelled','snoozed')
+                             AND (priority='urgent' OR priority='high' OR due_date<=?)
                            ORDER BY
-                             CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END ASC,
-                             due_date ASC""",
-                        (ctx.household_id, today, today),
+                             CASE priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END ASC,
+                             due_date ASC NULLS LAST""",
+                        (ctx.household_id, today),
                     ).fetchall()
                 elif filter == "overdue":
                     rows = conn.execute(
@@ -573,8 +573,19 @@ class TaskListTool(BaseTool):
         tasks = [dict(r) for r in rows]
 
         if not tasks:
+            _EMPTY_MESSAGES: dict[str, str] = {
+                "today":     "You're all clear for today! 🎉",
+                "inbox":     "Inbox is empty.",
+                "overdue":   "Nothing overdue. ✓",
+                "urgent":    "No urgent tasks.",
+                "household": "No household tasks.",
+                "done":      "No completed tasks yet.",
+                "waiting":   "No waiting tasks.",
+                "all":       "No tasks found.",
+                "personal":  "No personal tasks.",
+            }
             return ToolResult.ok(
-                f"No tasks for filter '{filter}'.",
+                _EMPTY_MESSAGES.get(filter, "No tasks found."),
                 data={"tasks": [], "count": 0},
             )
 
@@ -598,18 +609,20 @@ class TaskListTool(BaseTool):
             lines.append(line)
 
         _FILTER_LABELS = {
-            "today": "today",
-            "inbox": "inbox",
-            "overdue": "overdue",
-            "urgent": "urgent",
-            "household": "household",
-            "waiting": "waiting",
-            "all": "all tasks",
-            "done": "completed",
+            "today": "Today",
+            "inbox": "Inbox",
+            "overdue": "Overdue",
+            "urgent": "Urgent",
+            "household": "Household",
+            "waiting": "Waiting",
+            "all": "All tasks",
+            "done": "Completed",
+            "personal": "Personal",
         }
-        label = _FILTER_LABELS.get(filter, filter)
+        label = _FILTER_LABELS.get(filter, filter.title())
         count = len(tasks)
-        summary = f"{count} task(s) — {label}:\n" + "\n".join(lines)
+        count_str = "1 task" if count == 1 else f"{count} tasks"
+        summary = f"{label} — {count_str}:\n" + "\n".join(lines)
         return ToolResult.ok(summary, data={"tasks": tasks, "count": count})
 
 
@@ -678,7 +691,7 @@ class TaskCompleteTool(BaseTool):
 
         _logger.info("task_complete: %s title=%r", tid, title)
         return ToolResult.ok(
-            f'Done: "{title}"',
+            f"✓ {title}",
             data={"task_id": tid, "title": title, "completed_at": now},
             events=[
                 DomainEvent(
@@ -801,8 +814,7 @@ class TaskUpdateTool(BaseTool):
             return ToolResult.fail("Could not update task.", error=str(exc))
 
         _logger.info("task_update: %s fields=%s", task_id, [c for c, _ in updates])
-        changed = ", ".join(f"{col}→{val}" for col, val in updates)
-        summary = f'Updated "{old_title}": {changed}'
+        summary = f"✓ {old_title} — updated"
 
         # Advance capture step if this update came from a follow-up flow
         if _capture:
@@ -889,7 +901,7 @@ class TaskSnoozeTool(BaseTool):
 
         _logger.info("task_snooze: %s until=%s", task_id, snooze_date)
         return ToolResult.ok(
-            f'Snoozed "{title}" until {snooze_date}.',
+            f"✓ {title} — snoozed until {snooze_date}",
             data={"task_id": task_id, "snoozed_until": snooze_date},
         )
 
@@ -964,7 +976,7 @@ class TaskDeleteTool(BaseTool):
 
         _logger.info("task_delete: %s title=%r", found_id, found_title)
         return ToolResult.ok(
-            f'Deleted: "{found_title}".',
+            f"✓ {found_title} — removed",
             data={"task_id": found_id, "title": found_title},
         )
 
@@ -1125,12 +1137,9 @@ class ProjectCreateTool(BaseTool):
 
         _logger.info("project_create: %s scope=%s milestones=%d", project_id, final_scope, len(milestones))
 
-        parts = [f'Project created: "{title}"']
-        if parsed_date:
-            parts.append(f"Target: {parsed_date}")
-        if final_scope == "household":
-            parts.append("🏠 Household")
-        summary = " · ".join(parts)
+        scope_badge = " 🏠" if final_scope == "household" else ""
+        detail = f"target {parsed_date}" if parsed_date else ""
+        summary = f"✓ {title}" + (f" — {detail}" if detail else "") + scope_badge
 
         if milestones:
             ms_lines = "\n".join(f"  {i}. {m}" for i, m in enumerate(milestones, 1))
@@ -1230,9 +1239,9 @@ class ProjectUpdateTool(BaseTool):
 
         old_title = project["title"]
         if status == "completed":
-            summary = f'✓ Project "{old_title}" marked complete.'
+            summary = f"✓ {old_title} — project complete! 🎉"
         else:
-            summary = f'Project "{old_title}" updated.'
+            summary = f"✓ {old_title} — updated"
 
         _logger.info("project_update: %s", project_id)
         return ToolResult.ok(summary, data={"project_id": project_id})
@@ -1482,9 +1491,9 @@ class RoutineCreateTool(BaseTool):
             _logger.error("routine_create DB error", exc_info=True)
             return ToolResult.fail("Could not create routine.", error=str(exc))
 
-        scope_label = "🏠 Household" if final_scope == "household" else "👤 Personal"
-        reset_label = f"Resets at {reset_time}" if reset_time != "00:00" else "Resets daily at midnight"
-        summary = f"Routine added: {title}\n{scope_label} · {reset_label}"
+        scope_badge = " 🏠" if final_scope == "household" else ""
+        reset_label = f"resets at {reset_time}" if reset_time != "00:00" else "resets daily at midnight"
+        summary = f"✓ {title} — daily routine added{scope_badge}\n{reset_label}"
 
         _logger.info("routine_create: %s title=%r scope=%s", routine_id, title, final_scope)
         return ToolResult.ok(

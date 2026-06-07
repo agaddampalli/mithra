@@ -397,12 +397,12 @@ class TestTaskListTool:
     def test_summary_filter_label_inbox(self, list_tool, db):
         _seed_task(db, task_id="tsk_label1", title="Some task", status="inbox")
         result = list_tool._run(filter="inbox")
-        assert "inbox" in result.summary
+        assert "Inbox" in result.summary
 
     def test_summary_filter_label_all(self, list_tool, db):
         _seed_task(db, task_id="tsk_label2", title="Any task", status="inbox")
         result = list_tool._run(filter="all")
-        assert "all tasks" in result.summary
+        assert "All tasks" in result.summary
 
 
 # ---------------------------------------------------------------------------
@@ -1277,12 +1277,13 @@ class TestRoutineCreateTool:
         result = tool._run(title="mix baby formula", scope="household")
         assert result.success
         assert "mix baby formula" in result.summary
-        assert "🏠 Household" in result.summary
+        assert "🏠" in result.summary
 
     def test_creates_personal_routine(self, tool, db):
         result = tool._run(title="morning meditation", scope="personal")
         assert result.success
-        assert "👤 Personal" in result.summary
+        assert "morning meditation" in result.summary
+        assert "🏠" not in result.summary
 
     def test_auto_classifies_household_via_keyword(self, tool, db):
         result = tool._run(title="warm water for baby")
@@ -1296,11 +1297,11 @@ class TestRoutineCreateTool:
 
     def test_midnight_reset_label(self, tool, db):
         result = tool._run(title="soak lentils", scope="household")
-        assert "Resets daily at midnight" in result.summary
+        assert "resets daily at midnight" in result.summary
 
     def test_custom_reset_time_label(self, tool, db):
         result = tool._run(title="evening wind-down", scope="household", reset_time="21:00")
-        assert "Resets at 21:00" in result.summary
+        assert "resets at 21:00" in result.summary
         assert result.data["reset_time"] == "21:00"
 
     def test_invalid_reset_time_defaults_to_midnight(self, tool, db):
