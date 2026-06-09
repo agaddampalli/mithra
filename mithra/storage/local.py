@@ -198,6 +198,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_routine_day
     ON routine_completions(routine_id, completion_date);
 """
 
+_SCHEDULER_LOG_DDL = """
+CREATE TABLE IF NOT EXISTS scheduler_log (
+    id           TEXT PRIMARY KEY,
+    alert_type   TEXT NOT NULL,
+    reference_id TEXT NOT NULL,
+    sent_to      TEXT NOT NULL,
+    sent_at      TEXT NOT NULL,
+    payload_json TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduler_log_daily
+    ON scheduler_log(alert_type, reference_id, sent_to, DATE(sent_at));
+"""
+
 _FILES_DDL = """
 CREATE TABLE IF NOT EXISTS files (
     id           TEXT PRIMARY KEY,
@@ -295,6 +308,8 @@ class LocalStorageAdapter(StorageAdapter):
         self._conn.executescript(_CONVERSATION_STATE_DDL)
         self._conn.commit()
         self._conn.executescript(_TASKS_DDL)
+        self._conn.commit()
+        self._conn.executescript(_SCHEDULER_LOG_DDL)
         self._conn.commit()
         # Additive migrations for existing installs
         for _col, _type in [("managed_by", "TEXT"), ("date_of_birth", "TEXT")]:

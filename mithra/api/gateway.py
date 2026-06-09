@@ -33,6 +33,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+_logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Shared app state
@@ -57,14 +58,86 @@ async def lifespan(app: FastAPI):
     state = await build_state(household_config, on_request=_process_request)
     _state.update(state)
 
+    # Scheduler credentials — available from env regardless of Telegram adapter
+    _state["telegram_bot_token"] = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    _state["admin_telegram_id"] = os.environ.get("MITHRA_ADMIN_TELEGRAM_ID", "")
+
     telegram_input = _state.get("telegram_input")
     if telegram_input:
         asyncio.create_task(telegram_input.start())
 
+    # Start proactive task scheduler
+    scheduler = _build_task_scheduler(_state)
+    scheduler.start()
+    _state["task_scheduler"] = scheduler
+
     yield
+
+    scheduler.shutdown(wait=False)
 
     if telegram_input:
         await telegram_input.stop()
+
+
+# ---------------------------------------------------------------------------
+# Scheduler factory
+# ---------------------------------------------------------------------------
+
+def _build_task_scheduler(state: dict):
+    """Build APScheduler with all 5 proactive task jobs."""
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.cron import CronTrigger
+    import pytz
+
+    from mithra.scheduler.task_scheduler import (
+        job_auto_promote,
+        job_morning_briefing,
+        job_deadline_alerts,
+        job_waiting_followup,
+        job_weekly_summary,
+    )
+
+    tz_name = state.get("household_timezone", "America/Chicago")
+    tz = pytz.timezone(tz_name)
+    scheduler = AsyncIOScheduler(timezone=tz)
+
+    def _wrap(fn):
+        """Wrap a sync job function so APScheduler errors are caught and logged."""
+        def wrapped():
+            try:
+                fn(state)
+            except Exception as exc:
+                _logger.error("Scheduler job %s failed: %s", fn.__name__, exc, exc_info=True)
+        return wrapped
+
+    scheduler.add_job(
+        _wrap(job_auto_promote),
+        CronTrigger(hour=6, minute=0, timezone=tz),
+        id="auto_promote", replace_existing=True,
+    )
+    scheduler.add_job(
+        _wrap(job_morning_briefing),
+        CronTrigger(hour=7, minute=0, timezone=tz),
+        id="morning_briefing", replace_existing=True,
+    )
+    scheduler.add_job(
+        _wrap(job_deadline_alerts),
+        CronTrigger(hour=8, minute=0, timezone=tz),
+        id="deadline_alerts", replace_existing=True,
+    )
+    scheduler.add_job(
+        _wrap(job_waiting_followup),
+        CronTrigger(hour=9, minute=0, timezone=tz),
+        id="waiting_followup", replace_existing=True,
+    )
+    scheduler.add_job(
+        _wrap(job_weekly_summary),
+        CronTrigger(day_of_week="sun", hour=9, minute=0, timezone=tz),
+        id="weekly_summary", replace_existing=True,
+    )
+
+    _logger.info("Task scheduler started with 5 jobs in timezone %s", tz_name)
+    return scheduler
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +169,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             p == "/api/v1/health"
             or p.startswith("/api/v1/dashboard")
             or p.startswith("/api/v1/routines")   # HA tablet tap — no auth
+            or p.startswith("/api/v1/tasks")       # HA dashboard tiles — no auth
             or p.startswith("/api/v1/webhook/")
             or p.startswith("/connect/")
             or p.startswith("/oauth/")
@@ -497,6 +571,112 @@ def create_app(state_override: dict | None = None) -> FastAPI:
                     return JSONResponse({"status": "already_done", "routine": routine[1], "date": today})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
+
+    # -----------------------------------------------------------------------
+    # Tasks API routes (T8) — HA dashboard tiles, no auth required
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/v1/tasks/today")
+    async def get_tasks_today():
+        """Tasks for today: urgent + high priority + overdue.
+
+        Returns {date, tasks, count, urgent_count} per ADR 11.11.
+        """
+        import sqlite3 as _sqlite3
+        import pytz as _pytz
+        from datetime import datetime as _dt
+
+        local_adapter = _state.get("local_adapter")
+        if not local_adapter:
+            return JSONResponse({"error": "Storage not available"}, status_code=503)
+
+        db_path = local_adapter.db_path
+        hid = _state.get("household_id", "")
+        tz_name = _state.get("household_timezone", "America/Chicago")
+        today = _dt.now(_pytz.timezone(tz_name)).strftime("%Y-%m-%d")
+
+        try:
+            with _sqlite3.connect(db_path) as conn:
+                conn.row_factory = _sqlite3.Row
+                tasks = conn.execute(
+                    """SELECT * FROM tasks
+                       WHERE household_id=?
+                         AND status NOT IN ('done','cancelled','snoozed')
+                         AND (priority='urgent' OR priority='high' OR due_date<=?)
+                       ORDER BY
+                           CASE priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 ELSE 3 END,
+                           due_date ASC NULLS LAST
+                       LIMIT 20""",
+                    (hid, today),
+                ).fetchall()
+            rows = [dict(t) for t in tasks]
+            urgent_count = sum(1 for t in rows if t.get("priority") == "urgent")
+            return JSONResponse({"date": today, "tasks": rows, "count": len(rows), "urgent_count": urgent_count})
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.get("/api/v1/tasks/inbox")
+    async def get_tasks_inbox():
+        """Unprocessed tasks (status=inbox)."""
+        import sqlite3 as _sqlite3
+
+        local_adapter = _state.get("local_adapter")
+        if not local_adapter:
+            return JSONResponse({"error": "Storage not available"}, status_code=503)
+
+        db_path = local_adapter.db_path
+        hid = _state.get("household_id", "")
+
+        try:
+            with _sqlite3.connect(db_path) as conn:
+                conn.row_factory = _sqlite3.Row
+                tasks = conn.execute(
+                    "SELECT * FROM tasks WHERE household_id=? AND status='inbox' "
+                    "ORDER BY created_at ASC",
+                    (hid,),
+                ).fetchall()
+            rows = [dict(t) for t in tasks]
+            return JSONResponse({"tasks": rows, "count": len(rows)})
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.get("/api/v1/tasks/overdue")
+    async def get_tasks_overdue():
+        """Tasks past their deadline, not done or cancelled."""
+        import sqlite3 as _sqlite3
+        import pytz as _pytz
+        from datetime import datetime as _dt
+
+        local_adapter = _state.get("local_adapter")
+        if not local_adapter:
+            return JSONResponse({"error": "Storage not available"}, status_code=503)
+
+        db_path = local_adapter.db_path
+        hid = _state.get("household_id", "")
+        tz_name = _state.get("household_timezone", "America/Chicago")
+        today = _dt.now(_pytz.timezone(tz_name)).strftime("%Y-%m-%d")
+
+        try:
+            with _sqlite3.connect(db_path) as conn:
+                conn.row_factory = _sqlite3.Row
+                tasks = conn.execute(
+                    "SELECT * FROM tasks WHERE household_id=? AND due_date<? "
+                    "AND status NOT IN ('done','cancelled','snoozed') "
+                    "ORDER BY due_date ASC",
+                    (hid, today),
+                ).fetchall()
+            rows = [dict(t) for t in tasks]
+            return JSONResponse({"date": today, "tasks": rows, "count": len(rows)})
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.get("/api/v1/debug/run-briefing")
+    async def debug_run_briefing():
+        """Manually trigger morning briefing — remove before production."""
+        from mithra.scheduler.task_scheduler import job_morning_briefing
+        import asyncio as _aio
+        await _aio.to_thread(job_morning_briefing, _state)
+        return {"ok": True, "job": "morning_briefing"}
 
     # Webhook routes — Telegram and future inbound webhooks.
     from mithra.api.routes.webhooks import router as _webhooks_router

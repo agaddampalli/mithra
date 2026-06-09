@@ -1,5 +1,6 @@
 fastapi
 uvicorn[standard]
+apscheduler>=3.10.0
 pydantic
 langgraph
 langchain-core
