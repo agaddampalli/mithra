@@ -19,14 +19,26 @@ model_list:
       model: openai/gpt-4o-mini
       api_key: os.environ/OPENAI_API_KEY
 
-# Automatic fallback chain: Gemini → GPT-4o-mini → Claude.
-# Gemini free tier exhausted → GPT-4o-mini (cheap) → Claude (paid credits).
+# Cross-fallback chain — each cloud provider falls back to all others,
+# then to local as last resort.
+# Gemini Flash: free tier primary (1M tokens/day via Google AI Studio).
+# GPT-4o-mini: cheap paid buffer (~$0.15/1M tokens).
+# Claude Sonnet: paid credits, highest capability — used last among cloud.
+# Ollama phi3:mini: local last resort when all cloud providers are down.
 # Health domain (ollama/phi3:mini) has no fallbacks — architecture requirement.
 router_settings:
   fallbacks:
-    - {"gemini-flash": ["gpt-4o-mini", "claude-sonnet-4-6"]}
-    - {"gpt-4o-mini": ["claude-sonnet-4-6"]}
-  num_retries: 0
+    - {"gemini-flash": ["gpt-4o-mini",
+                        "claude-sonnet-4-6",
+                        "ollama/phi3:mini"]}
+    - {"gpt-4o-mini": ["gemini-flash",
+                       "claude-sonnet-4-6",
+                       "ollama/phi3:mini"]}
+    - {"claude-sonnet-4-6": ["gemini-flash",
+                             "gpt-4o-mini",
+                             "ollama/phi3:mini"]}
+  num_retries: 1
+  retry_after: 0
 
 litellm_settings:
   drop_params: true

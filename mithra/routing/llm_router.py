@@ -6,7 +6,7 @@ or ollama anywhere in the codebase.
 
 Task routing (from services/litellm/routing.yaml):
   local       — Phi-3 Mini.  Cloud fallback allowed if config permits.
-  cloud       — Claude claude-sonnet-4-6.  No fallback.
+  cloud       — Gemini Flash (primary, free tier) → GPT-4o-mini → Claude Sonnet.
   local_only  — Phi-3 Mini.  NEVER cloud fallback.  Health domain only.
 
 Two independent health guards:
