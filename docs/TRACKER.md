@@ -1,8 +1,8 @@
-# Mithra — Work Tracker (Updated 2026-06-07)
+# Mithra — Work Tracker (Updated 2026-06-09)
 
 ## SESSION HANDOFF (update after each session)
 
-Last updated: 2026-06-07
+Last updated: 2026-06-09
 
 ### Current State
   Stack: Docker Compose on Windows laptop
@@ -20,16 +20,17 @@ Last updated: 2026-06-07
   Tasks domain T4 (projects/milestones): COMPLETE (4 tools, 1044 tests passing)
   Tasks domain T5 (routines): COMPLETE (3 tools + 2 API routes, 1080 tests passing)
   Section 12 Response Standards: COMPLETE — ADR + all Time/Tasks tools updated, 1085 tests passing
+  Tasks domain T7 (proactive scheduler): COMPLETE — 5 jobs, duplicate prevention, 42 tests
+  Tasks domain T8 (remaining API routes): COMPLETE — /tasks/today, /inbox, /overdue
+  routing.yaml fallback chain: COMPLETE — gemini-flash primary, full cross-fallback
 
 ### In Progress
-  Tasks domain T6 — verify task_delete + task_suggest (already in T3),
-                    then T7-T10 to close Tasks domain DoD
+  Tasks domain T9/T10 — HA dashboard integration + DoD gate manual verification
 
 ### Immediate Next Steps
-  1. T6 — task_delete + task_suggest verify; then T7 proactive surfacing
-  2. T7 — Morning briefing, deadline alerts, auto-promotion notifications
-  3. T8-T10 — API routes, HA integration, DoD gate
-  4. HA setup (after Tasks domain fully complete)
+  1. T9 — HA REST sensor wiring for /tasks/today + /tasks/overdue → tablet tiles
+  2. T10 — DoD gate: manual verification all Tasks domain use cases
+  3. HA setup (after Tasks domain fully complete)
 
 ### Key Decisions Made
   - Mithra SQLite as source of truth (not Google Tasks)
@@ -272,7 +273,7 @@ Last updated: 2026-06-07
 
   Time domain closed: 2026-06-06. All DoD items verified end to end.
 
-## Current Focus → Tasks Domain T6: verify task_delete/task_suggest, then T7-T10 to close DoD
+## Current Focus → Tasks Domain T9: HA REST sensor wiring for tablet tiles, then T10 DoD gate manual verification
 
 ## Tasks Domain
 
@@ -381,19 +382,19 @@ Last updated: 2026-06-07
     [x] Auto-promotion: normal/high → urgent near deadline
 
     API:
-    [ ] GET /api/v1/tasks/today
-    [ ] GET /api/v1/tasks/inbox
-    [ ] GET /api/v1/tasks/overdue
+    [x] GET /api/v1/tasks/today
+    [x] GET /api/v1/tasks/inbox
+    [x] GET /api/v1/tasks/overdue
     [x] GET /api/v1/dashboard/tasks → DashboardData (via DomainRegistry)
     [x] GET /api/v1/routines/today
     [x] POST /api/v1/routines/{id}/complete
 
     Proactive:
-    [ ] Morning task briefing (urgent + overdue)
-    [ ] Deadline alert 3 days before
-    [ ] Waiting follow-up 7 days
-    [ ] Weekly inbox summary Sunday
-    [ ] Auto-promotion Telegram notification
+    [x] Morning task briefing (urgent + overdue)
+    [x] Deadline alert 3 days before
+    [x] Waiting follow-up 7 days
+    [x] Weekly inbox summary Sunday
+    [x] Auto-promotion Telegram notification
 
   TESTS COMPLETE:
     [x] Unit tests all 5 tables (TestTasksSchema — 5 tests)
@@ -530,7 +531,7 @@ Last updated: 2026-06-07
   [ ] Check-in reminder automation
 
 ## Test Baseline
-  1080 tests passing (2026-06-07)
+  1127 tests passing (2026-06-09)
 
 ## Infra Cleanup (deferred to end of Phase 1)
   Automate as part of closing infrastructure phases.
