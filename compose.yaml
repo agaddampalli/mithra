@@ -131,7 +131,7 @@ services:
 
   # ── Watchtower (auto-update + image cleanup) ────────────
   watchtower:
-    image: containrrr/watchtower:1.7.1
+    image: containrrr/watchtower:latest
     environment:
       - DOCKER_API_VERSION=1.43
     command: --interval 86400 --cleanup
