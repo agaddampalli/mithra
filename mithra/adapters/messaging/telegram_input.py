@@ -52,6 +52,26 @@ _TELEGRAM_API = "https://api.telegram.org/bot{token}"
 _POLL_TIMEOUT = 30
 _START_RATE_LIMIT = 3
 _START_RATE_WINDOW = 3600
+_DEDUP_TTL = 300  # seconds — Telegram retries happen within seconds, 5 min is ample
+
+_PROCESSED_UPDATE_IDS: set[int] = set()
+_PROCESSED_UPDATE_EXPIRY: dict[int, float] = {}
+
+
+def _is_already_processed(update_id: int) -> bool:
+    """Return True if this update_id was already handled. Evicts entries older than 5 min."""
+    now = time.time()
+    expired = [k for k, v in _PROCESSED_UPDATE_EXPIRY.items() if now - v > _DEDUP_TTL]
+    for k in expired:
+        _PROCESSED_UPDATE_IDS.discard(k)
+        del _PROCESSED_UPDATE_EXPIRY[k]
+    return update_id in _PROCESSED_UPDATE_IDS
+
+
+def _mark_processed(update_id: int) -> None:
+    """Record update_id as processed."""
+    _PROCESSED_UPDATE_IDS.add(update_id)
+    _PROCESSED_UPDATE_EXPIRY[update_id] = time.time()
 
 
 class TelegramInputAdapter(InputAdapter):
@@ -183,6 +203,13 @@ class TelegramInputAdapter(InputAdapter):
         """Convert a Telegram Update dict into an AgentRequest. Returns None for async flows."""
         if not isinstance(raw, dict):
             return None
+
+        update_id = raw.get("update_id")
+        if update_id is not None:
+            if _is_already_processed(update_id):
+                logger.debug("Duplicate Telegram update_id=%s — skipped", update_id)
+                return None
+            _mark_processed(update_id)
 
         message = raw.get("message") or raw.get("edited_message")
         callback = raw.get("callback_query")
