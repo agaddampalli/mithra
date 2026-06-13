@@ -670,13 +670,41 @@ def create_app(state_override: dict | None = None) -> FastAPI:
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
 
-    @app.get("/api/v1/debug/run-briefing")
-    async def debug_run_briefing():
-        """Manually trigger morning briefing — remove before production."""
-        from mithra.scheduler.task_scheduler import job_morning_briefing
-        import asyncio as _aio
-        await _aio.to_thread(job_morning_briefing, _state)
-        return {"ok": True, "job": "morning_briefing"}
+    _DEBUG_MODE = os.environ.get("MITHRA_DEBUG", "").lower() == "true"
+
+    if _DEBUG_MODE:
+        @app.get("/api/v1/debug/scheduler/{job_name}")
+        async def debug_run_scheduler_job(job_name: str):
+            """Trigger a scheduler job immediately. Only available when MITHRA_DEBUG=true."""
+            from datetime import datetime, timezone
+            from mithra.scheduler.task_scheduler import (
+                job_morning_briefing,
+                job_deadline_alerts,
+                job_waiting_followup,
+                job_weekly_summary,
+                job_auto_promote,
+            )
+            jobs = {
+                "morning_briefing": job_morning_briefing,
+                "deadline_alerts":  job_deadline_alerts,
+                "waiting_followup": job_waiting_followup,
+                "weekly_summary":   job_weekly_summary,
+                "auto_promote":     job_auto_promote,
+            }
+            if job_name not in jobs:
+                return JSONResponse(
+                    {"error": f"Unknown job: {job_name}", "available": list(jobs.keys())},
+                    status_code=404,
+                )
+            try:
+                jobs[job_name](_state)
+                return JSONResponse({
+                    "status": "ok",
+                    "job": job_name,
+                    "ran_at": datetime.now(timezone.utc).isoformat(),
+                })
+            except Exception as exc:
+                return JSONResponse({"error": str(exc)}, status_code=500)
 
     # Webhook routes — Telegram and future inbound webhooks.
     from mithra.api.routes.webhooks import router as _webhooks_router

@@ -28,6 +28,7 @@ services:
       - HA_TOKEN=${HA_TOKEN}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - MITHRA_LOCAL_LLM_ENABLED=${MITHRA_LOCAL_LLM_ENABLED:-true}
+      - MITHRA_DEBUG=${MITHRA_DEBUG:-false}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - MITHRA_BASE_URL=${MITHRA_BASE_URL:-https://assistant.mithra-app.com}
@@ -130,7 +131,9 @@ services:
 
   # ── Watchtower (auto-update + image cleanup) ────────────
   watchtower:
-    image: containrrr/watchtower:latest
+    image: containrrr/watchtower:1.7.1
+    environment:
+      - DOCKER_API_VERSION=1.43
     command: --interval 86400 --cleanup
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
