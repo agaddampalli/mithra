@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import sqlite3
 from datetime import datetime, timezone
 
 import httpx
 import pytest
+
+# Each helper call gets a unique update_id — mirrors real Telegram behaviour
+# (monotonic, never reused) and prevents the idempotency dedup from dropping
+# second/third calls within the same test.
+_UPDATE_ID = itertools.count(1000)
 import respx
 
 from mithra.adapters.messaging import ActionButton, DeliveryReceipt, OutboundMessage
@@ -23,7 +29,7 @@ from mithra.identity.member_registry import MemberRegistry
 
 def _text_update(chat_id: int = 111, text: str = "Hello Mithra") -> dict:
     return {
-        "update_id": 1,
+        "update_id": next(_UPDATE_ID),
         "message": {
             "message_id": 42,
             "chat": {"id": chat_id, "type": "private"},
@@ -40,7 +46,7 @@ def _callback_update(
     action_index: int = 0,
 ) -> dict:
     return {
-        "update_id": 2,
+        "update_id": next(_UPDATE_ID),
         "callback_query": {
             "id": "cq-1",
             "message": {"chat": {"id": chat_id}, "message_id": 99},
@@ -53,7 +59,7 @@ def _callback_update(
 
 def _document_update(chat_id: int = 111) -> dict:
     return {
-        "update_id": 3,
+        "update_id": next(_UPDATE_ID),
         "message": {
             "message_id": 43,
             "chat": {"id": chat_id, "type": "private"},
@@ -64,7 +70,7 @@ def _document_update(chat_id: int = 111) -> dict:
 
 def _voice_update(chat_id: int = 111) -> dict:
     return {
-        "update_id": 4,
+        "update_id": next(_UPDATE_ID),
         "message": {
             "message_id": 44,
             "chat": {"id": chat_id, "type": "private"},
@@ -78,7 +84,7 @@ def _start_update(chat_id: int = 111, first_name: str = "Alice", username: str =
     if username:
         from_data["username"] = username
     return {
-        "update_id": 10,
+        "update_id": next(_UPDATE_ID),
         "message": {
             "message_id": 50,
             "chat": {"id": chat_id, "type": "private"},
@@ -92,7 +98,7 @@ def _admin_approve_callback(
     admin_chat_id: int = 999, target_id: int = 555, uid: str = "person_a"
 ) -> dict:
     return {
-        "update_id": 20,
+        "update_id": next(_UPDATE_ID),
         "callback_query": {
             "id": "cq-admin",
             "message": {"chat": {"id": admin_chat_id}, "message_id": 100},
@@ -106,7 +112,7 @@ def _admin_approve_callback(
 
 def _admin_deny_callback(admin_chat_id: int = 999, target_id: int = 555) -> dict:
     return {
-        "update_id": 21,
+        "update_id": next(_UPDATE_ID),
         "callback_query": {
             "id": "cq-admin-deny",
             "message": {"chat": {"id": admin_chat_id}, "message_id": 101},
