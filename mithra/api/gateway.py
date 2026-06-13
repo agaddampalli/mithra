@@ -170,6 +170,7 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             or p.startswith("/api/v1/dashboard")
             or p.startswith("/api/v1/routines")   # HA tablet tap — no auth
             or p.startswith("/api/v1/tasks")       # HA dashboard tiles — no auth
+            or p.startswith("/api/v1/debug")       # debug tools
             or p.startswith("/api/v1/webhook/")
             or p.startswith("/connect/")
             or p.startswith("/oauth/")
