@@ -54,26 +54,6 @@ _START_RATE_LIMIT = 3
 _START_RATE_WINDOW = 3600
 _DEDUP_TTL = 300  # seconds — Telegram retries happen within seconds, 5 min is ample
 
-_PROCESSED_UPDATE_IDS: set[int] = set()
-_PROCESSED_UPDATE_EXPIRY: dict[int, float] = {}
-
-
-def _is_already_processed(update_id: int) -> bool:
-    """Return True if this update_id was already handled. Evicts entries older than 5 min."""
-    now = time.time()
-    expired = [k for k, v in _PROCESSED_UPDATE_EXPIRY.items() if now - v > _DEDUP_TTL]
-    for k in expired:
-        _PROCESSED_UPDATE_IDS.discard(k)
-        del _PROCESSED_UPDATE_EXPIRY[k]
-    return update_id in _PROCESSED_UPDATE_IDS
-
-
-def _mark_processed(update_id: int) -> None:
-    """Record update_id as processed."""
-    _PROCESSED_UPDATE_IDS.add(update_id)
-    _PROCESSED_UPDATE_EXPIRY[update_id] = time.time()
-
-
 class TelegramInputAdapter(InputAdapter):
     """Receives Telegram Updates and converts them to AgentRequests."""
 
@@ -95,6 +75,22 @@ class TelegramInputAdapter(InputAdapter):
         self._running = False
         self._webhook_url = os.environ.get("TELEGRAM_WEBHOOK_URL", "")
         self._start_attempts: dict[int, list[float]] = {}
+        self._processed_update_ids: set[int] = set()
+        self._processed_update_expiry: dict[int, float] = {}
+
+    def _is_already_processed(self, update_id: int) -> bool:
+        """Return True if this update_id was already handled. Evicts entries older than TTL."""
+        now = time.time()
+        expired = [k for k, v in self._processed_update_expiry.items() if now - v > _DEDUP_TTL]
+        for k in expired:
+            self._processed_update_ids.discard(k)
+            del self._processed_update_expiry[k]
+        return update_id in self._processed_update_ids
+
+    def _mark_processed(self, update_id: int) -> None:
+        """Record update_id as processed."""
+        self._processed_update_ids.add(update_id)
+        self._processed_update_expiry[update_id] = time.time()
 
     def _api(self, method: str) -> str:
         return f"{_TELEGRAM_API.format(token=self.bot_token)}/{method}"
@@ -206,10 +202,10 @@ class TelegramInputAdapter(InputAdapter):
 
         update_id = raw.get("update_id")
         if update_id is not None:
-            if _is_already_processed(update_id):
+            if self._is_already_processed(update_id):
                 logger.debug("Duplicate Telegram update_id=%s — skipped", update_id)
                 return None
-            _mark_processed(update_id)
+            self._mark_processed(update_id)
 
         message = raw.get("message") or raw.get("edited_message")
         callback = raw.get("callback_query")
