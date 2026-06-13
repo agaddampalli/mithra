@@ -1843,7 +1843,7 @@ def build_tasks_tools(context: DomainContext) -> list[ToolBundle]:
             metadata=ToolMetadata(
                 name="routine_create",
                 domain_id="tasks",
-                permission=PermissionTier.WRITE,
+                permission=PermissionTier.READ,
                 is_reversible=True,
                 autonomy_level=1,
                 event_emitted="routine_created",

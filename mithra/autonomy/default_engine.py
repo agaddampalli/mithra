@@ -220,6 +220,9 @@ class DefaultAutonomyEngine(AutononomyEngine):
         if action_type == "task_update":
             label = payload.get("task_id", "task")
             return f"update task '{label}'"
+        if action_type == "routine_create":
+            title = payload.get("title", "routine")
+            return f"Add routine '{title}'?"
         # Generic fallback — replace underscores, never show raw action_type
         return action_type.replace("_", " ")
 

@@ -1346,11 +1346,11 @@ class TestRoutineCreateTool:
         names = {b.metadata.name for b in bundles}
         assert {"routine_create", "routine_complete", "routine_list"}.issubset(names)
 
-    def test_routine_create_is_write(self, ctx):
+    def test_routine_create_is_read(self, ctx):
         from mithra.domains.bundle import PermissionTier
         bundles = build_tasks_tools(ctx)
         b = next(b for b in bundles if b.metadata.name == "routine_create")
-        assert b.metadata.permission == PermissionTier.WRITE
+        assert b.metadata.permission == PermissionTier.READ
 
     def test_routine_complete_is_read(self, ctx):
         from mithra.domains.bundle import PermissionTier
