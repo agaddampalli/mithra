@@ -319,6 +319,16 @@ class LangGraphAdapter(AgentInterface):
                     "_node_llm_tool_selection: forcing tool='task_delete' for delete intent"
                 )
 
+        # Force task_snooze when user clearly wants to snooze/defer a task.
+        _SNOOZE_KEYWORDS = {"snooze", "remind me later", "defer", "postpone", "not now"}
+        if not force_tool:
+            has_snooze_tool = any(b.tool.name == "task_snooze" for b in domain_bundles)
+            if has_snooze_tool and any(k in user_text_lower for k in _SNOOZE_KEYWORDS):
+                force_tool = "task_snooze"
+                _logger.info(
+                    "_node_llm_tool_selection: forcing tool='task_snooze' for snooze intent"
+                )
+
         tool_choice: Any
         if force_tool:
             tool_choice = {"type": "function", "function": {"name": force_tool}}

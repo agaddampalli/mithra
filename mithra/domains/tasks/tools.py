@@ -407,6 +407,12 @@ class TaskCreateTool(BaseTool):
         task_id = new_task_id()
         now = now_iso()
 
+        status = "active" if (parsed_due or task_priority in ("urgent", "high")) else "inbox"
+        _logger.info(
+            "task_create: status=%s priority=%s parsed_due=%s",
+            status, task_priority, parsed_due,
+        )
+
         try:
             with sqlite3.connect(ctx.local_db_path) as conn:
                 conn.execute(
@@ -417,7 +423,7 @@ class TaskCreateTool(BaseTool):
                     (
                         task_id, ctx.household_id, ctx.user_id,
                         title, notes or None, task_scope, task_priority,
-                        "inbox", parsed_due, project_id or None,
+                        status, parsed_due, project_id or None,
                         "manual", now, now,
                     ),
                 )
@@ -425,7 +431,7 @@ class TaskCreateTool(BaseTool):
             _logger.error("task_create DB error", exc_info=True)
             return ToolResult.fail("Could not save task.", error=str(exc))
 
-        _logger.info("task_create: %s scope=%s priority=%s", task_id, task_scope, task_priority)
+        _logger.info("task_create: %s scope=%s priority=%s status=%s", task_id, task_scope, task_priority, status)
 
         # Build summary per Section 12 response standards — no quotes, ✓ prefix
         detail_parts = []

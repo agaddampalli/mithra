@@ -283,6 +283,30 @@ class TestTaskCreateTool:
             ).fetchone()
         assert row is None
 
+    def test_status_active_when_urgent_priority(self, create_tool, db):
+        result = create_tool._run(title="return amazon package", priority="urgent")
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE id=?", (result.data["task_id"],)
+            ).fetchone()
+        assert row[0] == "active"
+
+    def test_status_active_when_due_date_given(self, create_tool, db):
+        result = create_tool._run(title="call dentist", due_date="2026-12-01")
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE id=?", (result.data["task_id"],)
+            ).fetchone()
+        assert row[0] == "active"
+
+    def test_status_inbox_when_no_priority_or_due(self, create_tool, db):
+        result = create_tool._run(title="read a book")
+        with sqlite3.connect(db) as conn:
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE id=?", (result.data["task_id"],)
+            ).fetchone()
+        assert row[0] == "inbox"
+
 
 # ---------------------------------------------------------------------------
 # TaskListTool
