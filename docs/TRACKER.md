@@ -1,8 +1,8 @@
-# Mithra — Work Tracker (Updated 2026-06-09)
+# Mithra — Work Tracker (Updated 2026-06-13)
 
 ## SESSION HANDOFF (update after each session)
 
-Last updated: 2026-06-09
+Last updated: 2026-06-13
 
 ### Current State
   Stack: Docker Compose on Windows laptop
@@ -21,16 +21,20 @@ Last updated: 2026-06-09
   Tasks domain T5 (routines): COMPLETE (3 tools + 2 API routes, 1080 tests passing)
   Section 12 Response Standards: COMPLETE — ADR + all Time/Tasks tools updated, 1085 tests passing
   Tasks domain T7 (proactive scheduler): COMPLETE — 5 jobs, duplicate prevention, 42 tests
+      morning_briefing, deadline_alerts, waiting_followup, weekly_summary, auto_promote
+      Timezone: America/Chicago confirmed. scheduler_log dedup verified end to end.
   Tasks domain T8 (remaining API routes): COMPLETE — /tasks/today, /inbox, /overdue
   routing.yaml fallback chain: COMPLETE — gemini-flash primary, full cross-fallback
+  Debug scheduler endpoint: COMPLETE — /api/v1/debug/scheduler/{job} behind MITHRA_DEBUG
+  Telegram webhook idempotency: COMPLETE — instance-level dedup, 5 min expiry
 
 ### In Progress
-  Tasks domain T9/T10 — HA dashboard integration + DoD gate manual verification
+  Tasks domain T9 — Full Tasks domain DoD verification, then HA REST sensor wiring
 
 ### Immediate Next Steps
-  1. T9 — HA REST sensor wiring for /tasks/today + /tasks/overdue → tablet tiles
-  2. T10 — DoD gate: manual verification all Tasks domain use cases
-  3. HA setup (after Tasks domain fully complete)
+  1. T9 — Full Tasks domain DoD manual verification (all use cases in TRACKER)
+  2. T9 — HA REST sensor wiring for /tasks/today + /tasks/overdue → tablet tiles
+  3. T10 — DoD gate close
 
 ### Key Decisions Made
   - Mithra SQLite as source of truth (not Google Tasks)
@@ -273,7 +277,7 @@ Last updated: 2026-06-09
 
   Time domain closed: 2026-06-06. All DoD items verified end to end.
 
-## Current Focus → Tasks Domain T9: HA REST sensor wiring for tablet tiles, then T10 DoD gate manual verification
+## Current Focus → Tasks Domain T9: Full DoD verification + HA REST sensor wiring for tablet tiles
 
 ## Tasks Domain
 
@@ -316,6 +320,28 @@ Last updated: 2026-06-09
     double-mark → "already marked done today" (friendly, no crash)
     API /routines/today → correct JSON
     dashboard includes "2/3 routines done"
+
+  ### T7 — Proactive scheduler (COMPLETE 2026-06-09)
+  [x] mithra/scheduler/task_scheduler.py — 5 jobs
+  [x] job_morning_briefing — urgent + overdue summary per member, 7am Chicago
+  [x] job_deadline_alerts — tasks due in ≤3 days, 8am Chicago
+  [x] job_waiting_followup — waiting tasks silent 7+ days, 9am Chicago
+  [x] job_weekly_summary — inbox count + top urgent, Sunday 9am Chicago
+  [x] job_auto_promote — normal/high → urgent at threshold, 6am Chicago
+  [x] scheduler_log UNIQUE INDEX dedup — INSERT OR IGNORE, 5 min expiry
+  [x] APScheduler AsyncIOScheduler wired into FastAPI lifespan
+  [x] Timezone: America/Chicago via CronTrigger(timezone=tz)
+  [x] _send_telegram via stdlib urllib (no httpx dependency)
+  [x] Admin failure alert on job exception
+  [x] 42 unit tests passing
+
+  ### T8 — Remaining API routes (COMPLETE 2026-06-09)
+  [x] GET /api/v1/tasks/today — urgent + high + overdue, limit 20
+  [x] GET /api/v1/tasks/inbox — status=inbox tasks
+  [x] GET /api/v1/tasks/overdue — due_date < today, not done
+  [x] Auth middleware exclusion for /api/v1/tasks and /api/v1/debug
+  [x] GET /api/v1/debug/scheduler/{job_name} behind MITHRA_DEBUG=true
+  [x] Telegram webhook idempotency — instance-level dedup, 5 min TTL
 
   ### T4 — Project and milestone tools (COMPLETE 2026-06-07)
   [x] project_create — milestone capture flow (gateway intercepts comma list)
