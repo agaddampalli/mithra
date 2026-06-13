@@ -9,10 +9,10 @@ from __future__ import annotations
 import logging
 import sqlite3
 from datetime import date, datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from mithra.domains.base import Domain
-from mithra.domains.dashboard import DashboardData
+from mithra.domains.dashboard import DashboardData, DashboardItem
 
 if TYPE_CHECKING:
     from mithra.domains.bundle import ToolBundle
@@ -75,25 +75,25 @@ class TasksDomain(Domain):
             )
 
         try:
-            items, alerts, routine_summary = self._load_dashboard(household_id, user_id, today)
+            items, alerts, routine_summary, active_count, urgent_count, overdue_count = (
+                self._load_dashboard(household_id, user_id, today)
+            )
         except Exception as exc:
             _logger.warning("tasks dashboard query failed: %s", exc)
             items, alerts, routine_summary = [], [], ""
-
-        inbox_count = sum(1 for i in items if i.get("status") == "inbox")
-        urgent_count = sum(1 for i in items if i.get("priority") == "urgent")
-        overdue_count = sum(1 for i in items if i.get("overdue"))
+            active_count = urgent_count = overdue_count = 0
 
         parts = []
-        if overdue_count:
-            parts.append(f"{overdue_count} overdue")
         if urgent_count:
             parts.append(f"{urgent_count} urgent")
-        if inbox_count:
-            parts.append(f"{inbox_count} in inbox")
+        if overdue_count:
+            parts.append(f"{overdue_count} overdue")
+        if active_count and not parts:
+            parts.append(f"{active_count} active tasks")
+        if routine_summary:
+            parts.append(routine_summary)
 
-        task_summary = "Tasks: " + ", ".join(parts) if parts else "No open tasks"
-        summary = f"{task_summary} · {routine_summary}" if routine_summary else task_summary
+        summary = " · ".join(parts) if parts else "All clear today! 🎉"
 
         return DashboardData(
             domain="tasks",
@@ -110,8 +110,8 @@ class TasksDomain(Domain):
 
     def _load_dashboard(
         self, household_id: str, user_id: str, today: str
-    ) -> tuple[list[dict], list[dict], str]:
-        items: list[dict] = []
+    ) -> tuple[list[DashboardItem], list[dict], str, int, int, int]:
+        items: list[DashboardItem] = []
         alerts: list[dict] = []
         routine_summary: str = ""
 
@@ -120,9 +120,9 @@ class TasksDomain(Domain):
 
             # Top 10 active tasks ordered by priority + due date
             rows = conn.execute(
-                """SELECT id, title, priority, status, due_date, scope
+                """SELECT id, title, priority, status, due_date
                    FROM tasks
-                   WHERE household_id=? AND status NOT IN ('done','cancelled')
+                   WHERE household_id=? AND status NOT IN ('done','cancelled','snoozed')
                    ORDER BY
                      CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END ASC,
                      CASE WHEN due_date IS NOT NULL AND due_date<=? THEN 0 ELSE 1 END ASC,
@@ -133,21 +133,42 @@ class TasksDomain(Domain):
 
             for r in rows:
                 overdue = bool(r["due_date"] and r["due_date"] < today)
-                items.append({
-                    "id": r["id"],
-                    "title": r["title"],
-                    "priority": r["priority"],
-                    "status": r["status"],
-                    "due_date": r["due_date"],
-                    "scope": r["scope"],
-                    "overdue": overdue,
-                })
+                subtitle = (
+                    f"Due {r['due_date']}" if r["due_date"]
+                    else (r["priority"] or "normal").title()
+                )
+                items.append(DashboardItem(
+                    id=r["id"],
+                    title=r["title"],
+                    subtitle=subtitle,
+                    icon="mdi:checkbox-marked-circle-outline",
+                    priority="high" if r["priority"] == "urgent" else "normal",
+                    action="task_complete",
+                ))
+                if overdue:
+                    pass  # overdue surfaced via overdue_count alert below
 
-            # Overdue alert
+            # Counts via direct SQL — not derived from the display slice above
+            active_count = conn.execute(
+                """SELECT COUNT(*) FROM tasks
+                   WHERE household_id=? AND status NOT IN ('done','cancelled','snoozed')""",
+                (household_id,),
+            ).fetchone()[0]
+
+            urgent_count = conn.execute(
+                """SELECT COUNT(*) FROM tasks
+                   WHERE household_id=? AND priority='urgent'
+                   AND status NOT IN ('done','cancelled','snoozed')""",
+                (household_id,),
+            ).fetchone()[0]
+
             overdue_count = conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE household_id=? AND due_date<? AND status NOT IN ('done','cancelled')",
+                """SELECT COUNT(*) FROM tasks
+                   WHERE household_id=? AND due_date<?
+                   AND status NOT IN ('done','cancelled','snoozed')""",
                 (household_id, today),
             ).fetchone()[0]
+
             if overdue_count:
                 alerts.append({
                     "type": "overdue",
@@ -190,4 +211,4 @@ class TasksDomain(Domain):
             except Exception:
                 pass  # routines table may not exist in older DBs
 
-        return items, alerts, routine_summary
+        return items, alerts, routine_summary, active_count, urgent_count, overdue_count
