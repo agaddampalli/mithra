@@ -16,25 +16,18 @@ Last updated: 2026-06-13
   Phase 1 storage: COMPLETE
   Time domain: COMPLETE (all 8 tools verified)
   Domain plugin architecture: COMPLETE
-  Tasks domain T1+T2+T3 + capture flow fixes: COMPLETE (7 core tools)
-  Tasks domain T4 (projects/milestones): COMPLETE (4 tools, 1044 tests passing)
-  Tasks domain T5 (routines): COMPLETE (3 tools + 2 API routes, 1080 tests passing)
-  Section 12 Response Standards: COMPLETE — ADR + all Time/Tasks tools updated, 1085 tests passing
-  Tasks domain T7 (proactive scheduler): COMPLETE — 5 jobs, duplicate prevention, 42 tests
-      morning_briefing, deadline_alerts, waiting_followup, weekly_summary, auto_promote
-      Timezone: America/Chicago confirmed. scheduler_log dedup verified end to end.
-  Tasks domain T8 (remaining API routes): COMPLETE — /tasks/today, /inbox, /overdue
+  Tasks domain: COMPLETE 2026-06-13 — 13 tools + 5 scheduler jobs + 6 API routes verified
+  Section 12 Response Standards: COMPLETE — ADR + all Time/Tasks tools updated
   routing.yaml fallback chain: COMPLETE — gemini-flash primary, full cross-fallback
   Debug scheduler endpoint: COMPLETE — /api/v1/debug/scheduler/{job} behind MITHRA_DEBUG
   Telegram webhook idempotency: COMPLETE — instance-level dedup, 5 min expiry
 
 ### In Progress
-  Tasks domain T9 — Full Tasks domain DoD verification, then HA REST sensor wiring
+  T9 — HA REST sensor wiring for tablet tiles
 
 ### Immediate Next Steps
-  1. T9 — Full Tasks domain DoD manual verification (all use cases in TRACKER)
-  2. T9 — HA REST sensor wiring for /tasks/today + /tasks/overdue → tablet tiles
-  3. T10 — DoD gate close
+  1. T9 — HA REST sensor wiring for /tasks/today + /tasks/overdue → tablet tiles
+  2. People domain
 
 ### Key Decisions Made
   - Mithra SQLite as source of truth (not Google Tasks)
@@ -277,9 +270,52 @@ Last updated: 2026-06-13
 
   Time domain closed: 2026-06-06. All DoD items verified end to end.
 
-## Current Focus → Tasks Domain T9: Full DoD verification + HA REST sensor wiring for tablet tiles
+## Current Focus → T9: HA REST sensor wiring for tablet tiles, then People domain
 
-## Tasks Domain
+## Tasks Domain — COMPLETE 2026-06-13
+
+  Schema: tasks, projects, milestones, routines,
+          routine_completions, conversation_state,
+          scheduler_log — all verified
+
+  13 tools verified end to end:
+  [x] task_create — immediate capture, active status when priority/deadline provided
+  [x] task_list — today/inbox/overdue/urgent/household filters
+  [x] task_complete — READ tier, immediate
+  [x] task_update — capture flow enrichment
+  [x] task_snooze — READ tier, title search, immediate
+  [x] task_delete — soft delete, title search, confirms
+  [x] task_suggest — top 3 by priority/deadline
+  [x] project_create — milestone capture flow
+  [x] project_update — status/date updates
+  [x] milestone_complete — ordinal resolution (phase 1/2)
+  [x] project_status — 📋 format with ✓/○
+  [x] routine_create — READ tier, household scope
+  [x] routine_complete — idempotent, timezone-aware
+  [x] routine_list — done/pending split
+
+  Proactive scheduler (5 jobs, America/Chicago):
+  [x] auto_promote (6am)
+  [x] morning_briefing (7am) — duplicate prevention ✅
+  [x] deadline_alerts (8am)
+  [x] waiting_followup (9am)
+  [x] weekly_summary (Sunday 9am)
+
+  API routes verified:
+  [x] GET /api/v1/tasks/today
+  [x] GET /api/v1/tasks/inbox
+  [x] GET /api/v1/tasks/overdue
+  [x] GET /api/v1/dashboard/tasks
+  [x] GET /api/v1/routines/today
+  [x] POST /api/v1/routines/{id}/complete
+
+  Multi-turn capture: conversation_state ✅
+  Response standards: Section 12 applied ✅
+  Force tool selection: task_delete, task_snooze ✅
+  Telegram webhook idempotency ✅
+  Tests: 1133 passing
+
+---
 
   [x] TD-00 Deep dive complete — use cases, rules, capture flow,
              accountability model, alternatives considered
@@ -557,7 +593,7 @@ Last updated: 2026-06-13
   [ ] Check-in reminder automation
 
 ## Test Baseline
-  1127 tests passing (2026-06-09)
+  1133 tests passing (2026-06-13)
 
 ## Infra Cleanup (deferred to end of Phase 1)
   Automate as part of closing infrastructure phases.
