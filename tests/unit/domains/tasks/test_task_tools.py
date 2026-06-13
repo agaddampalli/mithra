@@ -600,29 +600,48 @@ class TestTaskUpdateTool:
 # ---------------------------------------------------------------------------
 
 class TestTaskSnoozeTool:
-    def test_snooze_task(self, snooze_tool, db):
-        _seed_task(db, task_id="tsk_snz1", title="Snooze me")
-        result = snooze_tool._run(task_id="tsk_snz1", until="2026-12-01")
+    def test_snooze_by_title(self, snooze_tool, db):
+        _seed_task(db, task_id="tsk_snz1", title="Fix ceiling fan")
+        result = snooze_tool._run(task_query="ceiling fan", until="2026-12-01")
         assert result.success
         assert "2026-12-01" in result.summary
+        assert "Fix ceiling fan" in result.summary
+
+    def test_snooze_by_exact_id(self, snooze_tool, db):
+        _seed_task(db, task_id="tsk_snz_id", title="Call doctor")
+        result = snooze_tool._run(task_query="tsk_snz_id", until="2026-12-01")
+        assert result.success
+        assert result.data["task_id"] == "tsk_snz_id"
 
     def test_status_set_to_snoozed(self, snooze_tool, db):
-        _seed_task(db, task_id="tsk_snz2", title="Status check")
-        snooze_tool._run(task_id="tsk_snz2", until="2026-12-01")
+        _seed_task(db, task_id="tsk_snz2", title="Status check task")
+        snooze_tool._run(task_query="Status check", until="2026-12-01")
         with sqlite3.connect(db) as conn:
             row = conn.execute("SELECT status, snoozed_until FROM tasks WHERE id=?", ("tsk_snz2",)).fetchone()
         assert row[0] == "snoozed"
         assert row[1] == "2026-12-01"
 
     def test_unparseable_date_returns_fail(self, snooze_tool, db):
-        _seed_task(db, task_id="tsk_snz3", title="Bad date")
-        result = snooze_tool._run(task_id="tsk_snz3", until="not a date xyz")
+        _seed_task(db, task_id="tsk_snz3", title="Bad date task")
+        result = snooze_tool._run(task_query="Bad date task", until="not a date xyz")
         assert not result.success
         assert result.error_code == "UNPARSEABLE_DATE"
 
     def test_not_found_returns_fail(self, snooze_tool):
-        result = snooze_tool._run(task_id="tsk_nonexistent", until="2026-12-01")
+        result = snooze_tool._run(task_query="this task does not exist", until="2026-12-01")
         assert not result.success
+
+    def test_done_task_not_matched(self, snooze_tool, db):
+        _seed_task(db, task_id="tsk_snz_done", title="Done task", status="done")
+        result = snooze_tool._run(task_query="Done task", until="2026-12-01")
+        assert not result.success
+
+    def test_permission_tier_is_read(self, ctx):
+        from mithra.domains.bundle import PermissionTier
+        from mithra.domains.tasks.tools import build_tasks_tools
+        bundles = build_tasks_tools(ctx)
+        b = next(b for b in bundles if b.metadata.name == "task_snooze")
+        assert b.metadata.permission == PermissionTier.READ
 
 
 # ---------------------------------------------------------------------------

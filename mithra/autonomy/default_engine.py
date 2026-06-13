@@ -220,6 +220,10 @@ class DefaultAutonomyEngine(AutononomyEngine):
         if action_type == "task_update":
             label = payload.get("task_id", "task")
             return f"update task '{label}'"
+        if action_type == "task_snooze":
+            query = payload.get("task_query", "task")
+            until = payload.get("until", "later")
+            return f"Snooze '{query}' until {until}?"
         if action_type == "routine_create":
             title = payload.get("title", "routine")
             return f"Add routine '{title}'?"

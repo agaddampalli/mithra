@@ -851,7 +851,9 @@ class TaskUpdateTool(BaseTool):
 # ---------------------------------------------------------------------------
 
 class _TaskSnoozeArgs(BaseModel):
-    task_id: str = Field(description="Task ID to snooze (tsk_...).")
+    task_query: str = Field(
+        description="Task title or keyword to find the task to snooze (e.g. 'ceiling fan', 'call doctor')."
+    )
     until: str = Field(
         description="When to resurface: 'tomorrow', 'next week', 'in 3 days', or a date string."
     )
@@ -861,7 +863,7 @@ class TaskSnoozeTool(BaseTool):
     name: str = "task_snooze"
     description: str = (
         "Snooze a task until a future date. Use when the user says 'remind me later', "
-        "'not now', 'snooze', or gives a future date to revisit the task."
+        "'not now', 'snooze', 'defer', or gives a future date to revisit the task."
     )
     args_schema: Type[BaseModel] = _TaskSnoozeArgs
     _ctx: DomainContext
@@ -870,7 +872,7 @@ class TaskSnoozeTool(BaseTool):
         super().__init__(**kwargs)
         object.__setattr__(self, "_ctx", context)
 
-    def _run(self, task_id: str, until: str) -> ToolResult:
+    def _run(self, task_query: str, until: str) -> ToolResult:
         import sqlite3
 
         ctx = self._ctx
@@ -880,7 +882,7 @@ class TaskSnoozeTool(BaseTool):
         snooze_date = _parse_due_date(until)
         if not snooze_date:
             return ToolResult.fail(
-                f"Could not parse date from '{until}'.",
+                f"Couldn't understand '{until}' as a date.",
                 error_code="UNPARSEABLE_DATE",
             )
 
@@ -890,25 +892,28 @@ class TaskSnoozeTool(BaseTool):
             with sqlite3.connect(ctx.local_db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
-                    "SELECT title FROM tasks WHERE id=? AND household_id=?",
-                    (task_id, ctx.household_id),
+                    "SELECT id, title FROM tasks "
+                    "WHERE household_id=? AND (id=? OR title LIKE ?) "
+                    "AND status NOT IN ('done','cancelled') LIMIT 1",
+                    (ctx.household_id, task_query, f"%{task_query}%"),
                 ).fetchone()
                 if not row:
-                    return ToolResult.fail(f"Task not found: {task_id}")
+                    return ToolResult.fail(f"No task found matching '{task_query}'.")
 
-                title = row["title"]
+                found_id = row["id"]
+                found_title = row["title"]
                 conn.execute(
-                    "UPDATE tasks SET status='snoozed', snoozed_until=?, updated_at=? WHERE id=? AND household_id=?",
-                    (snooze_date, now, task_id, ctx.household_id),
+                    "UPDATE tasks SET status='snoozed', snoozed_until=?, updated_at=? WHERE id=?",
+                    (snooze_date, now, found_id),
                 )
         except Exception as exc:
             _logger.error("task_snooze DB error", exc_info=True)
             return ToolResult.fail("Could not snooze task.", error=str(exc))
 
-        _logger.info("task_snooze: %s until=%s", task_id, snooze_date)
+        _logger.info("task_snooze: %s until=%s", found_id, snooze_date)
         return ToolResult.ok(
-            f"✓ {title} — snoozed until {snooze_date}",
-            data={"task_id": task_id, "snoozed_until": snooze_date},
+            f"✓ {found_title} — snoozed until {snooze_date}",
+            data={"task_id": found_id, "snoozed_until": snooze_date},
         )
 
 
@@ -1777,7 +1782,7 @@ def build_tasks_tools(context: DomainContext) -> list[ToolBundle]:
             metadata=ToolMetadata(
                 name="task_snooze",
                 domain_id="tasks",
-                permission=PermissionTier.WRITE,
+                permission=PermissionTier.READ,
                 is_reversible=True,
                 autonomy_level=2,
             ),
