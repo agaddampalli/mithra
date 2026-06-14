@@ -507,12 +507,36 @@ class CalendarCreateEventTool(BaseTool):
 
         event_id = getattr(created, "id", "")
 
+        scope = classify_event_scope(title, is_recurring=False)
         if ctx.local_db_path:
-            scope = classify_event_scope(title, is_recurring=False)
             _record_calendar_event(
                 ctx.local_db_path, event_id, uid, ctx.household_id,
                 title, start_dt, end_dt, False, scope,
             )
+
+        event_bus = getattr(ctx, "event_bus", None)
+        if event_bus:
+            from mithra.events.base import DomainEvent as MesDomainEvent
+            import asyncio
+            domain_evt = MesDomainEvent.create(
+                source_domain="time",
+                event_type="event_created",
+                household_id=ctx.household_id,
+                user_id=ctx.user_id,
+                payload={
+                    "google_event_id": event_id,
+                    "title": title,
+                    "start_time": start_dt.isoformat(),
+                    "scope": scope,
+                    "is_recurring": False,
+                },
+            )
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(event_bus.publish(domain_evt))
+            except Exception as exc:
+                _logger.warning("event_bus publish failed: %s", exc)
 
         import pytz
         tz = pytz.timezone(ctx.household_timezone)
@@ -930,6 +954,27 @@ class CalendarDeleteEventTool(BaseTool):
                 return _TOKEN_EXPIRED_RESULT
             _logger.error("calendar_delete_event failed: %s", exc, exc_info=True)
             return ToolResult.fail(f"Could not delete event: {exc}", error_code="CALENDAR_ERROR")
+
+        event_bus = getattr(ctx, "event_bus", None)
+        if event_bus:
+            from mithra.events.base import DomainEvent as MesDomainEvent
+            import asyncio
+            domain_evt = MesDomainEvent.create(
+                source_domain="time",
+                event_type="event_deleted",
+                household_id=ctx.household_id,
+                user_id=ctx.user_id,
+                payload={
+                    "google_event_id": event_id,
+                    "title": title,
+                },
+            )
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(event_bus.publish(domain_evt))
+            except Exception as exc:
+                _logger.warning("event_bus publish failed: %s", exc)
 
         summary = f"✓ {title} — removed from calendar"
         domain_event = DomainEvent(
