@@ -3717,3 +3717,457 @@ These apply to ALL future decisions.
    Tool schemas follow MCP/A2A JSON Schema standard.
    Pydantic args_schema = zero-effort MCP compatibility.
    LangChain + LangGraph = industry standard execution layer.
+
+---
+
+## 14. Mithra Event System (MES)
+
+### 14.0 Status and Context
+
+Status: DESIGNED — not yet implemented.
+Implementation begins after Tasks domain is stable.
+This ADR locks all contracts before any code is written.
+
+Context: as Mithra grows beyond the first two domains, two
+distinct event flows have emerged that require different
+routing, durability, and isolation guarantees:
+
+1. External signals arrive from Gmail, Home Assistant sensors,
+   Telegram webhooks, and future integrations. These are raw
+   inbound data that may or may not produce domain actions.
+
+2. Internal side effects flow between domains after a tool
+   executes and the user confirms. These are DomainEvents —
+   they carry semantic meaning and trigger downstream domain
+   reactions.
+
+Mixing these two flows in one mechanism creates coupling.
+MES separates them clearly with different contracts, topics,
+and routing rules.
+
+---
+
+### 14.1 The Core Distinction
+
+    InboundEvent — external signal, no domain meaning yet
+      Source: Gmail, HA sensor, Telegram webhook, scheduler
+      Flow:   external system → InboundAdapter → EventBus
+              → routing layer → classify → domain tool
+      Example: email arrives with Amazon receipt
+               → inbound.gmail.email_received
+               → email_classifier determines domain
+               → tasks domain creates return_label task
+
+    DomainEvent — internal side effect, semantic meaning
+      Source: domain tool after successful execution
+      Flow:   tool.run() → ToolResult.events → EventBus
+              → AutononomyEngine confirms → handlers fire
+      Example: calendar_create_event succeeds
+               → domain.time.appointment_created
+               → MoneyDomain records expense if cost present
+               → only after user confirmation
+
+    ONE-WAY DOOR: InboundEvents never fire DomainEvents directly.
+    The routing layer classifies and calls domain tools.
+    DomainEvents only fire AFTER tool execution AND confirmation.
+    This enforces the autonomy confirmation contract from section 9.10.
+
+---
+
+### 14.2 The Two-Way Door — EventBus Migration Path
+
+EventBus is an abstract interface. Swapping the backend
+requires zero changes to publishers or handlers.
+
+    Phase 0 (now): AsyncioSQLiteEventBus
+      Python asyncio queues for in-process delivery
+      SQLite events table for durability + replay
+      Sufficient for single-process, 2-user household
+      Zero new Docker services needed
+
+    Phase 2 (when needed): RedisEventBus
+      Redis Streams for reliable delivery
+      Requires new Redis Docker service
+      Add when: second household instance, or
+                Gmail polling needs background worker
+
+    Phase 3 (product): KafkaEventBus
+      Apache Kafka for multi-tenant, high-throughput
+      Trigger: 1000+ households, or enterprise integrations
+
+    Migration: swap one class in bootstrap.py
+               All publishers and handlers unchanged
+
+---
+
+### 14.3 Contracts
+
+#### BaseEvent
+
+    @dataclass
+    class BaseEvent:
+        event_id:        str          # "evt_" + uuid hex, globally unique
+        topic:           str          # "inbound.gmail.email_received"
+        household_id:    str          # scope — never crosses boundaries
+        user_id:         str          # "person_a" | "person_b" | "household"
+        timestamp:       str          # ISO8601 UTC
+        causation_id:    str | None   # event_id of parent event
+        causation_depth: int          # 0 = original, max 5
+
+    ONE-WAY DOOR: event_id is globally unique and immutable.
+    Used for idempotency. Never regenerate on retry.
+
+#### InboundEvent
+
+    @dataclass
+    class InboundEvent(BaseEvent):
+        source:     str     # "gmail" | "ha_sensor" | "scheduler"
+        raw_data:   dict    # original payload, unmodified
+        classified: bool    # False until routing layer processes
+
+    Topics: inbound.{source}.{signal_type}
+      inbound.gmail.email_received
+      inbound.ha_sensor.motion_detected
+      inbound.scheduler.morning_briefing_due
+
+#### DomainEvent
+
+    @dataclass
+    class DomainEvent(BaseEvent):
+        event_type:    str     # "appointment_created"
+        source_domain: str     # "time"
+        payload:       dict    # semantic, domain-specific
+        request_id:    str     # links to originating AgentRequest
+
+    Topics: domain.{source_domain}.{event_type}
+      domain.time.appointment_created
+      domain.tasks.task_completed
+      domain.money.expense_recorded
+
+    This extends the existing DomainEvent from section 9.10
+    with BaseEvent fields. Migration: add event_id, topic,
+    causation_id, causation_depth to existing DomainEvent dataclass.
+
+#### EventBus
+
+    class EventBus(ABC):
+        async def publish(
+            self,
+            event: BaseEvent,
+        ) -> None:
+            """Publish event to all subscribers of its topic."""
+
+        def subscribe(
+            self,
+            topic_pattern: str,    # supports * wildcard
+            handler: "EventHandler",
+        ) -> None:
+            """Register handler for topic pattern.
+            Wildcard: 'domain.time.*' matches all time events."""
+
+        def unsubscribe(
+            self,
+            topic_pattern: str,
+            handler: "EventHandler",
+        ) -> None: ...
+
+        async def replay(
+            self,
+            topic_pattern: str,
+            since: str,            # ISO8601 timestamp
+        ) -> None:
+            """Replay unprocessed events from persistence store.
+            Used on restart to recover missed events."""
+
+        def health(self) -> dict: ...
+
+#### InboundAdapter
+
+    class InboundAdapter(ABC):
+        """Connects an external source to the EventBus."""
+
+        @property
+        @abstractmethod
+        def source(self) -> str:
+            """Identifies the external source e.g. 'gmail'"""
+
+        @abstractmethod
+        async def start(self) -> None:
+            """Begin polling or listening for inbound events."""
+
+        @abstractmethod
+        async def stop(self) -> None:
+            """Stop polling cleanly."""
+
+        @abstractmethod
+        async def _normalise(self, raw: dict) -> InboundEvent:
+            """Convert raw source payload to InboundEvent."""
+
+        def health(self) -> dict: ...
+
+#### EventHandler
+
+    class EventHandler(ABC):
+        """Processes one published event."""
+
+        @property
+        @abstractmethod
+        def topic_patterns(self) -> list[str]:
+            """Topics this handler subscribes to."""
+
+        @abstractmethod
+        async def handle(
+            self,
+            event: BaseEvent,
+            context: "DomainContext",
+        ) -> None:
+            """Process the event. Never raises — errors logged."""
+
+---
+
+### 14.4 Topic Naming Convention
+
+All topics use dot-notation namespaces. Four top-level namespaces:
+
+    inbound.*       External signals not yet classified
+      inbound.gmail.email_received
+      inbound.ha_sensor.{sensor_id}
+      inbound.scheduler.{job_name}
+      inbound.webhook.{source}
+
+    domain.*        Confirmed domain actions (side effects)
+      domain.{source_domain}.{event_type}
+      domain.time.appointment_created
+      domain.tasks.task_completed
+      domain.tasks.task_overdue
+      domain.money.expense_recorded
+      domain.people.birthday_approaching
+
+    notification.*  Outbound delivery events (for ActionLog)
+      notification.telegram.sent
+      notification.telegram.failed
+      notification.whatsapp.sent
+      notification.tts.spoken
+
+    system.*        Infrastructure events
+      system.startup.complete
+      system.health.degraded
+      system.backup.complete
+      system.error.dead_letter
+
+    ONE-WAY DOOR: top-level namespace is fixed.
+    Adding a new source = new inbound.{source}.* subtopic.
+    Never create ad-hoc topics outside these four namespaces.
+
+---
+
+### 14.5 Persistence — events Table
+
+AsyncioSQLiteEventBus writes every event to SQLite
+before delivery. Events survive restarts and enable replay.
+
+    CREATE TABLE events (
+        event_id        TEXT PRIMARY KEY,
+        topic           TEXT NOT NULL,
+        household_id    TEXT NOT NULL,
+        user_id         TEXT NOT NULL,
+        timestamp       TEXT NOT NULL,      -- ISO8601 UTC
+        causation_id    TEXT,               -- nullable
+        causation_depth INTEGER NOT NULL DEFAULT 0,
+        payload_json    TEXT NOT NULL,      -- full event JSON
+        processed       INTEGER NOT NULL DEFAULT 0,  -- 0|1
+        processed_at    TEXT,               -- ISO8601 when processed
+        error_count     INTEGER NOT NULL DEFAULT 0,
+        last_error      TEXT                -- last exception message
+    );
+
+    CREATE INDEX idx_events_topic ON events(topic, processed);
+    CREATE INDEX idx_events_household ON events(household_id, timestamp);
+    CREATE INDEX idx_events_causation ON events(causation_id);
+
+    Retention: events older than 30 days marked for deletion.
+    Health domain events: purged after 7 days (privacy).
+    system.* events: kept 90 days for audit.
+
+---
+
+### 14.6 Idempotency Contract
+
+Every handler MUST be idempotent — safe to call twice
+with the same event_id. AsyncioSQLiteEventBus marks
+events processed=1 after all handlers complete. On
+restart, only processed=0 events are replayed.
+
+    Idempotency implementation per handler type:
+      SQLite writes:   INSERT OR IGNORE with event_id as dedup key
+      Calendar writes: check_exists(event_id) before Google API call
+      Telegram sends:  message_id stored; skip if already sent
+      Task creation:   source_ref=event_id, INSERT OR IGNORE
+
+    EventBus enforces at-least-once delivery.
+    Handlers enforce exactly-once semantics via idempotency.
+
+---
+
+### 14.7 Error Isolation
+
+Handler failures must never affect other handlers or the
+event publisher. Each handler runs in an isolated try/except.
+
+    Delivery order per event:
+      1. Persist event (SQLite write) — if this fails, publish() raises
+      2. For each handler[i] subscribed to topic:
+         try:
+             await handler[i].handle(event, context)
+             _mark_handler_success(event_id, handler[i].name)
+         except Exception as exc:
+             _logger.error("handler %s failed for %s",
+                           handler[i].name, event.event_id,
+                           exc_info=True)
+             event.error_count += 1
+             event.last_error = str(exc)
+             # CONTINUE to handler[i+1] — never propagate
+      3. If ALL handlers succeed → processed=1
+         If ANY handler fails → processed=0, error_count incremented
+         Retry on next restart or manual replay
+
+    Dead letter: events with error_count >= 3
+      Written to StorageAdapter domain="observability"
+      Surfaced on health dashboard
+      Admin notified via Telegram
+
+---
+
+### 14.8 Causation Chain Protection
+
+Events that trigger other events create causation chains.
+Unbounded chains cause infinite loops. Max depth: 5.
+
+    Each BaseEvent carries:
+      causation_id:    event_id of the parent event (or None)
+      causation_depth: parent.causation_depth + 1
+
+    EventBus.publish() enforcement:
+      if event.causation_depth > 5:
+          _logger.error("causation_depth exceeded for %s",
+                        event.event_id)
+          # write to dead letter, do NOT deliver
+          return
+
+    Example chain (depth 0→3):
+      Gmail email arrives (depth 0, causation_id=None)
+        → email_classifier → tasks.task_create (depth 1)
+          → domain.tasks.task_created (depth 2)
+            → notification.telegram.sent (depth 3)
+
+    Legitimate chains rarely exceed 3 levels.
+    Depth 5 always indicates a cycle or design error.
+
+---
+
+### 14.9 Fan-Out
+
+One event may trigger multiple handlers. EventBus delivers
+to all subscribers matching the topic pattern.
+
+    Example: domain.time.appointment_created published
+      → MoneyDomainHandler (checks for cost, records expense)
+      → TasksDomainHandler (creates pre-appointment task)
+      → NotificationHandler (sends calendar confirmation)
+    All three receive the same event independently.
+
+    Topic wildcards:
+      "domain.time.*"     matches any time domain event
+      "domain.*.*"        matches any domain event
+      "inbound.gmail.*"   matches all Gmail signals
+      Exact match takes priority over wildcard.
+
+    Handler registration order: deterministic (registration order).
+    Handlers must not depend on each other's execution order.
+
+---
+
+### 14.10 Alternatives Considered
+
+#### Celery + Redis (task queue)
+    Rejected: Celery is a task queue, not an event bus.
+    Push model only — no topic routing, no fan-out patterns.
+    Adds Redis + Celery worker containers (2 new services).
+    Overhead unwarranted for 2-user household scale.
+
+#### Kafka from day one
+    Rejected: Kafka requires ZooKeeper or KRaft,
+    minimum 3 containers, complex admin.
+    Unnecessary for single-household, single-process use.
+    EventBus abstraction makes Kafka a later swap.
+
+#### Direct domain function calls (no bus)
+    Rejected: this is the status quo. Creates tight coupling.
+    Domain A imports Domain B to call handlers directly.
+    Violates domain isolation principle (section 13.2).
+    Testing requires all domains present simultaneously.
+
+#### Redis Pub/Sub
+    Rejected for Phase 0: requires Redis container,
+    no persistence (fire-and-forget), no replay after restart.
+    Redis Streams (not Pub/Sub) is the Phase 2 target.
+
+#### asyncio.Queue per topic (no SQLite)
+    Rejected: events lost on restart or crash.
+    Replay on startup is a hard requirement — Gmail emails
+    arrive while the container is restarting.
+
+---
+
+### 14.11 Implementation Order
+
+    Phase 0 — Contracts (implement before next domain):
+      MES-00  BaseEvent, InboundEvent, DomainEvent dataclasses
+              mithra/events/base.py
+      MES-01  EventBus ABC
+              mithra/events/bus.py
+      MES-02  AsyncioSQLiteEventBus implementation
+              mithra/events/asyncio_sqlite_bus.py
+      MES-03  events table DDL in LocalStorageAdapter.__init__
+      MES-04  InboundAdapter ABC
+              mithra/events/inbound.py
+      MES-05  EventHandler ABC
+              mithra/events/handler.py
+      MES-06  Wire EventBus into bootstrap.py
+              build_state() injects bus into DomainContext
+      MES-07  Unit tests: publish/subscribe, idempotency,
+              causation depth guard, error isolation, replay
+              35+ tests
+
+    Phase 1 — Notification Refactor (after People domain):
+      MES-08  notification.* topic wired from OutputAdapters
+      MES-09  DomainEvent emission from TasksDomain tools
+      MES-10  DomainEvent emission from TimeDomain tools
+      MES-11  Cross-domain: tasks → time
+              task_overdue → calendar_create_event (time-block)
+      MES-12  Cross-domain: time → tasks
+              appointment_created → task_create (prep task)
+      MES-13  Integration tests: event published → handler called
+
+    Phase 2 — Gmail Integration:
+      MES-14  GmailInboundAdapter
+              mithra/events/adapters/gmail_inbound.py
+              historyId incremental polling, 15 min interval
+              Publishes inbound.gmail.email_received
+      MES-15  EmailClassifier
+              mithra/events/adapters/email_classifier.py
+              LLM: return_label | flight_booking | receipt | other
+      MES-16  inbound.gmail.* router → classify → domain tool
+              return_label → task_create (source_ref=message_id)
+      MES-17  Return task auto-creation from email
+              Telegram notification with [View task] button
+      MES-18  DoD: Amazon return email → task created automatically
+              historyId stored in household_config
+
+    Phase 3 — Deferred handlers:
+      MES-19  Travel domain: FlightReservation JSON-LD handler
+      MES-20  Travel domain: auto-create calendar events
+              from inbound.gmail.flight_booking
+      MES-21  Money domain: expense_recorded fan-out handler
+      MES-22  HA sensor handler: inbound.ha_sensor.* → domain tools
+      MES-23  RedisEventBus adapter (swap when scale needs it)

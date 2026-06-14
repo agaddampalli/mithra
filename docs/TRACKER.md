@@ -21,13 +21,15 @@ Last updated: 2026-06-13
   routing.yaml fallback chain: COMPLETE — gemini-flash primary, full cross-fallback
   Debug scheduler endpoint: COMPLETE — /api/v1/debug/scheduler/{job} behind MITHRA_DEBUG
   Telegram webhook idempotency: COMPLETE — instance-level dedup, 5 min expiry
+  MES ADR: COMPLETE — Section 14 documented, MES-00 through MES-23 tracked
 
 ### In Progress
   T9 — HA REST sensor wiring for tablet tiles
 
 ### Immediate Next Steps
   1. T9 — HA REST sensor wiring for /tasks/today + /tasks/overdue → tablet tiles
-  2. People domain
+  2. MES Phase 0 — EventBus contracts (MES-00 through MES-07) before People domain
+  3. People domain
 
 ### Key Decisions Made
   - Mithra SQLite as source of truth (not Google Tasks)
@@ -40,6 +42,9 @@ Last updated: 2026-06-13
   - No external task app (Vikunja rejected — wrong use case)
   - Calendar blocking opt-in not automatic
   - HA tablet = primary display (Scenario B)
+  - MES: InboundEvent (external) vs DomainEvent (internal) — separate contracts
+  - MES: EventBus two-way door — AsyncioSQLiteEventBus → Redis → Kafka
+  - MES: max causation depth 5, error isolation per handler, idempotency via event_id
 
 ### Known Open Issues
   - llm-router health check flapping (low priority)
@@ -63,17 +68,21 @@ Last updated: 2026-06-13
 
 ### Design Track (T1)
   [x] D-01 to D-23 — all design complete
-  [x] ARCHITECTURE_DECISIONS.md (10 sections)
-      Section 1: Identity & Household Management
-      Section 2: OAuth Token Management
-      Section 3: File Storage and Document RAG
-      Section 4: Document Interaction UX
-      Section 5: Document Processing Libraries (Kreuzberg)
-      Section 6: Phase 1 Storage Infrastructure
-      Section 7: Storage Architecture
-      Section 8: Dashboard and Visual Interface
-      Section 9: Domain Plugin Architecture
-      Section 10: Design Principles
+  [x] ARCHITECTURE_DECISIONS.md (14 sections)
+      Section 1:  Identity & Household Management
+      Section 2:  OAuth Token Management
+      Section 3:  File Storage and Document RAG
+      Section 4:  Document Interaction UX
+      Section 5:  Document Processing Libraries (Kreuzberg)
+      Section 6:  Phase 1 Storage Infrastructure
+      Section 7:  Storage Architecture
+      Section 8:  Dashboard and Visual Interface
+      Section 9:  Domain Plugin Architecture
+      Section 10: Time Domain
+      Section 11: Tasks Domain
+      Section 12: Response Message Standards
+      Section 13: Design Principles
+      Section 14: Mithra Event System (MES)
   [ ] D-24 Architecture Pass 2 (component diagrams)
   [ ] D-25 Architecture Pass 3 (end-to-end scenarios)
 
@@ -583,6 +592,96 @@ Last updated: 2026-06-13
     → Step 4: T7–T9 domain class + API routes
     → Step 5: T10 DoD verification
     → Step 6: Gmail Phase 2
+
+## Mithra Event System (MES) — Phase 0 starts after People domain
+
+  Full design: ARCHITECTURE_DECISIONS.md Section 14
+
+  ### MES Roadmap Position
+    Phase 0 (now): AsyncioSQLiteEventBus contracts — in-process, durable
+    Phase 1:       Notification refactor — wired into all domains
+    Phase 2:       Gmail integration — first InboundAdapter
+    Phase 3:       Travel/Money handlers, HA sensors, Redis migration
+
+  ### MES Phase 0 — Contracts
+  [ ] MES-00  BaseEvent, InboundEvent, DomainEvent dataclasses
+              mithra/events/base.py
+              Fields: event_id, topic, household_id, user_id,
+              timestamp, causation_id, causation_depth (BaseEvent);
+              source, raw_data, classified (InboundEvent);
+              event_type, source_domain, payload, request_id (DomainEvent)
+  [ ] MES-01  EventBus ABC
+              mithra/events/bus.py
+              Methods: publish(), subscribe(), unsubscribe(), replay(), health()
+  [ ] MES-02  AsyncioSQLiteEventBus
+              mithra/events/asyncio_sqlite_bus.py
+              asyncio queues + SQLite events table for durability
+              Handler error isolation — each handler in isolated try/except
+              Dead letter after error_count >= 3
+  [ ] MES-03  events table DDL in LocalStorageAdapter.__init__
+              Columns: event_id, topic, household_id, user_id,
+              timestamp, causation_id, causation_depth,
+              payload_json, processed, processed_at, error_count, last_error
+              Indexes: idx_events_topic, idx_events_household, idx_events_causation
+  [ ] MES-04  InboundAdapter ABC
+              mithra/events/inbound.py
+              Methods: source (property), start(), stop(), _normalise(), health()
+  [ ] MES-05  EventHandler ABC
+              mithra/events/handler.py
+              Methods: topic_patterns (property), handle(event, context) → None
+  [ ] MES-06  Wire EventBus into bootstrap.py
+              build_state() creates AsyncioSQLiteEventBus
+              Injected into DomainContext as event_bus field
+              FastAPI lifespan: bus.start() on startup, bus.stop() on shutdown
+  [ ] MES-07  Unit tests for Phase 0 contracts
+              publish/subscribe happy path
+              idempotency (same event_id twice, handler called once)
+              causation depth guard (depth > 5 → dead letter, not delivered)
+              error isolation (handler[0] fails, handler[1] still runs)
+              replay (processed=0 events re-delivered on restart)
+              35+ tests required
+
+  ### MES Phase 1 — Notification Refactor (after People domain)
+  [ ] MES-08  notification.* topic wired from TelegramOutputAdapter
+              DeliveryReceipt → publish notification.telegram.{sent|failed}
+  [ ] MES-09  DomainEvent emission from TasksDomain tools
+              task_create → domain.tasks.task_created
+              task_complete → domain.tasks.task_completed
+  [ ] MES-10  DomainEvent emission from TimeDomain tools
+              calendar_create_event → domain.time.appointment_created
+  [ ] MES-11  Cross-domain handler: tasks → time
+              domain.tasks.task_overdue → calendar_create_event (time-block opt-in)
+  [ ] MES-12  Cross-domain handler: time → tasks
+              domain.time.appointment_created → task_create (prep task opt-in)
+  [ ] MES-13  Integration tests: event published → handler invoked → domain action
+
+  ### MES Phase 2 — Gmail Integration
+  [ ] MES-14  GmailInboundAdapter
+              mithra/events/adapters/gmail_inbound.py
+              historyId incremental polling, 15 min CronTrigger
+              Publishes inbound.gmail.email_received
+  [ ] MES-15  EmailClassifier
+              mithra/events/adapters/email_classifier.py
+              LLM classifies: return_label | flight_booking | receipt | other
+  [ ] MES-16  inbound.gmail.* router
+              return_label → task_create (source="gmail", source_ref=message_id)
+              flight_booking → travel domain (Phase 3)
+              receipt → money domain (Phase 3)
+  [ ] MES-17  Return task auto-creation from email
+              Extract product name + deadline from email body
+              Telegram notification with [View task] button
+  [ ] MES-18  DoD: Amazon return email → task created automatically
+              historyId stored in household_config
+
+  ### MES Phase 3 — Deferred
+  [ ] MES-19  Travel domain: FlightReservation JSON-LD parsing handler
+  [ ] MES-20  Travel domain: inbound.gmail.flight_booking →
+              calendar_create_event (flight) + calendar_create_event (hotel)
+  [ ] MES-21  Money domain: domain.money.expense_recorded fan-out handler
+  [ ] MES-22  HA sensor handler: inbound.ha_sensor.* → domain tools
+  [ ] MES-23  RedisEventBus adapter (swap AsyncioSQLiteEventBus when needed)
+
+---
 
 ## Travel Domain (Phase 3 — after Documents)
   [ ] Gmail FlightReservation JSON-LD parsing
