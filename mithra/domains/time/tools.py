@@ -520,10 +520,11 @@ class CalendarCreateEventTool(BaseTool):
             from mithra.events.base import DomainEvent as MesDomainEvent
             import asyncio
             domain_evt = MesDomainEvent.create(
-                source_domain="time",
                 event_type="event_created",
+                source_domain="time",
                 household_id=ctx.household_id,
                 user_id=ctx.user_id,
+                request_id=ctx.request_id or "",
                 payload={
                     "google_event_id": event_id,
                     "title": title,
@@ -962,10 +963,11 @@ class CalendarDeleteEventTool(BaseTool):
             from mithra.events.base import DomainEvent as MesDomainEvent
             import asyncio
             domain_evt = MesDomainEvent.create(
-                source_domain="time",
                 event_type="event_deleted",
+                source_domain="time",
                 household_id=ctx.household_id,
                 user_id=ctx.user_id,
+                request_id=ctx.request_id or "",
                 payload={
                     "google_event_id": event_id,
                     "title": title,
