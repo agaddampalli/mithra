@@ -12,6 +12,7 @@ Migration: swap one class in bootstrap.py. All callers unchanged.
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
@@ -20,10 +21,11 @@ if TYPE_CHECKING:
     from mithra.events.handler import EventHandler
 
 # ---------------------------------------------------------------------------
-# Process-level singleton — set once in bootstrap, read anywhere
+# Process-level singletons — set once at startup, read anywhere
 # ---------------------------------------------------------------------------
 
 _event_bus_instance: "EventBus | None" = None
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 
 def get_event_bus() -> "EventBus | None":
@@ -35,6 +37,17 @@ def set_event_bus(bus: "EventBus") -> None:
     """Set the process-level EventBus. Called once in bootstrap during startup."""
     global _event_bus_instance
     _event_bus_instance = bus
+
+
+def get_main_loop() -> asyncio.AbstractEventLoop | None:
+    """Return the main event loop captured at gateway startup."""
+    return _main_loop
+
+
+def set_main_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Capture the main event loop. Called once from async lifespan context."""
+    global _main_loop
+    _main_loop = loop
 
 
 class EventBus(ABC):

@@ -514,9 +514,10 @@ class CalendarCreateEventTool(BaseTool):
                 title, start_dt, end_dt, False, scope,
             )
 
-        from mithra.events.bus import get_event_bus
+        from mithra.events.bus import get_event_bus, get_main_loop
         event_bus = get_event_bus()
-        if event_bus:
+        main_loop = get_main_loop()
+        if event_bus and main_loop:
             from mithra.events.base import DomainEvent as MesDomainEvent
             import asyncio
             domain_evt = MesDomainEvent.create(
@@ -534,11 +535,8 @@ class CalendarCreateEventTool(BaseTool):
                 },
             )
             try:
-                loop = asyncio.get_running_loop()
                 asyncio.run_coroutine_threadsafe(
-                    event_bus.publish(domain_evt), loop)
-            except RuntimeError:
-                _logger.warning("event_bus publish skipped: no running loop")
+                    event_bus.publish(domain_evt), main_loop)
             except Exception as exc:
                 _logger.warning("event_bus publish failed: %s", exc)
 
@@ -959,9 +957,10 @@ class CalendarDeleteEventTool(BaseTool):
             _logger.error("calendar_delete_event failed: %s", exc, exc_info=True)
             return ToolResult.fail(f"Could not delete event: {exc}", error_code="CALENDAR_ERROR")
 
-        from mithra.events.bus import get_event_bus
+        from mithra.events.bus import get_event_bus, get_main_loop
         event_bus = get_event_bus()
-        if event_bus:
+        main_loop = get_main_loop()
+        if event_bus and main_loop:
             from mithra.events.base import DomainEvent as MesDomainEvent
             import asyncio
             domain_evt = MesDomainEvent.create(
@@ -976,11 +975,8 @@ class CalendarDeleteEventTool(BaseTool):
                 },
             )
             try:
-                loop = asyncio.get_running_loop()
                 asyncio.run_coroutine_threadsafe(
-                    event_bus.publish(domain_evt), loop)
-            except RuntimeError:
-                _logger.warning("event_bus publish skipped: no running loop")
+                    event_bus.publish(domain_evt), main_loop)
             except Exception as exc:
                 _logger.warning("event_bus publish failed: %s", exc)
 

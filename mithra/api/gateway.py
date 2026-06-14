@@ -64,6 +64,8 @@ async def lifespan(app: FastAPI):
 
     event_bus = _state.get("event_bus")
     if event_bus:
+        from mithra.events.bus import set_main_loop
+        set_main_loop(asyncio.get_event_loop())
         await event_bus.start()
 
     telegram_input = _state.get("telegram_input")
