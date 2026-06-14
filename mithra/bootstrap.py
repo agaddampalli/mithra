@@ -229,6 +229,15 @@ def _build_file_storage(state: dict) -> None:
         _logger.warning("ChromaDB not available for file indexing: %s", exc)
 
 
+def _build_event_bus(db_path: str) -> Any:
+    """Build the Phase 0 AsyncioSQLiteEventBus.
+
+    Phase 2: swap to RedisEventBus here, zero changes to callers.
+    """
+    from mithra.events.asyncio_sqlite_bus import AsyncioSQLiteEventBus
+    return AsyncioSQLiteEventBus(db_path=db_path)
+
+
 def _build_domain_registry() -> Any:
     from mithra.domains import DomainRegistry
     return DomainRegistry()
@@ -331,6 +340,9 @@ async def build_state(
     storage_router, local_adapter, cipher = _build_storage_router(household_config)
     state["storage_router"] = storage_router
     state["local_adapter"] = local_adapter
+
+    event_bus = _build_event_bus(local_adapter.db_path)
+    state["event_bus"] = event_bus
 
     from mithra.identity.member_registry import MemberRegistry
     member_registry = MemberRegistry(local_adapter.db_path, household_id)

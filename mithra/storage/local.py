@@ -211,6 +211,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduler_log_daily
     ON scheduler_log(alert_type, reference_id, sent_to, DATE(sent_at));
 """
 
+_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS events (
+    event_id        TEXT PRIMARY KEY,
+    topic           TEXT NOT NULL,
+    household_id    TEXT NOT NULL,
+    user_id         TEXT NOT NULL,
+    timestamp       TEXT NOT NULL,
+    causation_id    TEXT,
+    causation_depth INTEGER NOT NULL DEFAULT 0,
+    payload_json    TEXT NOT NULL,
+    processed       INTEGER NOT NULL DEFAULT 0,
+    processed_at    TEXT,
+    error_count     INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic, processed);
+CREATE INDEX IF NOT EXISTS idx_events_household ON events(household_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_events_causation ON events(causation_id);
+"""
+
 _FILES_DDL = """
 CREATE TABLE IF NOT EXISTS files (
     id           TEXT PRIMARY KEY,
@@ -310,6 +330,8 @@ class LocalStorageAdapter(StorageAdapter):
         self._conn.executescript(_TASKS_DDL)
         self._conn.commit()
         self._conn.executescript(_SCHEDULER_LOG_DDL)
+        self._conn.commit()
+        self._conn.executescript(_EVENTS_DDL)
         self._conn.commit()
         # Additive migrations for existing installs
         for _col, _type in [("managed_by", "TEXT"), ("date_of_birth", "TEXT")]:

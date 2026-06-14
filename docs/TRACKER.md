@@ -22,6 +22,7 @@ Last updated: 2026-06-13
   Debug scheduler endpoint: COMPLETE — /api/v1/debug/scheduler/{job} behind MITHRA_DEBUG
   Telegram webhook idempotency: COMPLETE — instance-level dedup, 5 min expiry
   MES ADR: COMPLETE — Section 14 documented, MES-00 through MES-23 tracked
+  MES Phase 0: COMPLETE 2026-06-13 — EventBus contracts, AsyncioSQLiteEventBus, 49 tests
 
 ### In Progress
   T9 — HA REST sensor wiring for tablet tiles
@@ -603,43 +604,43 @@ Last updated: 2026-06-13
     Phase 2:       Gmail integration — first InboundAdapter
     Phase 3:       Travel/Money handlers, HA sensors, Redis migration
 
-  ### MES Phase 0 — Contracts
-  [ ] MES-00  BaseEvent, InboundEvent, DomainEvent dataclasses
+  ### MES Phase 0 — Contracts (COMPLETE 2026-06-13)
+  [x] MES-00  BaseEvent, InboundEvent, DomainEvent dataclasses
               mithra/events/base.py
               Fields: event_id, topic, household_id, user_id,
               timestamp, causation_id, causation_depth (BaseEvent);
               source, raw_data, classified (InboundEvent);
               event_type, source_domain, payload, request_id (DomainEvent)
-  [ ] MES-01  EventBus ABC
+  [x] MES-01  EventBus ABC
               mithra/events/bus.py
               Methods: publish(), subscribe(), unsubscribe(), replay(), health()
-  [ ] MES-02  AsyncioSQLiteEventBus
+  [x] MES-02  AsyncioSQLiteEventBus
               mithra/events/asyncio_sqlite_bus.py
               asyncio queues + SQLite events table for durability
               Handler error isolation — each handler in isolated try/except
               Dead letter after error_count >= 3
-  [ ] MES-03  events table DDL in LocalStorageAdapter.__init__
+  [x] MES-03  events table DDL in LocalStorageAdapter.__init__
               Columns: event_id, topic, household_id, user_id,
               timestamp, causation_id, causation_depth,
               payload_json, processed, processed_at, error_count, last_error
               Indexes: idx_events_topic, idx_events_household, idx_events_causation
-  [ ] MES-04  InboundAdapter ABC
+  [x] MES-04  InboundAdapter ABC
               mithra/events/inbound.py
               Methods: source (property), start(), stop(), _normalise(), health()
-  [ ] MES-05  EventHandler ABC
+  [x] MES-05  EventHandler ABC
               mithra/events/handler.py
               Methods: topic_patterns (property), handle(event, context) → None
-  [ ] MES-06  Wire EventBus into bootstrap.py
+  [x] MES-06  Wire EventBus into bootstrap.py
               build_state() creates AsyncioSQLiteEventBus
               Injected into DomainContext as event_bus field
               FastAPI lifespan: bus.start() on startup, bus.stop() on shutdown
-  [ ] MES-07  Unit tests for Phase 0 contracts
+  [x] MES-07  Unit tests for Phase 0 contracts
               publish/subscribe happy path
               idempotency (same event_id twice, handler called once)
               causation depth guard (depth > 5 → dead letter, not delivered)
               error isolation (handler[0] fails, handler[1] still runs)
               replay (processed=0 events re-delivered on restart)
-              35+ tests required
+              49 tests passing
 
   ### MES Phase 1 — Notification Refactor (after People domain)
   [ ] MES-08  notification.* topic wired from TelegramOutputAdapter
@@ -692,7 +693,7 @@ Last updated: 2026-06-13
   [ ] Check-in reminder automation
 
 ## Test Baseline
-  1133 tests passing (2026-06-13)
+  1182 tests passing (2026-06-13)
 
 ## Infra Cleanup (deferred to end of Phase 1)
   Automate as part of closing infrastructure phases.

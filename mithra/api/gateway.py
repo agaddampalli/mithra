@@ -62,6 +62,10 @@ async def lifespan(app: FastAPI):
     _state["telegram_bot_token"] = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     _state["admin_telegram_id"] = os.environ.get("MITHRA_ADMIN_TELEGRAM_ID", "")
 
+    event_bus = _state.get("event_bus")
+    if event_bus:
+        await event_bus.start()
+
     telegram_input = _state.get("telegram_input")
     if telegram_input:
         asyncio.create_task(telegram_input.start())
@@ -74,6 +78,9 @@ async def lifespan(app: FastAPI):
     yield
 
     scheduler.shutdown(wait=False)
+
+    if event_bus:
+        await event_bus.stop()
 
     if telegram_input:
         await telegram_input.stop()
