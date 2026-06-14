@@ -4171,3 +4171,120 @@ to all subscribers matching the topic pattern.
       MES-21  Money domain: expense_recorded fan-out handler
       MES-22  HA sensor handler: inbound.ha_sensor.* → domain tools
       MES-23  RedisEventBus adapter (swap when scale needs it)
+
+---
+
+## 15. Dependency Management Standards
+
+### 15.1 Three Categories of Dependencies
+
+    CATEGORY 1 — Request-scoped (DomainContext)
+      What belongs here:
+        user_id, household_id, household_timezone,
+        local_db_path, oauth_manager, member_registry,
+        request_id, channel, language
+      How accessed: ctx.field_name in tool _run()
+      Lifecycle: built fresh per request
+      Why: these differ per user/request
+
+    CATEGORY 2 — Process-scoped singletons
+      What belongs here:
+        event_bus, llm_router client, vector_store client,
+        telegram bot client, file_router
+      How accessed: from mithra.X import get_X
+      Lifecycle: built once in bootstrap, never change
+      Why: same instance for all requests, all users
+
+      Pattern:
+        # In the module that owns the singleton:
+        _instance: SomeClass | None = None
+
+        def get_instance() -> SomeClass | None:
+            return _instance
+
+        def set_instance(obj: SomeClass) -> None:
+            global _instance
+            _instance = obj
+
+        # In bootstrap.py:
+        set_instance(build_the_thing())
+
+        # Anywhere in codebase:
+        obj = get_instance()
+        if obj:
+            obj.do_thing()
+
+    CATEGORY 3 — Configuration (household_config dict)
+      What belongs here:
+        timezone, feature flags, integration settings
+      How accessed: household_config.get("key")
+      Lifecycle: loaded at startup, refreshed on change
+      Why: shared read-only data
+
+---
+
+### 15.2 The Patch Anti-Pattern (FORBIDDEN)
+
+    Never do this:
+      component = build_component()
+      dependency = build_dependency()
+      component._dependency = dependency  ← FORBIDDEN
+
+    Why it fails:
+      1. Violates Dependency Inversion Principle
+      2. Construction order becomes implicit contract
+      3. New code paths silently get None
+      4. Tests cannot easily mock individual dependencies
+      5. Adding new components = updating bootstrap +
+         remembering to patch = easy to miss
+
+    Instead:
+      If Category 1: add to DomainContext constructor
+      If Category 2: use module-level singleton pattern
+      If Category 3: read from household_config dict
+
+---
+
+### 15.3 bootstrap.py Responsibility
+
+    bootstrap.py should ONLY:
+      1. Build singletons in dependency order
+      2. Call set_X() for each singleton
+      3. Build initial state dict
+      4. Return state
+
+    bootstrap.py should NOT:
+      1. Patch attributes onto already-constructed objects
+      2. Know which components need which dependencies
+      3. Wire request-scoped dependencies (that is DomainContext's job)
+
+---
+
+### 15.4 DomainContext Rules
+
+    Add a field to DomainContext ONLY if:
+      - It varies per user OR per request
+      - It comes from the request or user's stored state
+
+    Do NOT add to DomainContext:
+      - Process-level singletons (use get_X() instead)
+      - Configuration that does not vary per user
+      - Clients that are the same for all users
+
+---
+
+### 15.5 Applying to Existing Code
+
+    AUDIT — DomainContext fields:
+      event_bus        → Category 2, removed from DomainContext
+                         use get_event_bus() ✅ DONE
+      file_router      → Category 2, candidate for singleton (future)
+      local_db_path    → Category 1 ✅ (varies per household)
+      oauth_manager    → Category 1 ✅ (user-specific tokens)
+      member_registry  → Category 1 ✅ (household-specific)
+
+    AUDIT — bootstrap.py patch blocks to remove:
+      agent._event_bus        ← removed ✅ DONE
+      agent._file_router      ← Category 2, future cleanup
+      agent._member_registry  ← Category 1, already in ctx ✅
+      agent._local_db_path    ← Category 1, already in ctx ✅
