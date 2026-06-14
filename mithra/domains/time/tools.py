@@ -534,9 +534,11 @@ class CalendarCreateEventTool(BaseTool):
                 },
             )
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.ensure_future(event_bus.publish(domain_evt))
+                loop = asyncio.get_running_loop()
+                asyncio.run_coroutine_threadsafe(
+                    event_bus.publish(domain_evt), loop)
+            except RuntimeError:
+                _logger.warning("event_bus publish skipped: no running loop")
             except Exception as exc:
                 _logger.warning("event_bus publish failed: %s", exc)
 
@@ -974,9 +976,11 @@ class CalendarDeleteEventTool(BaseTool):
                 },
             )
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.ensure_future(event_bus.publish(domain_evt))
+                loop = asyncio.get_running_loop()
+                asyncio.run_coroutine_threadsafe(
+                    event_bus.publish(domain_evt), loop)
+            except RuntimeError:
+                _logger.warning("event_bus publish skipped: no running loop")
             except Exception as exc:
                 _logger.warning("event_bus publish failed: %s", exc)
 
