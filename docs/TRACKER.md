@@ -23,6 +23,7 @@ Last updated: 2026-06-13
   Telegram webhook idempotency: COMPLETE — instance-level dedup, 5 min expiry
   MES ADR: COMPLETE — Section 14 documented, MES-00 through MES-23 tracked
   MES Phase 0: COMPLETE 2026-06-13 — EventBus contracts, AsyncioSQLiteEventBus, 49 tests
+  MES-06 proof: COMPLETE 2026-06-14 — CalendarCreateEventTool + CalendarDeleteEventTool publish DomainEvent to EventBus (fire-and-forget)
 
 ### In Progress
   T9 — HA REST sensor wiring for tablet tiles
