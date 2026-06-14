@@ -514,12 +514,8 @@ class CalendarCreateEventTool(BaseTool):
                 title, start_dt, end_dt, False, scope,
             )
 
-        _logger.info(
-            "MES-DEBUG: ctx.event_bus=%r type=%s",
-            getattr(ctx, "event_bus", "MISSING"),
-            type(getattr(ctx, "event_bus", None)).__name__,
-        )
-        event_bus = getattr(ctx, "event_bus", None)
+        from mithra.events.bus import get_event_bus
+        event_bus = get_event_bus()
         if event_bus:
             from mithra.events.base import DomainEvent as MesDomainEvent
             import asyncio
@@ -960,7 +956,8 @@ class CalendarDeleteEventTool(BaseTool):
             _logger.error("calendar_delete_event failed: %s", exc, exc_info=True)
             return ToolResult.fail(f"Could not delete event: {exc}", error_code="CALENDAR_ERROR")
 
-        event_bus = getattr(ctx, "event_bus", None)
+        from mithra.events.bus import get_event_bus
+        event_bus = get_event_bus()
         if event_bus:
             from mithra.events.base import DomainEvent as MesDomainEvent
             import asyncio

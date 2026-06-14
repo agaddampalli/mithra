@@ -341,8 +341,10 @@ async def build_state(
     state["storage_router"] = storage_router
     state["local_adapter"] = local_adapter
 
+    from mithra.events.bus import set_event_bus
     event_bus = _build_event_bus(local_adapter.db_path)
-    state["event_bus"] = event_bus
+    set_event_bus(event_bus)       # process-level singleton
+    state["event_bus"] = event_bus  # kept for gateway lifespan start/stop
 
     from mithra.identity.member_registry import MemberRegistry
     member_registry = MemberRegistry(local_adapter.db_path, household_id)
@@ -448,7 +450,6 @@ async def build_state(
         agent._member_registry = state.get("member_registry")
         agent._file_search = state.get("file_search")
         agent._local_db_path = getattr(state.get("local_adapter"), "db_path", "")
-        agent._event_bus = state.get("event_bus")
 
     if state.get("telegram_output"):
         _build_telegram_handler(state, household_config, base_url)

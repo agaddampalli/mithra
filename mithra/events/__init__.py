@@ -10,7 +10,7 @@ from mithra.events.base import (
     DomainEvent,
     InboundEvent,
 )
-from mithra.events.bus import EventBus
+from mithra.events.bus import EventBus, get_event_bus, set_event_bus
 from mithra.events.handler import EventHandler
 from mithra.events.inbound import InboundAdapter
 from mithra.events.asyncio_sqlite_bus import AsyncioSQLiteEventBus
@@ -21,6 +21,8 @@ __all__ = [
     "InboundEvent",
     "DomainEvent",
     "EventBus",
+    "get_event_bus",
+    "set_event_bus",
     "EventHandler",
     "InboundAdapter",
     "AsyncioSQLiteEventBus",

@@ -19,6 +19,23 @@ if TYPE_CHECKING:
     from mithra.events.base import BaseEvent
     from mithra.events.handler import EventHandler
 
+# ---------------------------------------------------------------------------
+# Process-level singleton — set once in bootstrap, read anywhere
+# ---------------------------------------------------------------------------
+
+_event_bus_instance: "EventBus | None" = None
+
+
+def get_event_bus() -> "EventBus | None":
+    """Return the process-level EventBus, or None if not yet initialised."""
+    return _event_bus_instance
+
+
+def set_event_bus(bus: "EventBus") -> None:
+    """Set the process-level EventBus. Called once in bootstrap during startup."""
+    global _event_bus_instance
+    _event_bus_instance = bus
+
 
 class EventBus(ABC):
     """Abstract event bus interface.

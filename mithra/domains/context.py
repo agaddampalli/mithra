@@ -34,6 +34,3 @@ class DomainContext:
 
     # Autonomy override — set when user explicitly said "just do it"
     autonomy_override: int | None = None
-
-    # MES EventBus — injected at build time; None until MES Phase 0 wired
-    event_bus: Any = None
