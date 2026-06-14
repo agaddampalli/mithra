@@ -448,6 +448,7 @@ async def build_state(
         agent._member_registry = state.get("member_registry")
         agent._file_search = state.get("file_search")
         agent._local_db_path = getattr(state.get("local_adapter"), "db_path", "")
+        agent._event_bus = state.get("event_bus")
 
     if state.get("telegram_output"):
         _build_telegram_handler(state, household_config, base_url)
