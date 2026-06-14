@@ -514,6 +514,11 @@ class CalendarCreateEventTool(BaseTool):
                 title, start_dt, end_dt, False, scope,
             )
 
+        _logger.info(
+            "MES-DEBUG: ctx.event_bus=%r type=%s",
+            getattr(ctx, "event_bus", "MISSING"),
+            type(getattr(ctx, "event_bus", None)).__name__,
+        )
         event_bus = getattr(ctx, "event_bus", None)
         if event_bus:
             from mithra.events.base import DomainEvent as MesDomainEvent

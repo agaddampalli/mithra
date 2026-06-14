@@ -792,6 +792,11 @@ class LangGraphAdapter(AgentInterface):
                     _exc, traceback.format_exc(),
                 )
 
+        _logger.info(
+            "MES-DEBUG: building DomainContext with event_bus=%r self._event_bus=%r",
+            self._event_bus,
+            self._event_bus,
+        )
         return DomainContext(
             user_id=request.user_id,
             household_id=self._household_id,
