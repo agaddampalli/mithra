@@ -1,8 +1,8 @@
-# Mithra — Work Tracker (Updated 2026-06-13)
+# Mithra — Work Tracker (Updated 2026-06-14)
 
 ## SESSION HANDOFF (update after each session)
 
-Last updated: 2026-06-13
+Last updated: 2026-06-14
 
 ### Current State
   Stack: Docker Compose on Windows laptop
@@ -22,15 +22,22 @@ Last updated: 2026-06-13
   Debug scheduler endpoint: COMPLETE — /api/v1/debug/scheduler/{job} behind MITHRA_DEBUG
   Telegram webhook idempotency: COMPLETE — instance-level dedup, 5 min expiry
   MES ADR: COMPLETE — Section 14 documented, MES-00 through MES-23 tracked
-  MES Phase 0: COMPLETE 2026-06-13 — EventBus contracts, AsyncioSQLiteEventBus, 49 tests
-  MES-06 proof: COMPLETE 2026-06-14 — CalendarCreateEventTool + CalendarDeleteEventTool publish DomainEvent to EventBus (fire-and-forget)
+  MES Phase 0: COMPLETE 2026-06-14 — all MES-00 through MES-07 verified end-to-end
+              get_event_bus()/set_event_bus() singleton, get_main_loop()/set_main_loop()
+              for thread-safe publish from ThreadPoolExecutor workers
+              CalendarCreateEventTool + CalendarDeleteEventTool verified: events table
+              shows processed=1, error_count=0, full payload with request_id
+              1182 tests passing
+  Section 15 ADR: COMPLETE 2026-06-14 — dependency management standards documented
+              Three categories: request-scoped (DomainContext), process singletons
+              (get_X()), config (household_config). Patch anti-pattern FORBIDDEN.
 
 ### In Progress
   T9 — HA REST sensor wiring for tablet tiles
 
 ### Immediate Next Steps
   1. T9 — HA REST sensor wiring for /tasks/today + /tasks/overdue → tablet tiles
-  2. MES Phase 0 — EventBus contracts (MES-00 through MES-07) before People domain
+  2. MES Phase 1 (MES-08 through MES-10) — notification refactor, TasksDomain events
   3. People domain
 
 ### Key Decisions Made
@@ -605,7 +612,7 @@ Last updated: 2026-06-13
     Phase 2:       Gmail integration — first InboundAdapter
     Phase 3:       Travel/Money handlers, HA sensors, Redis migration
 
-  ### MES Phase 0 — Contracts (COMPLETE 2026-06-13)
+  ### MES Phase 0 — Contracts (COMPLETE 2026-06-14)
   [x] MES-00  BaseEvent, InboundEvent, DomainEvent dataclasses
               mithra/events/base.py
               Fields: event_id, topic, household_id, user_id,
@@ -615,11 +622,14 @@ Last updated: 2026-06-13
   [x] MES-01  EventBus ABC
               mithra/events/bus.py
               Methods: publish(), subscribe(), unsubscribe(), replay(), health()
-  [x] MES-02  AsyncioSQLiteEventBus
+  [x] MES-02  AsyncioSQLiteEventBus + module-level singletons
               mithra/events/asyncio_sqlite_bus.py
               asyncio queues + SQLite events table for durability
               Handler error isolation — each handler in isolated try/except
               Dead letter after error_count >= 3
+              get_event_bus()/set_event_bus() — process-level singleton (ADR 15.2)
+              get_main_loop()/set_main_loop() — main loop captured at startup for
+              thread-safe publish via asyncio.run_coroutine_threadsafe()
   [x] MES-03  events table DDL in LocalStorageAdapter.__init__
               Columns: event_id, topic, household_id, user_id,
               timestamp, causation_id, causation_depth,
@@ -631,10 +641,13 @@ Last updated: 2026-06-13
   [x] MES-05  EventHandler ABC
               mithra/events/handler.py
               Methods: topic_patterns (property), handle(event, context) → None
-  [x] MES-06  Wire EventBus into bootstrap.py
-              build_state() creates AsyncioSQLiteEventBus
-              Injected into DomainContext as event_bus field
-              FastAPI lifespan: bus.start() on startup, bus.stop() on shutdown
+  [x] MES-06  EventBus wired end-to-end; CalendarCreateEventTool and
+              CalendarDeleteEventTool publish domain.time.event_created /
+              domain.time.event_deleted after successful Google Calendar ops
+              bootstrap: set_event_bus() + set_main_loop() at startup
+              Tools: get_event_bus() + get_main_loop() + run_coroutine_threadsafe()
+              Verified: events table processed=1, error_count=0, full payload
+              Key fixes: patch anti-pattern replaced (ADR 15), asyncio thread safety
   [x] MES-07  Unit tests for Phase 0 contracts
               publish/subscribe happy path
               idempotency (same event_id twice, handler called once)
