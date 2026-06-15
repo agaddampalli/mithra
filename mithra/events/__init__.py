@@ -9,6 +9,7 @@ from mithra.events.base import (
     BaseEvent,
     DomainEvent,
     InboundEvent,
+    NotificationEvent,
 )
 from mithra.events.bus import EventBus, get_event_bus, set_event_bus, get_main_loop, set_main_loop
 from mithra.events.handler import EventHandler
@@ -19,6 +20,7 @@ __all__ = [
     "MAX_CAUSATION_DEPTH",
     "BaseEvent",
     "InboundEvent",
+    "NotificationEvent",
     "DomainEvent",
     "EventBus",
     "get_event_bus",

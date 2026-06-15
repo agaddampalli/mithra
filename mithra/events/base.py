@@ -107,6 +107,41 @@ class InboundEvent(BaseEvent):
 
 
 @dataclass
+class NotificationEvent(BaseEvent):
+    """Fire-and-forget delivery request to an output channel.
+
+    Topics follow: notification.{channel}.{action}
+    e.g. notification.telegram.send
+
+    NOT replayed on restart — replaying notification events causes
+    duplicate messages. MES-10 filters these from _load_unprocessed().
+    """
+
+    payload: dict = field(default_factory=dict)
+
+    @classmethod
+    def create(  # type: ignore[override]
+        cls,
+        topic: str,
+        household_id: str,
+        user_id: str,
+        payload: dict | None = None,
+        causation_id: str | None = None,
+        causation_depth: int = 0,
+    ) -> "NotificationEvent":
+        return cls(
+            event_id=_new_event_id(),
+            topic=topic,
+            household_id=household_id,
+            user_id=user_id,
+            timestamp=_now_iso(),
+            causation_id=causation_id,
+            causation_depth=causation_depth,
+            payload=payload or {},
+        )
+
+
+@dataclass
 class DomainEvent(BaseEvent):
     """Internal side effect emitted after tool execution and autonomy confirmation.
 

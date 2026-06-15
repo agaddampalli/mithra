@@ -27,6 +27,39 @@ _logger = logging.getLogger(__name__)
 # Telegram helper — stdlib only, no httpx dependency
 # ---------------------------------------------------------------------------
 
+def _publish_notification_event(
+    user_id: str,
+    chat_id: str,
+    text: str,
+    household_id: str,
+) -> None:
+    """Fire-and-forget event bus publish alongside direct Telegram send.
+
+    Does NOT affect scheduler_log recording — that is handled by the caller.
+    Allows future subscribers (WhatsApp, push etc.) to also receive notifications.
+    No future.result() — never blocks the scheduler thread (LESSONS_LEARNED L-01).
+    """
+    from mithra.events.bus import get_event_bus, get_main_loop
+    from mithra.events.base import NotificationEvent
+    import asyncio
+
+    bus = get_event_bus()
+    loop = get_main_loop()
+    if not bus or not loop:
+        return
+
+    try:
+        evt = NotificationEvent.create(
+            topic="notification.telegram.send",
+            household_id=household_id,
+            user_id=user_id,
+            payload={"chat_id": chat_id, "text": text},
+        )
+        asyncio.run_coroutine_threadsafe(bus.publish(evt), loop)
+    except Exception as exc:
+        _logger.warning("_publish_notification_event failed: %s", exc)
+
+
 def _send_telegram(bot_token: str, chat_id: str, text: str) -> bool:
     """Send a Telegram message. Returns True on success."""
     if not bot_token or not chat_id:
@@ -209,6 +242,7 @@ def job_morning_briefing(state: dict) -> None:
                     continue
                 if _send_telegram(bot_token, cid, msg):
                     _record_sent(conn, "morning_briefing", "daily", uid)
+                    _publish_notification_event(uid, cid, msg, household_id)
 
     except Exception as exc:
         _logger.error("morning_briefing job failed: %s", exc, exc_info=True)
@@ -282,6 +316,7 @@ def job_deadline_alerts(state: dict) -> None:
                             conn, "deadline_alert", task_id, uid,
                             {"title": title, "due_date": due_date},
                         )
+                        _publish_notification_event(uid, cid, msg, household_id)
 
     except Exception as exc:
         _logger.error("deadline_alerts job failed: %s", exc, exc_info=True)
@@ -341,6 +376,7 @@ def job_waiting_followup(state: dict) -> None:
                             conn, "waiting_followup", task_id, uid,
                             {"title": title},
                         )
+                        _publish_notification_event(uid, cid, msg, household_id)
 
     except Exception as exc:
         _logger.error("waiting_followup job failed: %s", exc, exc_info=True)
@@ -407,6 +443,7 @@ def job_weekly_summary(state: dict) -> None:
                     continue
                 if _send_telegram(bot_token, cid, msg):
                     _record_sent(conn, "weekly_summary", "weekly", uid)
+                    _publish_notification_event(uid, cid, msg, household_id)
 
     except Exception as exc:
         _logger.error("weekly_summary job failed: %s", exc, exc_info=True)
@@ -494,6 +531,7 @@ def job_auto_promote(state: dict) -> None:
                             conn, "auto_promotion", task_id, uid,
                             {"title": title, "due_date": due_date},
                         )
+                        _publish_notification_event(uid, cid, msg, household_id)
 
     except Exception as exc:
         _logger.error("auto_promote job failed: %s", exc, exc_info=True)

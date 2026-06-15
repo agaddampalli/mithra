@@ -346,6 +346,20 @@ async def build_state(
     set_event_bus(event_bus)       # process-level singleton
     state["event_bus"] = event_bus  # kept for gateway lifespan start/stop
 
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if bot_token:
+        from mithra.events.handlers.notification_handler import TelegramNotificationHandler
+        notif_handler = TelegramNotificationHandler(
+            bot_token=bot_token,
+            db_path=local_adapter.db_path,
+        )
+        for pattern in notif_handler.topic_patterns:
+            event_bus.subscribe(pattern, notif_handler)
+        _logger.info(
+            "TelegramNotificationHandler registered for: %s",
+            notif_handler.topic_patterns,
+        )
+
     from mithra.identity.member_registry import MemberRegistry
     member_registry = MemberRegistry(local_adapter.db_path, household_id)
     state["member_registry"] = member_registry

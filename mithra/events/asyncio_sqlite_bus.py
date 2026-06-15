@@ -35,6 +35,7 @@ from mithra.events.base import (
     BaseEvent,
     DomainEvent,
     InboundEvent,
+    NotificationEvent,
 )
 from mithra.events.bus import EventBus
 
@@ -315,6 +316,8 @@ class AsyncioSQLiteEventBus(EventBus):
             rows = conn.execute(
                 "SELECT * FROM events "
                 "WHERE processed=0 AND timestamp >= ? "
+                "AND error_count < 3 "
+                "AND topic NOT LIKE 'notification.%' "
                 "ORDER BY timestamp ASC",
                 (since,),
             ).fetchall()
@@ -338,6 +341,8 @@ def _reconstruct_event(payload_json: str) -> BaseEvent | None:
             return InboundEvent(**data)
         if topic.startswith("domain."):
             return DomainEvent(**data)
+        if topic.startswith("notification."):
+            return NotificationEvent(**data)
         return BaseEvent(**data)
     except Exception as exc:
         _logger.error("EventBus: failed to reconstruct event from JSON: %s", exc)
