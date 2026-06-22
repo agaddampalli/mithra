@@ -1,8 +1,8 @@
-# Mithra — Work Tracker (Updated 2026-06-14)
+# Mithra — Work Tracker (Updated 2026-06-21)
 
 ## SESSION HANDOFF (update after each session)
 
-Last updated: 2026-06-14
+Last updated: 2026-06-21
 
 ### Current State
   Stack: Docker Compose on Windows laptop
@@ -31,13 +31,20 @@ Last updated: 2026-06-14
   Section 15 ADR: COMPLETE 2026-06-14 — dependency management standards documented
               Three categories: request-scoped (DomainContext), process singletons
               (get_X()), config (household_config). Patch anti-pattern FORBIDDEN.
+  MES Phase 1: COMPLETE 2026-06-21 — MES-08 through MES-10 verified end-to-end
+              TelegramNotificationHandler (httpx async, chat_id lookup via member_channels)
+              NotificationEvent(BaseEvent) added; _publish_notification_event() fire-and-forget
+              wired into all 5 scheduler jobs alongside unchanged direct _send_telegram()
+              replay_failed() filters notification.* + error_count >= 3
+              Verified: scheduler_log both members recorded, events table processed=1
+              error_count=0, handler delivered to both chat_ids; 1196 tests passing
 
 ### In Progress
-  T9 — HA REST sensor wiring for tablet tiles
+  T9 — HA setup on personal Android tablet
 
 ### Immediate Next Steps
-  1. T9 — HA REST sensor wiring for /tasks/today + /tasks/overdue → tablet tiles
-  2. MES Phase 1 (MES-08 through MES-10) — notification refactor, TasksDomain events
+  1. HA setup on personal Android tablet
+  2. MES Phase 2 (MES-11 to MES-19) — Gmail InboundAdapter + email classifier
   3. People domain
 
 ### Key Decisions Made
@@ -656,14 +663,23 @@ Last updated: 2026-06-14
               replay (processed=0 events re-delivered on restart)
               49 tests passing
 
-  ### MES Phase 1 — Notification Refactor (after People domain)
-  [ ] MES-08  notification.* topic wired from TelegramOutputAdapter
-              DeliveryReceipt → publish notification.telegram.{sent|failed}
-  [ ] MES-09  DomainEvent emission from TasksDomain tools
-              task_create → domain.tasks.task_created
-              task_complete → domain.tasks.task_completed
-  [ ] MES-10  DomainEvent emission from TimeDomain tools
-              calendar_create_event → domain.time.appointment_created
+  ### MES Phase 1 — Notification Refactor (COMPLETE 2026-06-21)
+  [x] MES-08  TelegramNotificationHandler
+              mithra/events/handlers/notification_handler.py
+              Subscribes to notification.telegram.send
+              Delivers via httpx.AsyncClient (async-native, non-blocking)
+              chat_id: payload["chat_id"] → fallback event.user_id → member_channels DB lookup
+              Raises on HTTP error so bus logs error_count (ADR 14.7 error isolation)
+  [x] MES-09  NotificationEvent(BaseEvent) added to mithra/events/base.py
+              _publish_notification_event() fire-and-forget helper in task_scheduler.py
+              run_coroutine_threadsafe() — never blocks scheduler thread (LESSONS_LEARNED L-01)
+              Wired into all 5 scheduler jobs after _record_sent() succeeds
+              Existing _send_telegram() + scheduler_log path UNCHANGED (additive strategy)
+              bootstrap.py wires TelegramNotificationHandler when TELEGRAM_BOT_TOKEN set
+  [x] MES-10  replay_failed() filters notification.* topics (no duplicate sends on restart)
+              _load_unprocessed(): AND topic NOT LIKE 'notification.%' AND error_count < 3
+              _reconstruct_event(): notification.* → NotificationEvent
+              14 new tests, 1196 total passing
   [ ] MES-11  Cross-domain handler: tasks → time
               domain.tasks.task_overdue → calendar_create_event (time-block opt-in)
   [ ] MES-12  Cross-domain handler: time → tasks
