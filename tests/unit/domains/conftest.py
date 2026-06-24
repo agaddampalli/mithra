@@ -70,11 +70,14 @@ class TestDomain(Domain):
     def get_tools(self, context: DomainContext) -> list[ToolBundle]:
         return self._tools
 
-    async def get_dashboard_data(self, user_id: str, household_id: str) -> DashboardData:
-        from datetime import datetime, timezone
+    def get_dashboard_data(
+        self,
+        context: DomainContext,
+        scope_filter: str = "household",
+        viewer_user_id: str = "",
+    ) -> DashboardData:
         return DashboardData(
             domain=self._domain_id,
-            updated_at=datetime.now(timezone.utc).isoformat(),
             summary=f"{self._display_name} is running",
             items=[
                 DashboardItem(

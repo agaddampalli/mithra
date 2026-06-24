@@ -1,0 +1,80 @@
+# Household tablet dashboard — wall-mounted kiosk view
+# Tier 1: summary tiles (Tasks, Calendar, Routines)
+# Tier 2: tap-to-complete slot buttons (5 tasks, 5 routines)
+#
+# v1 limitation: fixed 5 slots per domain. Empty slots show blank.
+# Sensors defined in configuration.yaml template: block.
+
+title: Household
+views:
+  - title: Home
+    path: home
+    icon: mdi:home
+    cards:
+      # ── Tier 1: Summary grid ───────────────────────────────────────────────
+      - type: grid
+        columns: 3
+        square: false
+        cards:
+          - type: entity
+            entity: sensor.mithra_tasks_summary
+            name: Tasks
+            icon: mdi:checkbox-marked-circle-outline
+
+          - type: entity
+            entity: sensor.mithra_calendar_summary
+            name: Calendar
+            icon: mdi:calendar
+
+          - type: entity
+            entity: sensor.mithra_routines
+            name: Routines
+            icon: mdi:repeat
+
+      # ── Tier 2: Task slots ────────────────────────────────────────────────
+      - type: entities
+        title: Tasks — tap to complete
+        entities:
+          - entity: button.complete_task_slot_1
+            name: "{{ states('sensor.mithra_task_slot_1') or '(empty)' }}"
+            icon: mdi:checkbox-blank-circle-outline
+
+          - entity: button.complete_task_slot_2
+            name: "{{ states('sensor.mithra_task_slot_2') or '(empty)' }}"
+            icon: mdi:checkbox-blank-circle-outline
+
+          - entity: button.complete_task_slot_3
+            name: "{{ states('sensor.mithra_task_slot_3') or '(empty)' }}"
+            icon: mdi:checkbox-blank-circle-outline
+
+          - entity: button.complete_task_slot_4
+            name: "{{ states('sensor.mithra_task_slot_4') or '(empty)' }}"
+            icon: mdi:checkbox-blank-circle-outline
+
+          - entity: button.complete_task_slot_5
+            name: "{{ states('sensor.mithra_task_slot_5') or '(empty)' }}"
+            icon: mdi:checkbox-blank-circle-outline
+
+      # ── Tier 2: Routine slots ─────────────────────────────────────────────
+      - type: entities
+        title: Routines — tap to mark done
+        entities:
+          - entity: button.complete_routine_slot_1
+            name: "{{ states('sensor.mithra_routine_slot_1') or '(empty)' }}"
+            icon: mdi:repeat
+
+          - entity: button.complete_routine_slot_2
+            name: "{{ states('sensor.mithra_routine_slot_2') or '(empty)' }}"
+            icon: mdi:repeat
+
+          - entity: button.complete_routine_slot_3
+            name: "{{ states('sensor.mithra_routine_slot_3') or '(empty)' }}"
+            icon: mdi:repeat
+
+          - entity: button.complete_routine_slot_4
+            name: "{{ states('sensor.mithra_routine_slot_4') or '(empty)' }}"
+            icon: mdi:repeat
+
+          - entity: button.complete_routine_slot_5
+            name: "{{ states('sensor.mithra_routine_slot_5') or '(empty)' }}"
+            icon: mdi:repeat

@@ -10,12 +10,12 @@ Subscribes to: nothing (Time domain does not react to other domain events).
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+import sqlite3
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from mithra.domains.base import Domain
 from mithra.domains.dashboard import DashboardData, DashboardItem
-from mithra.domains.time.service import GoogleCalendarService
 
 if TYPE_CHECKING:
     from mithra.domains.bundle import ToolBundle
@@ -75,86 +75,75 @@ class TimeDomain(Domain):
     # Dashboard
     # ------------------------------------------------------------------
 
-    async def get_dashboard_data(
+    def get_dashboard_data(
         self,
-        user_id: str,
-        household_id: str,
+        context: "DomainContext",
+        scope_filter: str = "household",
+        viewer_user_id: str = "",
     ) -> DashboardData:
-        """Return today's events for HA Lovelace dashboard."""
-        updated_at = datetime.now(timezone.utc).isoformat()
+        """Return today's calendar events from local SQLite cache (ADR 16.2)."""
+        db_path = context.local_db_path
+        household_id = context.household_id or self._household_id
+        today = date.today().isoformat()
 
-        if self._oauth_manager is None:
+        if not db_path:
             return DashboardData(
                 domain="time",
-                updated_at=updated_at,
-                summary="Google Calendar not connected",
-                items=[],
-                alerts=["Send 'connect google' to Mithra to connect your calendar."],
-                quick_actions=[
-                    {"label": "Add event", "action": "calendar_create_event"},
-                ],
+                summary="Calendar unavailable",
+                error="No local database configured",
+                quick_actions=[{"label": "Add event", "action": "calendar_create_event"}],
             )
 
         try:
-            import asyncio
-            from mithra.domains.time.tools import _range_from_period, _format_event
+            scope_clause = ""
+            params: list = [household_id, f"{today}%"]
+            if scope_filter and scope_filter != "all":
+                scope_clause = "AND scope=?"
+                params.append(scope_filter)
 
-            # Fall back to household owner for dashboard polling (no user_id in GET)
-            uid = user_id or self._default_user_id
-
-            svc = GoogleCalendarService(
-                oauth_manager=self._oauth_manager,
-                household_id=household_id or self._household_id,
-                client_id=self._client_id,
-                client_secret=self._client_secret,
-                household_timezone=self._household_timezone,
-            )
-
-            start, end = _range_from_period("today", self._household_timezone)
-            events = await asyncio.to_thread(svc.list_events, uid, start, end)
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    f"""SELECT event_id, summary, start_time, end_time, scope
+                        FROM calendar_events
+                        WHERE household_id=?
+                          AND start_time LIKE ?
+                          {scope_clause}
+                        ORDER BY start_time ASC
+                        LIMIT 10""",
+                    params,
+                ).fetchall()
         except Exception as exc:
-            _logger.error("TimeDomain dashboard error: %s", exc, exc_info=True)
+            _logger.error("TimeDomain dashboard error: %s", exc)
             return DashboardData(
                 domain="time",
-                updated_at=updated_at,
                 summary="Calendar unavailable",
-                items=[],
-                alerts=[],
-                quick_actions=[
-                    {"label": "Today's briefing", "action": "calendar_daily_briefing"},
-                ],
+                error=str(exc),
+                quick_actions=[{"label": "Today's briefing", "action": "calendar_daily_briefing"}],
             )
 
-        now = datetime.now(timezone.utc)
         items: list[DashboardItem] = []
-        for ev in events:
-            ev_start = getattr(ev, "start", None)
-            priority = "normal"
-            if ev_start and isinstance(ev_start, datetime):
-                minutes_until = (ev_start - now).total_seconds() / 60
-                if 0 <= minutes_until <= 120:
-                    priority = "high"
-            items.append(
-                DashboardItem(
-                    id=getattr(ev, "id", ""),
-                    title=getattr(ev, "summary", "Untitled"),
-                    subtitle=_format_event(ev, self._household_timezone),
-                    icon="mdi:calendar",
-                    priority=priority,
-                    action="calendar_read_events",
-                )
-            )
+        for r in rows:
+            start_label = r["start_time"][:16] if r["start_time"] else ""
+            items.append(DashboardItem(
+                id=r["event_id"],
+                title=r["summary"] or "Untitled",
+                domain="time",
+                subtitle=start_label,
+                icon="mdi:calendar",
+                priority="normal",
+                scope=r["scope"] or "household",
+                action="calendar_read_events",
+            ))
 
-        count = len(events)
+        count = len(items)
         label = "event" if count == 1 else "events"
         summary = f"{count} {label} today" if count else "Nothing scheduled today"
 
         return DashboardData(
             domain="time",
-            updated_at=updated_at,
             summary=summary,
             items=items,
-            alerts=[],
             quick_actions=[
                 {"label": "Add event", "action": "calendar_create_event"},
                 {"label": "Today's briefing", "action": "calendar_daily_briefing"},

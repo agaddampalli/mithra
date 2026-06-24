@@ -26,7 +26,33 @@ from mithra.domains.bundle import PermissionTier, ToolBundle, ToolMetadata
 from mithra.domains.context import DomainContext
 from mithra.domains.result import DomainEvent, ToolResult
 
+import sqlite3 as _sqlite3
+
 _logger = logging.getLogger(__name__)
+
+
+def _complete_task_by_id(
+    conn: "_sqlite3.Connection", task_id: str, household_id: str
+) -> dict:
+    """Mark a task done by ID. Returns {"status": "done"|"already_done"|"not_found", "title": str}.
+
+    Caller opens the connection and handles commit/rollback. Idempotent.
+    """
+    conn.row_factory = _sqlite3.Row
+    row = conn.execute(
+        "SELECT id, title, status FROM tasks WHERE id=? AND household_id=?",
+        (task_id, household_id),
+    ).fetchone()
+    if not row:
+        return {"status": "not_found", "title": ""}
+    if row["status"] == "done":
+        return {"status": "already_done", "title": row["title"]}
+    ts = now_iso()
+    conn.execute(
+        "UPDATE tasks SET status='done', completed_at=?, updated_at=? WHERE id=?",
+        (ts, ts, row["id"]),
+    )
+    return {"status": "done", "title": row["title"]}
 
 
 # ---------------------------------------------------------------------------
@@ -658,8 +684,6 @@ class TaskCompleteTool(BaseTool):
         object.__setattr__(self, "_ctx", context)
 
     def _run(self, task_id: str = "", title_match: str = "") -> ToolResult:
-        import sqlite3
-
         ctx = self._ctx
         if not ctx.local_db_path:
             return ToolResult.fail("Tasks storage not available.", error_code="NO_DB_PATH")
@@ -667,34 +691,32 @@ class TaskCompleteTool(BaseTool):
         if not task_id and not title_match:
             return ToolResult.fail("Provide task_id or title_match to identify the task.")
 
-        now = now_iso()
-
         try:
-            with sqlite3.connect(ctx.local_db_path) as conn:
-                conn.row_factory = sqlite3.Row
+            with _sqlite3.connect(ctx.local_db_path) as conn:
                 if task_id:
-                    row = conn.execute(
-                        "SELECT id, title FROM tasks WHERE id=? AND household_id=?",
-                        (task_id, ctx.household_id),
-                    ).fetchone()
+                    result = _complete_task_by_id(conn, task_id, ctx.household_id)
+                    if result["status"] == "not_found":
+                        return ToolResult.fail(f"Task not found: {task_id}")
+                    tid, title = task_id, result["title"]
                 else:
+                    conn.row_factory = _sqlite3.Row
                     row = conn.execute(
                         "SELECT id, title FROM tasks WHERE household_id=? AND LOWER(title) LIKE ? AND status NOT IN ('done','cancelled') LIMIT 1",
                         (ctx.household_id, f"%{title_match.lower()}%"),
                     ).fetchone()
-
-                if not row:
-                    return ToolResult.fail(f"Task not found: {task_id or title_match}")
-
-                tid, title = row["id"], row["title"]
-                conn.execute(
-                    "UPDATE tasks SET status='done', completed_at=?, updated_at=? WHERE id=?",
-                    (now, now, tid),
-                )
+                    if not row:
+                        return ToolResult.fail(f"Task not found: {title_match}")
+                    tid, title = row["id"], row["title"]
+                    now = now_iso()
+                    conn.execute(
+                        "UPDATE tasks SET status='done', completed_at=?, updated_at=? WHERE id=?",
+                        (now, now, tid),
+                    )
         except Exception as exc:
             _logger.error("task_complete DB error", exc_info=True)
             return ToolResult.fail("Could not complete task.", error=str(exc))
 
+        now = now_iso()
         _logger.info("task_complete: %s title=%r", tid, title)
         return ToolResult.ok(
             f"✓ {title}",

@@ -1,4 +1,4 @@
-# Mithra — Work Tracker (Updated 2026-06-21)
+# Mithra — Work Tracker (Updated 2026-06-24)
 
 ## SESSION HANDOFF (update after each session)
 
@@ -38,15 +38,26 @@ Last updated: 2026-06-21
               replay_failed() filters notification.* + error_count >= 3
               Verified: scheduler_log both members recorded, events table processed=1
               error_count=0, handler delivered to both chat_ids; 1196 tests passing
+  HA-01 to HA-06, HA-08, HA-09: COMPLETE 2026-06-24
+              DashboardAlert added; DashboardItem/DashboardData updated (ADR 16.2)
+              Domain ABC signature changed: sync, context-based (scope_filter, viewer_user_id)
+              TasksDomain + TimeDomain implementations updated
+              TimeDomain dashboard now uses SQLite calendar_events (not Google Calendar API)
+              _complete_task_by_id() extracted; POST /api/v1/tasks/{task_id}/complete added
+              GET /api/v1/dashboard aggregator added (never 500)
+              homeassistant container profiles:voice removed, config volume added
+              homeassistant_config/configuration.yaml + dashboards/household_tablet.yaml created
+              1359 tests passing (43 pre-existing failures, no regressions)
 
 ### In Progress
-  T9 — HA setup on personal Android tablet
+  HA-07 (manual Cloudflare steps) + HA-10 manual DoD verification
 
 ### Immediate Next Steps
-  1. HA Setup on personal Android tablet ← NEXT
-  2. MES Phase 2 (MES-11 to MES-19, Gmail)
-  3. People domain
-  4. MES Phase 3 (MES-20-25, deferred cross-domain
+  1. HA-07 Cloudflare tunnel + Access for home.mithra-app.com (manual)
+  2. HA-10 Manual DoD verification (tablet hardware test)
+  3. MES Phase 2 (MES-11 to MES-19, Gmail)
+  4. People domain
+  5. MES Phase 3 (MES-20-25, deferred cross-domain
      + Travel/Money handlers + WhatsApp)
 
 ### Key Decisions Made
@@ -769,44 +780,38 @@ Last updated: 2026-06-21
   ADR: docs/ARCHITECTURE_DECISIONS.md section 16
 
 ### Tasks
-  [x] HA-00 ADR section 16 committed ← this commit
-  [ ] HA-01 mithra/domains/dashboard.py
+  [x] HA-00 ADR section 16 committed
+  [x] HA-01 mithra/domains/dashboard.py
               DashboardItem, DashboardAlert, DashboardData
               dataclasses per ADR 16.2
               Domain ABC gains get_dashboard_data()
               abstract method (additive to existing
               get_tools())
-  [ ] HA-02 TasksDomain.get_dashboard_data() refactored
+  [x] HA-02 TasksDomain.get_dashboard_data() refactored
               to return DashboardData per contract.
               Existing GET /api/v1/dashboard/tasks
               continues to work unchanged (kept for
               direct domain testing).
-  [ ] HA-03 TimeDomain.get_dashboard_data() — NEW.
-              Tier 1: next upcoming event (title, time)
-              Tier 2: today's events list (read-only,
-              no action — calendar events aren't
-              "completed" the way tasks/routines are)
-              Empty state: "Nothing on your calendar today."
-              (per Section 12 response standards)
-  [ ] HA-04 GET /api/v1/dashboard aggregator endpoint
+  [x] HA-03 TimeDomain.get_dashboard_data() — SQLite-based.
+              Queries calendar_events table (col: summary).
+              Tier 1: event count, Tier 2: today's list.
+              No Google Calendar API on the dashboard path.
+  [x] HA-04 GET /api/v1/dashboard aggregator endpoint
               in mithra/api/gateway.py
               scope=household|personal&user_id=
               Loops domain registry, try/except per domain,
-              returns partial result + errors[] on failure
-              Added to auth-exclusion list alongside
-              existing /api/v1/dashboard/* routes
-  [ ] HA-05 POST /api/v1/tasks/{task_id}/complete
+              returns partial result + error field on failure.
+              Never 500.
+  [x] HA-05 POST /api/v1/tasks/{task_id}/complete
               Direct SQLite UPDATE status='done',
-              no LLM, no conversation_state involvement
-              Idempotent: already-done task returns
-              {"status": "already_done"} not an error
-              Added to auth-exclusion list
-  [ ] HA-06 Enable homeassistant container in compose.yaml
-              Remove or extend the `profiles: [voice]`
-              gate so it starts with the default profile
-              Verify healthcheck passes:
-                docker compose up -d homeassistant
-                curl http://localhost:8123/api/
+              no LLM, no conversation_state involvement.
+              _complete_task_by_id() extracted from
+              TaskCompleteTool and used by both.
+              Idempotent: already-done returns
+              {"status": "already_done"} not an error.
+  [x] HA-06 Enable homeassistant container in compose.yaml
+              profiles: [voice] removed.
+              volumes: ./homeassistant_config:/config added.
   [ ] HA-07 Unified Cloudflare access for HA's web UI
               (MANUAL — Cloudflare dashboard + cloudflared
               config, not Claude Code):
@@ -835,21 +840,19 @@ Last updated: 2026-06-21
                 can use http://<LAN-IP>:8123 temporarily
                 during development if HA-07 isn't done yet,
                 then switch to home.mithra-app.com once ready
-  [ ] HA-08 HA REST sensors (configuration.yaml or UI):
-              rest: platform pointing to
-              https://assistant.mithra-app.com/api/v1/dashboard
-              ?scope=household
-              headers: CF-Access-Client-Id/Secret
-              scan_interval: 60 (per WC6 guidance)
-              json_attributes_path per domain in response
-  [ ] HA-09 Lovelace dashboard — household tablet view:
-              Tier 1 tiles: tasks today count, routines
-              X/Y done, next calendar event
-              Tier 2 lists: routine checklist (tap →
-              existing /routines/{id}/complete), task
-              list (tap → new /tasks/{id}/complete)
-              Household scope only (per earlier decision —
-              personal items deferred)
+  [x] HA-08 homeassistant_config/configuration.yaml
+              default_config, http trusted_proxies,
+              lovelace: mode: yaml, rest sensors polling
+              http://api-gateway:8000/api/v1/dashboard
+              (internal Docker DNS — never public hostname),
+              rest_commands for task/routine completion,
+              template sensors (slot 1-5 tasks + routines)
+              template button entities (complete slot N).
+  [x] HA-09 homeassistant_config/dashboards/household_tablet.yaml
+              Tier 1: 3-column grid (Tasks, Calendar, Routines)
+              Tier 2: 5 task slots + 5 routine slots,
+              tap-to-complete button entities.
+              v1 known limit: fixed 5 slots, empty = blank.
   [ ] HA-10 Manual DoD verification:
               [ ] Aggregator returns valid JSON for both
                   scope=household and scope=personal

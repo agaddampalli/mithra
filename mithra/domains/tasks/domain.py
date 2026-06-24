@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import TYPE_CHECKING
 
 from mithra.domains.base import Domain
-from mithra.domains.dashboard import DashboardData, DashboardItem
+from mithra.domains.dashboard import DashboardAlert, DashboardData, DashboardItem
 
 if TYPE_CHECKING:
     from mithra.domains.bundle import ToolBundle
@@ -56,32 +56,32 @@ class TasksDomain(Domain):
         from mithra.domains.tasks.tools import build_tasks_tools
         return build_tasks_tools(context)
 
-    async def get_dashboard_data(
+    def get_dashboard_data(
         self,
-        user_id: str,
-        household_id: str,
+        context: "DomainContext",
+        scope_filter: str = "household",
+        viewer_user_id: str = "",
     ) -> DashboardData:
-        now = datetime.now(timezone.utc).isoformat()
+        db_path = context.local_db_path or self._local_db_path
+        household_id = context.household_id or self._household_id
+        user_id = context.user_id or self._default_user_id
         today = date.today().isoformat()
 
-        if not self._local_db_path:
+        if not db_path:
             return DashboardData(
                 domain="tasks",
-                updated_at=now,
                 summary="Tasks (storage unavailable)",
-                items=[],
-                alerts=[],
+                error="No local database configured",
                 quick_actions=[{"label": "Add task", "action": "task_create"}],
             )
 
         try:
             items, alerts, routine_summary, active_count, urgent_count, overdue_count = (
-                self._load_dashboard(household_id, user_id, today)
+                self._load_dashboard(db_path, household_id, user_id, today, scope_filter)
             )
         except Exception as exc:
             _logger.warning("tasks dashboard query failed: %s", exc)
-            items, alerts, routine_summary = [], [], ""
-            active_count = urgent_count = overdue_count = 0
+            return DashboardData(domain="tasks", summary="Tasks unavailable", error=str(exc))
 
         parts = []
         if urgent_count:
@@ -97,7 +97,6 @@ class TasksDomain(Domain):
 
         return DashboardData(
             domain="tasks",
-            updated_at=now,
             summary=summary,
             items=items,
             alerts=alerts,
@@ -109,13 +108,13 @@ class TasksDomain(Domain):
         )
 
     def _load_dashboard(
-        self, household_id: str, user_id: str, today: str
-    ) -> tuple[list[DashboardItem], list[dict], str, int, int, int]:
+        self, db_path: str, household_id: str, user_id: str, today: str, scope_filter: str = "household"
+    ) -> tuple[list[DashboardItem], list[DashboardAlert], str, int, int, int]:
         items: list[DashboardItem] = []
-        alerts: list[dict] = []
+        alerts: list[DashboardAlert] = []
         routine_summary: str = ""
 
-        with sqlite3.connect(self._local_db_path) as conn:
+        with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
 
             # Top 10 active tasks ordered by priority + due date
@@ -132,7 +131,6 @@ class TasksDomain(Domain):
             ).fetchall()
 
             for r in rows:
-                overdue = bool(r["due_date"] and r["due_date"] < today)
                 subtitle = (
                     f"Due {r['due_date']}" if r["due_date"]
                     else (r["priority"] or "normal").title()
@@ -140,13 +138,13 @@ class TasksDomain(Domain):
                 items.append(DashboardItem(
                     id=r["id"],
                     title=r["title"],
+                    domain="tasks",
                     subtitle=subtitle,
                     icon="mdi:checkbox-marked-circle-outline",
                     priority="high" if r["priority"] == "urgent" else "normal",
+                    scope="household",
                     action="task_complete",
                 ))
-                if overdue:
-                    pass  # overdue surfaced via overdue_count alert below
 
             # Counts via direct SQL — not derived from the display slice above
             active_count = conn.execute(
@@ -170,11 +168,11 @@ class TasksDomain(Domain):
             ).fetchone()[0]
 
             if overdue_count:
-                alerts.append({
-                    "type": "overdue",
-                    "message": f"{overdue_count} task(s) are overdue",
-                    "severity": "high",
-                })
+                alerts.append(DashboardAlert(
+                    type="overdue",
+                    message=f"{overdue_count} task(s) are overdue",
+                    severity="high",
+                ))
 
             # Inbox accumulation alert (> 10 tasks sitting in inbox)
             inbox_count = conn.execute(
@@ -182,11 +180,11 @@ class TasksDomain(Domain):
                 (household_id,),
             ).fetchone()[0]
             if inbox_count > 10:
-                alerts.append({
-                    "type": "inbox_overload",
-                    "message": f"{inbox_count} tasks in inbox — consider reviewing",
-                    "severity": "low",
-                })
+                alerts.append(DashboardAlert(
+                    type="inbox_overload",
+                    message=f"{inbox_count} tasks in inbox — consider reviewing",
+                    severity="low",
+                ))
 
             # Routine summary — household routines done today
             try:
@@ -203,11 +201,11 @@ class TasksDomain(Domain):
                 if r_total > 0:
                     routine_summary = f"{r_done}/{r_total} routines done"
                     if r_done < r_total:
-                        alerts.append({
-                            "type": "routines_pending",
-                            "message": f"{r_total - r_done} routine(s) not done today",
-                            "severity": "low",
-                        })
+                        alerts.append(DashboardAlert(
+                            type="routines_pending",
+                            message=f"{r_total - r_done} routine(s) not done today",
+                            severity="low",
+                        ))
             except Exception:
                 pass  # routines table may not exist in older DBs
 

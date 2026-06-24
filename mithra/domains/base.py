@@ -42,13 +42,14 @@ class Domain(ABC):
         Max 8 tools per domain. Tools must be context-bound, not stateful."""
 
     @abstractmethod
-    async def get_dashboard_data(
+    def get_dashboard_data(
         self,
-        user_id: str,
-        household_id: str,
+        context: "DomainContext",
+        scope_filter: str = "household",
+        viewer_user_id: str = "",
     ) -> "DashboardData":
-        """Return standardized summary for HA Lovelace dashboard.
-        Called every 5 minutes by HA REST sensor."""
+        """Return standardized summary for HA Lovelace dashboard (ADR 16.2).
+        Sync — no I/O outside local SQLite. Called every 5 minutes by HA REST sensor."""
 
     def get_context_keys(self) -> list[str]:
         """Memory domains to load for context assembly.

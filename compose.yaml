@@ -203,12 +203,13 @@ services:
 
   # ── Home Assistant Core ─────────────────────────────────
   homeassistant:
-    profiles: [voice]
     image: ghcr.io/home-assistant/home-assistant:stable
     ports:
       - "8123:8123"
     environment:
       - TZ=${TZ:-America/Chicago}
+    volumes:
+      - ./homeassistant_config:/config
     networks:
       - mithra-net
     restart: unless-stopped

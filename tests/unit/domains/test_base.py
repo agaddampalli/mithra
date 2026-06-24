@@ -30,10 +30,11 @@ class TestDomainABC:
         bundles = test_domain.get_tools(domain_context)
         assert len(bundles) == 2
 
-    @pytest.mark.asyncio
-    async def test_get_dashboard_data(self, test_domain):
-        data = await test_domain.get_dashboard_data(
-            user_id="usr_ba6d9199", household_id="hh_b76fef08"
+    def test_get_dashboard_data(self, test_domain, domain_context):
+        data = test_domain.get_dashboard_data(
+            context=domain_context,
+            scope_filter="household",
+            viewer_user_id="usr_ba6d9199",
         )
         assert data.domain == "test"
         assert data.summary

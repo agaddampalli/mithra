@@ -2,14 +2,66 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+import sqlite3
+import tempfile
+from datetime import date
 
 import pytest
 
+from mithra.domains.context import DomainContext
 from mithra.domains.time.domain import TimeDomain
 
-from tests.unit.domains.time.conftest import MockCalendarService, _FakeEvent
+
+def _make_ctx(db_path: str = "", household_id: str = "hh_b76fef08") -> DomainContext:
+    return DomainContext(
+        user_id="usr_ba6d9199",
+        household_id=household_id,
+        household_timezone="America/Chicago",
+        oauth_manager=None,
+        storage_adapter=None,
+        file_router=None,
+        member_registry=None,
+        file_search=None,
+        request_id="req_test",
+        channel="ha",
+        local_db_path=db_path,
+    )
+
+
+def _create_events_db(path: str, hid: str, events: list[dict]) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS calendar_events (
+                event_id TEXT PRIMARY KEY,
+                user_id TEXT,
+                household_id TEXT,
+                summary TEXT,
+                start_time TEXT,
+                end_time TEXT,
+                is_recurring INTEGER DEFAULT 0,
+                source TEXT,
+                scope TEXT DEFAULT 'household',
+                calendar_id TEXT,
+                raw_json TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )"""
+        )
+        today = date.today().isoformat()
+        for ev in events:
+            conn.execute(
+                """INSERT OR REPLACE INTO calendar_events
+                   (event_id, user_id, household_id, summary, start_time, end_time, scope, source, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    ev["id"], ev.get("user_id", "usr_ba6d9199"), hid,
+                    ev["summary"],
+                    ev.get("start_time", f"{today}T10:00:00"),
+                    ev.get("end_time", f"{today}T11:00:00"),
+                    ev.get("scope", "household"),
+                    "mithra", today, today,
+                ),
+            )
 
 
 class TestTimeDomainIdentity:
@@ -44,53 +96,61 @@ class TestTimeDomainTools:
 
 
 class TestTimeDomainDashboard:
-    @pytest.mark.asyncio
-    async def test_dashboard_no_oauth_returns_alert(self):
-        d = TimeDomain(oauth_manager=None, household_timezone="America/Chicago")
-        data = await d.get_dashboard_data("usr_ba6d9199", "hh_b76fef08")
+    def test_dashboard_no_db_returns_error(self):
+        d = TimeDomain()
+        ctx = _make_ctx(db_path="")
+        data = d.get_dashboard_data(ctx)
         assert data.domain == "time"
-        assert len(data.alerts) > 0
+        assert data.error is not None
 
-    @pytest.mark.asyncio
-    async def test_dashboard_with_events(self, mock_oauth):
-        from mithra.domains.time.tools import _range_from_period
-        today_start, _ = _range_from_period("today", "America/Chicago")
-        events = [
-            _FakeEvent(
-                "e1", "Dentist",
-                today_start + timedelta(hours=10),
-                today_start + timedelta(hours=11),
-            ),
-        ]
-        svc = MockCalendarService(events=events)
-        d = TimeDomain(oauth_manager=mock_oauth, household_timezone="America/Chicago")
-        with patch("mithra.domains.time.domain.GoogleCalendarService", return_value=svc):
-            data = await d.get_dashboard_data("usr_ba6d9199", "hh_b76fef08")
+    def test_dashboard_with_events(self):
+        d = TimeDomain(household_id="hh_b76fef08")
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        _create_events_db(db_path, "hh_b76fef08", [
+            {"id": "evt_001", "summary": "Dentist"},
+            {"id": "evt_002", "summary": "Gym"},
+        ])
+        ctx = _make_ctx(db_path=db_path)
+        data = d.get_dashboard_data(ctx)
         assert data.domain == "time"
-        assert "1 event" in data.summary
+        assert "2 events" in data.summary
+        assert len(data.items) == 2
 
-    @pytest.mark.asyncio
-    async def test_dashboard_empty_calendar(self, mock_oauth):
-        svc = MockCalendarService(events=[])
-        d = TimeDomain(oauth_manager=mock_oauth, household_timezone="America/Chicago")
-        with patch("mithra.domains.time.domain.GoogleCalendarService", return_value=svc):
-            data = await d.get_dashboard_data("usr_ba6d9199", "hh_b76fef08")
+    def test_dashboard_empty_calendar(self):
+        d = TimeDomain()
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        _create_events_db(db_path, "hh_b76fef08", [])
+        ctx = _make_ctx(db_path=db_path)
+        data = d.get_dashboard_data(ctx)
         assert "Nothing" in data.summary
 
-    @pytest.mark.asyncio
-    async def test_dashboard_error_returns_safe_fallback(self, mock_oauth):
-        bad_svc = MockCalendarService()
-        bad_svc.list_events = lambda *a, **k: (_ for _ in ()).throw(Exception("boom"))
-        d = TimeDomain(oauth_manager=mock_oauth, household_timezone="America/Chicago")
-        with patch("mithra.domains.time.domain.GoogleCalendarService", return_value=bad_svc):
-            data = await d.get_dashboard_data("usr_ba6d9199", "hh_b76fef08")
+    def test_dashboard_bad_db_returns_safe_fallback(self):
+        d = TimeDomain()
+        ctx = _make_ctx(db_path="/tmp/does_not_exist_mithra_test.db")
+        data = d.get_dashboard_data(ctx)
         assert data.domain == "time"
         assert "unavailable" in data.summary.lower()
 
-    @pytest.mark.asyncio
-    async def test_dashboard_has_quick_actions(self, mock_oauth):
-        svc = MockCalendarService(events=[])
-        d = TimeDomain(oauth_manager=mock_oauth, household_timezone="America/Chicago")
-        with patch("mithra.domains.time.domain.GoogleCalendarService", return_value=svc):
-            data = await d.get_dashboard_data("usr_ba6d9199", "hh_b76fef08")
+    def test_dashboard_has_quick_actions(self):
+        d = TimeDomain()
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        _create_events_db(db_path, "hh_b76fef08", [])
+        ctx = _make_ctx(db_path=db_path)
+        data = d.get_dashboard_data(ctx)
         assert len(data.quick_actions) >= 1
+
+    def test_dashboard_items_have_domain_and_scope(self):
+        d = TimeDomain()
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        _create_events_db(db_path, "hh_b76fef08", [
+            {"id": "evt_001", "summary": "Meeting", "scope": "household"},
+        ])
+        ctx = _make_ctx(db_path=db_path)
+        data = d.get_dashboard_data(ctx)
+        assert len(data.items) == 1
+        assert data.items[0].domain == "time"
+        assert data.items[0].scope == "household"

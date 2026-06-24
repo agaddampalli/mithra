@@ -395,40 +395,130 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             ),
         }
 
-    @app.get("/api/v1/dashboard/today")
-    async def get_today_dashboard(request: Request, user_id: str = ""):
-        """Return aggregated dashboard data across all registered domains. Unauthenticated."""
+    @app.get("/api/v1/dashboard")
+    async def get_dashboard(scope: str = "household", user_id: str = ""):
+        """Aggregated dashboard across all domains. Unauthenticated — HA REST sensor path."""
+        from dataclasses import asdict
+        from mithra.domains.context import DomainContext
+        from mithra.domains.dashboard import DashboardData
+
         registry = _state.get("domain_registry")
         if registry is None:
-            raise HTTPException(status_code=503, detail="Domain registry not available")
+            return JSONResponse({"error": "Domain registry not available"}, status_code=503)
+
         hid = _state.get("household_id", "")
         uid = user_id or _state.get("default_user_id", "") or hid
-        from dataclasses import asdict
+        local_adapter = _state.get("local_adapter")
+
+        ctx = DomainContext(
+            user_id=uid,
+            household_id=hid,
+            household_timezone=_state.get("household_timezone", "UTC"),
+            oauth_manager=_state.get("oauth_manager"),
+            storage_adapter=None,
+            file_router=None,
+            member_registry=_state.get("member_registry"),
+            file_search=None,
+            request_id="dashboard",
+            channel="ha",
+            local_db_path=local_adapter.db_path if local_adapter else "",
+        )
+
         results = []
         for domain_id in registry.get_all_domain_ids():
             domain = registry.get(domain_id)
             if domain is None:
                 continue
             try:
-                data = await domain.get_dashboard_data(user_id=uid, household_id=hid)
+                data = domain.get_dashboard_data(ctx, scope_filter=scope, viewer_user_id=uid)
                 results.append(asdict(data))
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.warning("dashboard: domain %s failed: %s", domain_id, exc)
+                results.append(asdict(DashboardData(
+                    domain=domain_id,
+                    summary="Unavailable",
+                    error=str(exc),
+                )))
+        return results
+
+    @app.get("/api/v1/dashboard/today")
+    async def get_today_dashboard(request: Request, user_id: str = ""):
+        """Aggregated dashboard — alias kept for backward compat. Unauthenticated."""
+        from dataclasses import asdict
+        from mithra.domains.context import DomainContext
+        from mithra.domains.dashboard import DashboardData
+
+        registry = _state.get("domain_registry")
+        if registry is None:
+            raise HTTPException(status_code=503, detail="Domain registry not available")
+
+        hid = _state.get("household_id", "")
+        uid = user_id or _state.get("default_user_id", "") or hid
+        local_adapter = _state.get("local_adapter")
+
+        ctx = DomainContext(
+            user_id=uid,
+            household_id=hid,
+            household_timezone=_state.get("household_timezone", "UTC"),
+            oauth_manager=_state.get("oauth_manager"),
+            storage_adapter=None,
+            file_router=None,
+            member_registry=_state.get("member_registry"),
+            file_search=None,
+            request_id="dashboard",
+            channel="ha",
+            local_db_path=local_adapter.db_path if local_adapter else "",
+        )
+
+        results = []
+        for domain_id in registry.get_all_domain_ids():
+            domain = registry.get(domain_id)
+            if domain is None:
+                continue
+            try:
+                data = domain.get_dashboard_data(ctx, scope_filter="household", viewer_user_id=uid)
+                results.append(asdict(data))
+            except Exception as exc:
+                _logger.warning("dashboard/today: domain %s failed: %s", domain_id, exc)
+                results.append(asdict(DashboardData(
+                    domain=domain_id,
+                    summary="Unavailable",
+                    error=str(exc),
+                )))
         return results
 
     @app.get("/api/v1/dashboard/{domain_id}")
-    async def get_domain_dashboard(domain_id: str, request: Request, user_id: str = ""):
+    async def get_domain_dashboard(domain_id: str, request: Request, user_id: str = "", scope: str = "household"):
         """Return dashboard data for a single domain. Unauthenticated."""
+        from dataclasses import asdict
+        from mithra.domains.context import DomainContext
+
         registry = _state.get("domain_registry")
         if registry is None:
             raise HTTPException(status_code=503, detail="Domain registry not available")
         domain = registry.get(domain_id)
         if domain is None:
             raise HTTPException(status_code=404, detail=f"Domain '{domain_id}' not registered")
+
         hid = _state.get("household_id", "")
         uid = user_id or _state.get("default_user_id", "") or hid
-        from dataclasses import asdict
-        data = await domain.get_dashboard_data(user_id=uid, household_id=hid)
+        local_adapter = _state.get("local_adapter")
+
+        ctx = DomainContext(
+            user_id=uid,
+            household_id=hid,
+            household_timezone=_state.get("household_timezone", "UTC"),
+            oauth_manager=_state.get("oauth_manager"),
+            storage_adapter=None,
+            file_router=None,
+            member_registry=_state.get("member_registry"),
+            file_search=None,
+            request_id="dashboard",
+            channel="ha",
+            local_db_path=local_adapter.db_path if local_adapter else "",
+        )
+
+        data = domain.get_dashboard_data(ctx, scope_filter=scope, viewer_user_id=uid)
         return asdict(data)
 
     # Generic OAuth routes — works for any configured provider in OAUTH_PROVIDERS.
@@ -679,6 +769,34 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             return JSONResponse({"date": today, "tasks": rows, "count": len(rows)})
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=500)
+
+    @app.post("/api/v1/tasks/{task_id}/complete")
+    async def complete_task_by_id(task_id: str):
+        """Mark a task done via HTTP tap (HA tablet). No LLM — direct SQLite UPDATE.
+
+        Idempotent: returns {"status": "done"|"already_done"} on success.
+        Returns 404 when task_id is not found in this household.
+        """
+        import sqlite3 as _sql
+        from mithra.domains.tasks.tools import _complete_task_by_id
+
+        local_adapter = _state.get("local_adapter")
+        if not local_adapter:
+            return JSONResponse({"error": "Storage not available"}, status_code=503)
+
+        hid = _state.get("household_id", "")
+
+        try:
+            with _sql.connect(local_adapter.db_path) as conn:
+                result = _complete_task_by_id(conn, task_id, hid)
+        except Exception as exc:
+            _logger.error("complete_task_by_id DB error: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+        if result["status"] == "not_found":
+            return JSONResponse({"error": "Task not found"}, status_code=404)
+
+        return JSONResponse({"status": result["status"], "task": result["title"]})
 
     _DEBUG_MODE = os.environ.get("MITHRA_DEBUG", "").lower() == "true"
 

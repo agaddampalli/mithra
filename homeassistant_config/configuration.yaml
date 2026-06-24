@@ -1,0 +1,308 @@
+# Home Assistant configuration for Mithra household
+# No secrets or tokens in this file — it is git-tracked.
+# Cloudflare Access credentials belong in .env (never committed).
+
+default_config:
+
+# ── Reverse-proxy trust ──────────────────────────────────────────────────────
+# cloudflared sits in front of HA on home.mithra-app.com (ADR 16.5).
+# The Docker bridge subnet (172.18.0.0/16) is the trusted proxy range.
+http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - 172.18.0.0/16
+
+# ── Lovelace YAML mode ───────────────────────────────────────────────────────
+# mode: yaml disables UI editing; all cards are defined in dashboard files.
+lovelace:
+  mode: yaml
+  dashboards:
+    household-tablet:
+      mode: yaml
+      title: Household
+      filename: dashboards/household_tablet.yaml
+      show_in_sidebar: true
+      require_admin: false
+
+# ── REST sensors — poll Mithra api-gateway via internal Docker DNS ───────────
+# HA REST sensors NEVER use the public Cloudflare hostname (ADR 16.5).
+# The api-gateway container is reachable at http://api-gateway:8000/ on
+# the shared mithra-net Docker network.
+rest:
+  - resource: http://api-gateway:8000/api/v1/dashboard
+    scan_interval: 300
+    sensor:
+      - name: Mithra Dashboard
+        unique_id: mithra_dashboard
+        value_template: "ok"
+        json_attributes_template: "{{ {'domains': value_json} | to_json }}"
+
+  - resource: http://api-gateway:8000/api/v1/routines/today
+    scan_interval: 300
+    sensor:
+      - name: Mithra Routines
+        unique_id: mithra_routines
+        value_template: "{{ value_json.done_count }}/{{ value_json.total }} done"
+        json_attributes_template: "{{ value_json | to_json }}"
+
+# ── REST commands — HA tablet tap → Mithra api-gateway ──────────────────────
+rest_command:
+  mithra_complete_task:
+    url: "http://api-gateway:8000/api/v1/tasks/{{ task_id }}/complete"
+    method: post
+    content_type: "application/json"
+    payload: "{}"
+
+  mithra_complete_routine:
+    url: "http://api-gateway:8000/api/v1/routines/{{ routine_id }}/complete"
+    method: post
+    content_type: "application/json"
+    payload: "{}"
+
+# ── Template sensors — derive per-domain summaries and slot data ─────────────
+template:
+  - sensor:
+    # ── Tier 1: domain summary sensors ──────────────────────────────────────
+    - name: Mithra Tasks Summary
+      unique_id: mithra_tasks_summary
+      state: >-
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
+        {{ d.get('summary', 'unavailable') if d else 'unavailable' }}
+
+    - name: Mithra Calendar Summary
+      unique_id: mithra_calendar_summary
+      state: >-
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set d = doms | selectattr('domain', 'equalto', 'time') | list | first | default({}) %}
+        {{ d.get('summary', 'unavailable') if d else 'unavailable' }}
+
+    # ── Tier 2: task slot sensors (fixed 5 slots) ────────────────────────────
+    - name: Mithra Task Slot 1
+      unique_id: mithra_task_slot_1
+      state: >-
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
+        {% set items = d.get('items', []) if d else [] %}
+        {{ items[0].title if items | length > 0 else '' }}
+      attributes:
+        task_id: >-
+          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+          {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
+          {% set items = d.get('items', []) if d else [] %}
+          {{ items[0].id if items | length > 0 else '' }}
+
+    - name: Mithra Task Slot 2
+      unique_id: mithra_task_slot_2
+      state: >-
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
+        {% set items = d.get('items', []) if d else [] %}
+        {{ items[1].title if items | length > 1 else '' }}
+      attributes:
+        task_id: >-
+          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+          {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
+          {% set items = d.get('items', []) if d else [] %}
+          {{ items[1].id if items | length > 1 else '' }}
+
+    - name: Mithra Task Slot 3
+      unique_id: mithra_task_slot_3
+      state: >-
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
+        {% set items = d.get('items', []) if d else [] %}
+        {{ items[2].title if items | length > 2 else '' }}
+      attributes:
+        task_id: >-
+          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+          {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
+          {% set items = d.get('items', []) if d else [] %}
+          {{ items[2].id if items | length > 2 else '' }}
+
+    - name: Mithra Task Slot 4
+      unique_id: mithra_task_slot_4
+      state: >-
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
+        {% set items = d.get('items', []) if d else [] %}
+        {{ items[3].title if items | length > 3 else '' }}
+      attributes:
+        task_id: >-
+          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+          {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
+          {% set items = d.get('items', []) if d else [] %}
+          {{ items[3].id if items | length > 3 else '' }}
+
+    - name: Mithra Task Slot 5
+      unique_id: mithra_task_slot_5
+      state: >-
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
+        {% set items = d.get('items', []) if d else [] %}
+        {{ items[4].title if items | length > 4 else '' }}
+      attributes:
+        task_id: >-
+          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+          {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
+          {% set items = d.get('items', []) if d else [] %}
+          {{ items[4].id if items | length > 4 else '' }}
+
+    # ── Tier 2: routine slot sensors (fixed 5 slots) ─────────────────────────
+    - name: Mithra Routine Slot 1
+      unique_id: mithra_routine_slot_1
+      state: >-
+        {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+        {{ routines[0].title if routines | length > 0 else '' }}
+      attributes:
+        routine_id: >-
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {{ routines[0].id if routines | length > 0 else '' }}
+        done: >-
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {{ routines[0].done | default(0) if routines | length > 0 else 0 }}
+
+    - name: Mithra Routine Slot 2
+      unique_id: mithra_routine_slot_2
+      state: >-
+        {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+        {{ routines[1].title if routines | length > 1 else '' }}
+      attributes:
+        routine_id: >-
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {{ routines[1].id if routines | length > 1 else '' }}
+        done: >-
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {{ routines[1].done | default(0) if routines | length > 1 else 0 }}
+
+    - name: Mithra Routine Slot 3
+      unique_id: mithra_routine_slot_3
+      state: >-
+        {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+        {{ routines[2].title if routines | length > 2 else '' }}
+      attributes:
+        routine_id: >-
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {{ routines[2].id if routines | length > 2 else '' }}
+        done: >-
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {{ routines[2].done | default(0) if routines | length > 2 else 0 }}
+
+    - name: Mithra Routine Slot 4
+      unique_id: mithra_routine_slot_4
+      state: >-
+        {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+        {{ routines[3].title if routines | length > 3 else '' }}
+      attributes:
+        routine_id: >-
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {{ routines[3].id if routines | length > 3 else '' }}
+        done: >-
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {{ routines[3].done | default(0) if routines | length > 3 else 0 }}
+
+    - name: Mithra Routine Slot 5
+      unique_id: mithra_routine_slot_5
+      state: >-
+        {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+        {{ routines[4].title if routines | length > 4 else '' }}
+      attributes:
+        routine_id: >-
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {{ routines[4].id if routines | length > 4 else '' }}
+        done: >-
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {{ routines[4].done | default(0) if routines | length > 4 else 0 }}
+
+  - button:
+    # ── Task completion buttons ───────────────────────────────────────────────
+    - name: Complete Task Slot 1
+      unique_id: complete_task_slot_1
+      press:
+        - condition: template
+          value_template: "{{ state_attr('sensor.mithra_task_slot_1', 'task_id') not in ('', None) }}"
+        - service: rest_command.mithra_complete_task
+          data:
+            task_id: "{{ state_attr('sensor.mithra_task_slot_1', 'task_id') }}"
+
+    - name: Complete Task Slot 2
+      unique_id: complete_task_slot_2
+      press:
+        - condition: template
+          value_template: "{{ state_attr('sensor.mithra_task_slot_2', 'task_id') not in ('', None) }}"
+        - service: rest_command.mithra_complete_task
+          data:
+            task_id: "{{ state_attr('sensor.mithra_task_slot_2', 'task_id') }}"
+
+    - name: Complete Task Slot 3
+      unique_id: complete_task_slot_3
+      press:
+        - condition: template
+          value_template: "{{ state_attr('sensor.mithra_task_slot_3', 'task_id') not in ('', None) }}"
+        - service: rest_command.mithra_complete_task
+          data:
+            task_id: "{{ state_attr('sensor.mithra_task_slot_3', 'task_id') }}"
+
+    - name: Complete Task Slot 4
+      unique_id: complete_task_slot_4
+      press:
+        - condition: template
+          value_template: "{{ state_attr('sensor.mithra_task_slot_4', 'task_id') not in ('', None) }}"
+        - service: rest_command.mithra_complete_task
+          data:
+            task_id: "{{ state_attr('sensor.mithra_task_slot_4', 'task_id') }}"
+
+    - name: Complete Task Slot 5
+      unique_id: complete_task_slot_5
+      press:
+        - condition: template
+          value_template: "{{ state_attr('sensor.mithra_task_slot_5', 'task_id') not in ('', None) }}"
+        - service: rest_command.mithra_complete_task
+          data:
+            task_id: "{{ state_attr('sensor.mithra_task_slot_5', 'task_id') }}"
+
+    # ── Routine completion buttons ────────────────────────────────────────────
+    - name: Complete Routine Slot 1
+      unique_id: complete_routine_slot_1
+      press:
+        - condition: template
+          value_template: "{{ state_attr('sensor.mithra_routine_slot_1', 'routine_id') not in ('', None) }}"
+        - service: rest_command.mithra_complete_routine
+          data:
+            routine_id: "{{ state_attr('sensor.mithra_routine_slot_1', 'routine_id') }}"
+
+    - name: Complete Routine Slot 2
+      unique_id: complete_routine_slot_2
+      press:
+        - condition: template
+          value_template: "{{ state_attr('sensor.mithra_routine_slot_2', 'routine_id') not in ('', None) }}"
+        - service: rest_command.mithra_complete_routine
+          data:
+            routine_id: "{{ state_attr('sensor.mithra_routine_slot_2', 'routine_id') }}"
+
+    - name: Complete Routine Slot 3
+      unique_id: complete_routine_slot_3
+      press:
+        - condition: template
+          value_template: "{{ state_attr('sensor.mithra_routine_slot_3', 'routine_id') not in ('', None) }}"
+        - service: rest_command.mithra_complete_routine
+          data:
+            routine_id: "{{ state_attr('sensor.mithra_routine_slot_3', 'routine_id') }}"
+
+    - name: Complete Routine Slot 4
+      unique_id: complete_routine_slot_4
+      press:
+        - condition: template
+          value_template: "{{ state_attr('sensor.mithra_routine_slot_4', 'routine_id') not in ('', None) }}"
+        - service: rest_command.mithra_complete_routine
+          data:
+            routine_id: "{{ state_attr('sensor.mithra_routine_slot_4', 'routine_id') }}"
+
+    - name: Complete Routine Slot 5
+      unique_id: complete_routine_slot_5
+      press:
+        - condition: template
+          value_template: "{{ state_attr('sensor.mithra_routine_slot_5', 'routine_id') not in ('', None) }}"
+        - service: rest_command.mithra_complete_routine
+          data:
+            routine_id: "{{ state_attr('sensor.mithra_routine_slot_5', 'routine_id') }}"
