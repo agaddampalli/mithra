@@ -43,9 +43,11 @@ Last updated: 2026-06-21
   T9 — HA setup on personal Android tablet
 
 ### Immediate Next Steps
-  1. HA setup on personal Android tablet
-  2. MES Phase 2 (MES-11 to MES-19) — Gmail InboundAdapter + email classifier
+  1. HA Setup on personal Android tablet ← NEXT
+  2. MES Phase 2 (MES-11 to MES-19, Gmail)
   3. People domain
+  4. MES Phase 3 (MES-20-25, deferred cross-domain
+     + Travel/Money handlers + WhatsApp)
 
 ### Key Decisions Made
   - Mithra SQLite as source of truth (not Google Tasks)
@@ -680,11 +682,21 @@ Last updated: 2026-06-21
               _load_unprocessed(): AND topic NOT LIKE 'notification.%' AND error_count < 3
               _reconstruct_event(): notification.* → NotificationEvent
               14 new tests, 1196 total passing
-  [ ] MES-11  Cross-domain handler: tasks → time
-              domain.tasks.task_overdue → calendar_create_event (time-block opt-in)
-  [ ] MES-12  Cross-domain handler: time → tasks
-              domain.time.appointment_created → task_create (prep task opt-in)
   [ ] MES-13  Integration tests: event published → handler invoked → domain action
+
+  NOTE on domain event publishing parity:
+    Only calendar_create_event and calendar_delete_event
+    currently publish domain.time.* events (MES-06 proof
+    of mechanism). No Tasks domain tool publishes
+    domain.tasks.* events yet, and nothing subscribes to
+    either topic family today — that is intentional.
+    Publishing parity for the remaining Time tools and
+    all Tasks tools is deferred until a real consumer
+    requires it. The natural pull-in point is MES-15
+    (TasksDomain.create_task_internal) during Gmail
+    Phase 2 — add domain.tasks.task_created publishing
+    there, driven by the first real subscriber, rather
+    than backfilling all tools speculatively now.
 
   ### MES Phase 2 — Gmail Integration
   [ ] MES-14  GmailInboundAdapter
@@ -711,6 +723,16 @@ Last updated: 2026-06-21
   [ ] MES-21  Money domain: domain.money.expense_recorded fan-out handler
   [ ] MES-22  HA sensor handler: inbound.ha_sensor.* → domain tools
   [ ] MES-23  RedisEventBus adapter (swap AsyncioSQLiteEventBus when needed)
+  [ ] MES-24 (deferred) Cross-domain handler: tasks → time
+              domain.tasks.task_overdue → calendar_create_event
+              (time-block opt-in). Build ONLY when there is a
+              concrete decision that overdue tasks should
+              auto-create calendar blocks. No subscriber exists
+              today. Do not implement speculatively.
+  [ ] MES-25 (deferred) Cross-domain handler: time → tasks
+              domain.time.event_created → auto-create prep tasks.
+              Build ONLY when a concrete feature requires it
+              (e.g. Travel domain pre-trip checklist).
 
 ---
 
