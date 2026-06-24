@@ -38,12 +38,13 @@ rest:
         json_attributes_template: "{{ {'domains': value_json} | to_json }}"
 
   - resource: http://api-gateway:8000/api/v1/routines/today
-    scan_interval: 300
+    scan_interval: 60
     sensor:
       - name: Mithra Routines
         unique_id: mithra_routines
-        value_template: "{{ value_json.done_count }}/{{ value_json.total }} done"
-        json_attributes_template: "{{ value_json | to_json }}"
+        value_template: "{{ value_json.done_count }}/{{ value_json.total }}"
+        json_attributes:
+          - routines
 
 # ── REST commands — HA tablet tap → Mithra api-gateway ──────────────────────
 rest_command:
@@ -149,69 +150,85 @@ template:
           {{ items[4].id if items | length > 4 else '' }}
 
     # ── Tier 2: routine slot sensors (fixed 5 slots) ─────────────────────────
+    # | default([]) only catches undefined, not None — use explicit is not none guard.
     - name: Mithra Routine Slot 1
       unique_id: mithra_routine_slot_1
       state: >-
-        {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+        {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+        {% set routines = routines if routines is not none else [] %}
         {{ routines[0].title if routines | length > 0 else '' }}
       attributes:
         routine_id: >-
-          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+          {% set routines = routines if routines is not none else [] %}
           {{ routines[0].id if routines | length > 0 else '' }}
         done: >-
-          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+          {% set routines = routines if routines is not none else [] %}
           {{ routines[0].done | default(0) if routines | length > 0 else 0 }}
 
     - name: Mithra Routine Slot 2
       unique_id: mithra_routine_slot_2
       state: >-
-        {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+        {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+        {% set routines = routines if routines is not none else [] %}
         {{ routines[1].title if routines | length > 1 else '' }}
       attributes:
         routine_id: >-
-          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+          {% set routines = routines if routines is not none else [] %}
           {{ routines[1].id if routines | length > 1 else '' }}
         done: >-
-          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+          {% set routines = routines if routines is not none else [] %}
           {{ routines[1].done | default(0) if routines | length > 1 else 0 }}
 
     - name: Mithra Routine Slot 3
       unique_id: mithra_routine_slot_3
       state: >-
-        {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+        {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+        {% set routines = routines if routines is not none else [] %}
         {{ routines[2].title if routines | length > 2 else '' }}
       attributes:
         routine_id: >-
-          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+          {% set routines = routines if routines is not none else [] %}
           {{ routines[2].id if routines | length > 2 else '' }}
         done: >-
-          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+          {% set routines = routines if routines is not none else [] %}
           {{ routines[2].done | default(0) if routines | length > 2 else 0 }}
 
     - name: Mithra Routine Slot 4
       unique_id: mithra_routine_slot_4
       state: >-
-        {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+        {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+        {% set routines = routines if routines is not none else [] %}
         {{ routines[3].title if routines | length > 3 else '' }}
       attributes:
         routine_id: >-
-          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+          {% set routines = routines if routines is not none else [] %}
           {{ routines[3].id if routines | length > 3 else '' }}
         done: >-
-          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+          {% set routines = routines if routines is not none else [] %}
           {{ routines[3].done | default(0) if routines | length > 3 else 0 }}
 
     - name: Mithra Routine Slot 5
       unique_id: mithra_routine_slot_5
       state: >-
-        {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+        {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+        {% set routines = routines if routines is not none else [] %}
         {{ routines[4].title if routines | length > 4 else '' }}
       attributes:
         routine_id: >-
-          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+          {% set routines = routines if routines is not none else [] %}
           {{ routines[4].id if routines | length > 4 else '' }}
         done: >-
-          {% set routines = state_attr('sensor.mithra_routines', 'routines') | default([]) %}
+          {% set routines = state_attr('sensor.mithra_routines', 'routines') %}
+          {% set routines = routines if routines is not none else [] %}
           {{ routines[4].done | default(0) if routines | length > 4 else 0 }}
 
   - button:
