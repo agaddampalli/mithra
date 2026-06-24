@@ -397,8 +397,13 @@ def create_app(state_override: dict | None = None) -> FastAPI:
 
     @app.get("/api/v1/dashboard")
     async def get_dashboard(scope: str = "household", user_id: str = ""):
-        """Aggregated dashboard across all domains. Unauthenticated — HA REST sensor path."""
+        """Aggregated dashboard across all domains. Unauthenticated — HA REST sensor path.
+
+        Response shape (ADR 16.3):
+            {"generated_at": ..., "scope": ..., "domains": [...], "errors": [...]}
+        """
         from dataclasses import asdict
+        from datetime import datetime, timezone as _tz
         from mithra.domains.context import DomainContext
         from mithra.domains.dashboard import DashboardData
 
@@ -424,22 +429,30 @@ def create_app(state_override: dict | None = None) -> FastAPI:
             local_db_path=local_adapter.db_path if local_adapter else "",
         )
 
-        results = []
+        domains_data = []
+        errors = []
         for domain_id in registry.get_all_domain_ids():
             domain = registry.get(domain_id)
             if domain is None:
                 continue
             try:
                 data = domain.get_dashboard_data(ctx, scope_filter=scope, viewer_user_id=uid)
-                results.append(asdict(data))
+                domains_data.append(asdict(data))
             except Exception as exc:
                 _logger.warning("dashboard: domain %s failed: %s", domain_id, exc)
-                results.append(asdict(DashboardData(
+                errors.append(domain_id)
+                domains_data.append(asdict(DashboardData(
                     domain=domain_id,
                     summary="Unavailable",
                     error=str(exc),
                 )))
-        return results
+
+        return JSONResponse({
+            "generated_at": datetime.now(_tz.utc).isoformat(),
+            "scope": scope,
+            "domains": domains_data,
+            "errors": errors,
+        })
 
     @app.get("/api/v1/dashboard/today")
     async def get_today_dashboard(request: Request, user_id: str = ""):

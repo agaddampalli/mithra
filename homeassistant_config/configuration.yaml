@@ -34,8 +34,10 @@ rest:
     sensor:
       - name: Mithra Dashboard
         unique_id: mithra_dashboard
-        value_template: "ok"
-        json_attributes_template: "{{ {'domains': value_json} | to_json }}"
+        value_template: "{{ value_json.scope }}"
+        json_attributes:
+          - domains
+          - errors
 
   - resource: http://api-gateway:8000/api/v1/routines/today
     scan_interval: 60
@@ -64,17 +66,20 @@ rest_command:
 template:
   - sensor:
     # ── Tier 1: domain summary sensors ──────────────────────────────────────
+    # | default([]) only catches undefined, not None — use explicit is not none guard.
     - name: Mithra Tasks Summary
       unique_id: mithra_tasks_summary
       state: >-
-        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') %}
+        {% set doms = doms if doms is not none else [] %}
         {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
         {{ d.get('summary', 'unavailable') if d else 'unavailable' }}
 
     - name: Mithra Calendar Summary
       unique_id: mithra_calendar_summary
       state: >-
-        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') %}
+        {% set doms = doms if doms is not none else [] %}
         {% set d = doms | selectattr('domain', 'equalto', 'time') | list | first | default({}) %}
         {{ d.get('summary', 'unavailable') if d else 'unavailable' }}
 
@@ -82,13 +87,15 @@ template:
     - name: Mithra Task Slot 1
       unique_id: mithra_task_slot_1
       state: >-
-        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') %}
+        {% set doms = doms if doms is not none else [] %}
         {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
         {% set items = d.get('items', []) if d else [] %}
         {{ items[0].title if items | length > 0 else '' }}
       attributes:
         task_id: >-
-          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') %}
+          {% set doms = doms if doms is not none else [] %}
           {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
           {% set items = d.get('items', []) if d else [] %}
           {{ items[0].id if items | length > 0 else '' }}
@@ -96,13 +103,15 @@ template:
     - name: Mithra Task Slot 2
       unique_id: mithra_task_slot_2
       state: >-
-        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') %}
+        {% set doms = doms if doms is not none else [] %}
         {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
         {% set items = d.get('items', []) if d else [] %}
         {{ items[1].title if items | length > 1 else '' }}
       attributes:
         task_id: >-
-          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') %}
+          {% set doms = doms if doms is not none else [] %}
           {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
           {% set items = d.get('items', []) if d else [] %}
           {{ items[1].id if items | length > 1 else '' }}
@@ -110,13 +119,15 @@ template:
     - name: Mithra Task Slot 3
       unique_id: mithra_task_slot_3
       state: >-
-        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') %}
+        {% set doms = doms if doms is not none else [] %}
         {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
         {% set items = d.get('items', []) if d else [] %}
         {{ items[2].title if items | length > 2 else '' }}
       attributes:
         task_id: >-
-          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') %}
+          {% set doms = doms if doms is not none else [] %}
           {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
           {% set items = d.get('items', []) if d else [] %}
           {{ items[2].id if items | length > 2 else '' }}
@@ -124,13 +135,15 @@ template:
     - name: Mithra Task Slot 4
       unique_id: mithra_task_slot_4
       state: >-
-        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') %}
+        {% set doms = doms if doms is not none else [] %}
         {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
         {% set items = d.get('items', []) if d else [] %}
         {{ items[3].title if items | length > 3 else '' }}
       attributes:
         task_id: >-
-          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') %}
+          {% set doms = doms if doms is not none else [] %}
           {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
           {% set items = d.get('items', []) if d else [] %}
           {{ items[3].id if items | length > 3 else '' }}
@@ -138,13 +151,15 @@ template:
     - name: Mithra Task Slot 5
       unique_id: mithra_task_slot_5
       state: >-
-        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') %}
+        {% set doms = doms if doms is not none else [] %}
         {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
         {% set items = d.get('items', []) if d else [] %}
         {{ items[4].title if items | length > 4 else '' }}
       attributes:
         task_id: >-
-          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') | default([]) %}
+          {% set doms = state_attr('sensor.mithra_dashboard', 'domains') %}
+          {% set doms = doms if doms is not none else [] %}
           {% set d = doms | selectattr('domain', 'equalto', 'tasks') | list | first | default({}) %}
           {% set items = d.get('items', []) if d else [] %}
           {{ items[4].id if items | length > 4 else '' }}
