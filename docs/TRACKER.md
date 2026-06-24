@@ -807,16 +807,34 @@ Last updated: 2026-06-21
               Verify healthcheck passes:
                 docker compose up -d homeassistant
                 curl http://localhost:8123/api/
-  [ ] HA-07 Cloudflare Access setup (MANUAL — Cloudflare
-              dashboard, not Claude Code):
-              - Access policy on assistant.mithra-app.com
-                paths: /api/v1/dashboard*, /api/v1/routines*,
-                /api/v1/tasks*
-              - Human policy: Google/email login challenge
-              - Service token created for HA container's
-                machine traffic
-              - Document the two CF-Access-Client-Id/Secret
-                header values in .env (NOT committed to git)
+  [ ] HA-07 Unified Cloudflare access for HA's web UI
+              (MANUAL — Cloudflare dashboard + cloudflared
+              config, not Claude Code):
+              - Locate existing tunnel config:
+                  docker exec mithra-cloudflared-1 cat
+                  /etc/cloudflared/config.yml
+                (or Cloudflare dashboard → Zero Trust →
+                Networks → Tunnels → Public Hostname tab,
+                if dashboard-managed rather than file-based)
+              - ADD new route: home.mithra-app.com →
+                http://homeassistant:8123
+                Do NOT modify the existing
+                assistant.mithra-app.com → api-gateway route
+              - Cloudflare Access → Applications → create
+                for home.mithra-app.com
+                Policy: Allow — login with Google/email
+                Session duration: set to maximum/long
+              - Verify assistant.mithra-app.com STILL works
+                after the change (regression check)
+              - Verify home.mithra-app.com prompts Cloudflare
+                login from a device on cellular data (not
+                home WiFi), then loads HA's own login,
+                then the dashboard
+              - This can happen in parallel with / after
+                HA-01 through HA-06/08/09 — household tablet
+                can use http://<LAN-IP>:8123 temporarily
+                during development if HA-07 isn't done yet,
+                then switch to home.mithra-app.com once ready
   [ ] HA-08 HA REST sensors (configuration.yaml or UI):
               rest: platform pointing to
               https://assistant.mithra-app.com/api/v1/dashboard

@@ -4429,36 +4429,49 @@ to all subscribers matching the topic pattern.
     a friendly "already done" response, not an error
     (mirrors routine_complete's IntegrityError handling).
 
-### 16.5 Cloudflare Access — Human vs Machine Traffic
+### 16.5 Cloudflare — Unified Public Access for HA's UI
 
-    Decision: Cloudflare Access (Zero Trust) in front of
-    assistant.mithra-app.com for the dashboard/routine/
-    tasks paths, since personal mobile access goes through
-    the public tunnel (not LAN-only).
+    Decision: HA's own web UI (port 8123) is exposed via
+    a single new Cloudflare tunnel hostname, used by BOTH
+    the household tablet and personal mobile. No LAN IP
+    is referenced anywhere in the setup.
 
-    Two traffic types need two different auth methods:
+    Why unified rather than LAN-direct for the tablet:
+      The Windows host's LAN IP is not stable (observed
+      changing across DHCP renewals during the WSL2
+      migration). A wall-mounted kiosk tablet hardcoded
+      to a LAN IP would silently go blank on the next
+      DHCP renewal — a worse failure mode on a bolted-to-
+      the-wall device than on a laptop with SSH access.
+      Telegram, calendar sync, and LLM calls already
+      depend on internet connectivity; adding the tablet
+      to that list is consistency, not a new single point
+      of failure.
 
-      HUMAN (personal mobile browser/app):
-        Cloudflare Access login challenge
-        (Google/email identity) — standard interactive flow
+    Architecture:
+      home.mithra-app.com → cloudflared → homeassistant:8123
+      (new hostname, same cloudflared container already
+      routing assistant.mithra-app.com → api-gateway:8000 —
+      ADD a route, do not modify the existing one)
 
-      MACHINE (HA container's REST sensor):
-        Cloudflare Access SERVICE TOKEN
-        Two static headers configured once in HA's
-        REST sensor `headers:` block:
-          CF-Access-Client-Id: <token-id>
-          CF-Access-Client-Secret: <token-secret>
-        No interactive login — HA's REST integration
-        cannot do OAuth flows, so this is the correct
-        mechanism for machine-to-machine access through
-        Cloudflare Access.
+      Cloudflare Access policy on home.mithra-app.com:
+        Allow — login with Google/email, your identity only
+        Session duration: long (kiosk-friendly — log in once,
+        Fully Kiosk Browser session persists)
+        NO service token needed — nothing machine-to-machine
+        crosses this hostname. HA's REST sensor talking to
+        Mithra's API stays entirely on the internal Docker
+        network and is unaffected by any of this.
 
-    This is called out explicitly because it is the one
-    piece of this design most likely to be discovered
-    as broken mid-implementation rather than planned for
-    (same category of risk as the event_bus threading
-    issue in MES-06). Service token creation is a manual
-    step in the Cloudflare dashboard (see Part 3 below).
+    HA-side reverse proxy requirement:
+      Home Assistant must trust Cloudflare's proxy headers.
+      Add to HA's configuration.yaml:
+        http:
+          use_x_forwarded_for: true
+          trusted_proxies:
+            - <cloudflared container's docker network subnet>
+      Without this, HA may reject or mis-log requests
+      arriving via the tunnel.
 
 ### 16.6 Worst Cases Addressed
 
