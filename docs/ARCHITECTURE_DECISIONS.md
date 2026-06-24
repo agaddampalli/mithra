@@ -4288,3 +4288,238 @@ to all subscribers matching the topic pattern.
       agent._file_router      ← Category 2, future cleanup
       agent._member_registry  ← Category 1, already in ctx ✅
       agent._local_db_path    ← Category 1, already in ctx ✅
+
+---
+
+## 16. Dashboard Aggregation Layer (DAL)
+
+### 16.0 Status and Context
+
+    Status:  ACCEPTED
+    Date:    2026-06-22
+    Context:
+      HA setup is the next milestone. Today only
+      GET /api/v1/dashboard/tasks exists — a single,
+      Tasks-domain-specific endpoint. Time domain has
+      no dashboard data method at all. Building HA
+      widgets directly against one domain's bespoke
+      JSON shape means every future domain (People,
+      Shopping, Travel) requires hand-building new
+      HA config from scratch, and HA must be told
+      about each new domain explicitly.
+
+      This mirrors the exact problem MES solved for
+      events (Section 14): without a standard contract,
+      every new integration is bespoke and coupling grows
+      with every domain added.
+
+      Household tablet and personal mobile also need
+      different views of the same data (household-only
+      vs household+personal), which must be a query
+      parameter, not separate hardcoded endpoints.
+
+### 16.1 Decision
+
+    Every domain implements get_dashboard_data() against
+    a shared contract. A single aggregator endpoint loops
+    all registered domains and returns combined JSON.
+    Home Assistant (and any future presentation layer —
+    mobile app, voice display) renders generically against
+    this contract. Adding a domain later requires zero
+    changes to HA or the aggregator.
+
+    Scope for this round: Tasks (refactor existing) +
+    Time (new) domains. Tier 1 (glance tiles) and Tier 2
+    (tap-to-complete lists) only. Tier 3 (full custom
+    per-domain views, e.g. project status, calendar week
+    view) is explicitly deferred (YAGNI) until a concrete
+    need arises — same discipline as MES Phase 3.
+
+### 16.2 Contracts (LOCKED — additive only)
+
+    @dataclass
+    class DashboardItem:
+        id:        str
+        domain:    str    # "tasks" | "time" | future domains
+        title:     str
+        subtitle:  str = ""
+        icon:      str = ""   # mdi: icon name
+        priority:  str = "normal"  # "high" | "normal"
+        scope:     str = "household"
+                   # Defaults to "household" if a domain
+                   # has no personal/household concept
+                   # (e.g. a future People contact).
+        action:    str = ""
+                   # Name of the existing REST action this
+                   # item supports, e.g. "task_complete",
+                   # "routine_complete". Empty = read-only.
+
+    @dataclass
+    class DashboardAlert:
+        type:      str
+        message:   str
+        severity:  str = "low"  # "low" | "medium" | "high"
+
+    @dataclass
+    class DashboardData:
+        domain:    str
+        summary:   str
+        items:     list[DashboardItem]
+        alerts:    list[DashboardAlert]
+        error:     str | None = None
+                   # Set if this domain's query failed.
+                   # Aggregator includes the domain with
+                   # error set rather than dropping it or
+                   # failing the whole response.
+
+    Domain ABC gains (additive to existing get_tools()):
+
+        def get_dashboard_data(
+            self,
+            context: DomainContext,
+            scope_filter: str = "household",
+                          # "household" | "personal" | "all"
+            viewer_user_id: str = "",
+        ) -> DashboardData:
+            ...
+
+### 16.3 Aggregator Endpoint
+
+    GET /api/v1/dashboard?scope=household
+    GET /api/v1/dashboard?scope=personal&user_id=usr_xxx
+
+    Response:
+        {
+          "generated_at": "2026-06-22T...",
+          "scope": "household",
+          "domains": [DashboardData, DashboardData, ...],
+          "errors": []   // list of domain names that failed
+        }
+
+    Behaviour:
+      - Loops every domain in the domain registry
+      - Calls get_dashboard_data() in try/except per domain
+      - A domain that throws is included with error set,
+        NEVER causes a 500 for the whole response (WC2)
+      - Existing GET /api/v1/dashboard/tasks is KEPT
+        unchanged for direct domain testing/debugging —
+        the aggregator is the new endpoint HA actually polls
+
+### 16.4 Tier 2 — Tap-to-Complete Requires New Task Endpoint
+
+    Routines already have:
+        POST /api/v1/routines/{routine_id}/complete
+        (unauthenticated for HA, idempotent)
+
+    Tasks do NOT have an equivalent. Add:
+        POST /api/v1/tasks/{task_id}/complete
+        (unauthenticated for HA tablet/mobile via
+        Cloudflare Access, idempotent — same pattern
+        as routine completion)
+
+    This must call the SAME underlying completion logic
+    Telegram's task_complete tool uses (direct SQLite
+    UPDATE status='done'), not go through the LLM pipeline.
+    HA taps must never touch classify_intent or tool
+    selection — same principle as routine completion
+    (see LESSONS_LEARNED L-01 through L-08 for why
+    LLM-on-critical-path is avoided wherever possible).
+
+    Idempotency: tapping an already-completed task returns
+    a friendly "already done" response, not an error
+    (mirrors routine_complete's IntegrityError handling).
+
+### 16.5 Cloudflare Access — Human vs Machine Traffic
+
+    Decision: Cloudflare Access (Zero Trust) in front of
+    assistant.mithra-app.com for the dashboard/routine/
+    tasks paths, since personal mobile access goes through
+    the public tunnel (not LAN-only).
+
+    Two traffic types need two different auth methods:
+
+      HUMAN (personal mobile browser/app):
+        Cloudflare Access login challenge
+        (Google/email identity) — standard interactive flow
+
+      MACHINE (HA container's REST sensor):
+        Cloudflare Access SERVICE TOKEN
+        Two static headers configured once in HA's
+        REST sensor `headers:` block:
+          CF-Access-Client-Id: <token-id>
+          CF-Access-Client-Secret: <token-secret>
+        No interactive login — HA's REST integration
+        cannot do OAuth flows, so this is the correct
+        mechanism for machine-to-machine access through
+        Cloudflare Access.
+
+    This is called out explicitly because it is the one
+    piece of this design most likely to be discovered
+    as broken mid-implementation rather than planned for
+    (same category of risk as the event_bus threading
+    issue in MES-06). Service token creation is a manual
+    step in the Cloudflare dashboard (see Part 3 below).
+
+### 16.6 Worst Cases Addressed
+
+    WC1  New domain added later            → generic ABC method,
+                                              zero HA changes needed
+    WC2  One domain's query throws         → try/except per domain,
+                                              partial result + error field
+    WC3  Cloudflare Access blocks REST      → service token for
+         sensor (no interactive login)        machine traffic
+    WC4  Schema changes break old sensors   → additive-only payload
+    WC5  Domain has no scope concept        → defaults to "household"
+    WC6  Tablet polls too aggressively      → documented scan_interval
+                                              guidance (30-60s, not secs)
+    WC7  api-gateway down → all tiles fail  → accepted, matches
+                                              existing health-check pattern
+    WC8  Stale tile after tap (cache lag)   → accepted latency, governed
+                                              by HA's own scan_interval
+    WC9  Personal dashboard needs merged    → scope is a query param,
+         household+personal view              not hardcoded per device
+    WC10 Generic action dispatch            → DEFERRED (YAGNI). Tier 2
+         abstraction with no real need         uses existing per-domain
+                                              REST actions (routine
+                                              complete, task complete)
+
+### 16.7 Alternatives Considered
+
+    Per-domain bespoke HA sensors (status quo) — rejected:
+      Already proven unsustainable; every new domain
+      requires new HA YAML written by hand against a
+      one-off JSON shape.
+
+    Generic action dispatch endpoint now
+    (POST /dashboard/action {domain, action, params}) — rejected:
+      Zero domains need more than 2 action types today
+      (routine_complete, task_complete). Building a
+      dispatch abstraction for a problem that doesn't
+      exist yet is the same mistake MES-11/12 almost made.
+
+    Full Tier 3 custom views now (project status card,
+    calendar week view) — rejected:
+      No concrete need yet. Defer until a domain actually
+      requires richer-than-list-of-items presentation.
+
+### 16.8 Implementation Order
+
+    HA-00  ADR section 16 committed ← this commit
+    HA-01  DashboardItem/Alert/Data contracts
+           Domain.get_dashboard_data() ABC method
+    HA-02  Tasks domain: refactor existing
+           get_dashboard_data() to match contract
+    HA-03  Time domain: new get_dashboard_data()
+           (next event tile + today's events list)
+    HA-04  Aggregator: GET /api/v1/dashboard endpoint
+    HA-05  POST /api/v1/tasks/{task_id}/complete
+           (idempotent, unauthenticated for HA, mirrors
+           routine_complete pattern)
+    HA-06  Enable homeassistant container
+           (compose.yaml profile adjustment)
+    HA-07  Cloudflare Access service token + policy
+           (manual Cloudflare dashboard steps)
+    HA-08  HA REST sensors (Tier 1 tiles)
+    HA-09  HA Lovelace dashboard (Tier 1 + Tier 2)
+    HA-10  Manual DoD verification on personal tablet
+           and personal mobile via Cloudflare

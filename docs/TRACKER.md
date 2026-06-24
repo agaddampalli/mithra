@@ -68,6 +68,29 @@ Last updated: 2026-06-21
   - llm-router health check flapping (low priority)
   - Docker cleanup automation (deferred to phase close)
 
+### Manual steps required before HA-08/HA-09
+  (Cloudflare dashboard UI — cannot be automated by
+  Claude Code):
+
+    1. Cloudflare Zero Trust → Access → Applications
+       Create application for assistant.mithra-app.com
+       Path rules: /api/v1/dashboard*, /api/v1/routines*,
+                   /api/v1/tasks*
+       Policy 1 (human): Allow — Login with
+                          Google/email, your identity only
+       Policy 2 (machine): Service Auth — generate
+                            service token, copy Client ID
+                            and Client Secret
+
+    2. Add to ~/mithra/.env (NOT committed):
+         CF_ACCESS_CLIENT_ID=...
+         CF_ACCESS_CLIENT_SECRET=...
+
+    3. These two values go into HA's REST sensor
+       headers: block (HA-08) — Claude Code will
+       reference the env var names but cannot create
+       the actual Cloudflare token.
+
 ---
 
 ## Current IDs (generated 2026-05-24, never change)
@@ -733,6 +756,114 @@ Last updated: 2026-06-21
               domain.time.event_created → auto-create prep tasks.
               Build ONLY when a concrete feature requires it
               (e.g. Travel domain pre-trip checklist).
+
+---
+
+## HA Setup — Dashboard Aggregation Layer
+
+### Overview
+  Standardises domain dashboard data through a shared
+  contract so Home Assistant (and any future presentation
+  layer) renders generically. Scope: Tasks + Time domains,
+  Tier 1 (glance tiles) + Tier 2 (tap-to-complete lists).
+  ADR: docs/ARCHITECTURE_DECISIONS.md section 16
+
+### Tasks
+  [x] HA-00 ADR section 16 committed ← this commit
+  [ ] HA-01 mithra/domains/dashboard.py
+              DashboardItem, DashboardAlert, DashboardData
+              dataclasses per ADR 16.2
+              Domain ABC gains get_dashboard_data()
+              abstract method (additive to existing
+              get_tools())
+  [ ] HA-02 TasksDomain.get_dashboard_data() refactored
+              to return DashboardData per contract.
+              Existing GET /api/v1/dashboard/tasks
+              continues to work unchanged (kept for
+              direct domain testing).
+  [ ] HA-03 TimeDomain.get_dashboard_data() — NEW.
+              Tier 1: next upcoming event (title, time)
+              Tier 2: today's events list (read-only,
+              no action — calendar events aren't
+              "completed" the way tasks/routines are)
+              Empty state: "Nothing on your calendar today."
+              (per Section 12 response standards)
+  [ ] HA-04 GET /api/v1/dashboard aggregator endpoint
+              in mithra/api/gateway.py
+              scope=household|personal&user_id=
+              Loops domain registry, try/except per domain,
+              returns partial result + errors[] on failure
+              Added to auth-exclusion list alongside
+              existing /api/v1/dashboard/* routes
+  [ ] HA-05 POST /api/v1/tasks/{task_id}/complete
+              Direct SQLite UPDATE status='done',
+              no LLM, no conversation_state involvement
+              Idempotent: already-done task returns
+              {"status": "already_done"} not an error
+              Added to auth-exclusion list
+  [ ] HA-06 Enable homeassistant container in compose.yaml
+              Remove or extend the `profiles: [voice]`
+              gate so it starts with the default profile
+              Verify healthcheck passes:
+                docker compose up -d homeassistant
+                curl http://localhost:8123/api/
+  [ ] HA-07 Cloudflare Access setup (MANUAL — Cloudflare
+              dashboard, not Claude Code):
+              - Access policy on assistant.mithra-app.com
+                paths: /api/v1/dashboard*, /api/v1/routines*,
+                /api/v1/tasks*
+              - Human policy: Google/email login challenge
+              - Service token created for HA container's
+                machine traffic
+              - Document the two CF-Access-Client-Id/Secret
+                header values in .env (NOT committed to git)
+  [ ] HA-08 HA REST sensors (configuration.yaml or UI):
+              rest: platform pointing to
+              https://assistant.mithra-app.com/api/v1/dashboard
+              ?scope=household
+              headers: CF-Access-Client-Id/Secret
+              scan_interval: 60 (per WC6 guidance)
+              json_attributes_path per domain in response
+  [ ] HA-09 Lovelace dashboard — household tablet view:
+              Tier 1 tiles: tasks today count, routines
+              X/Y done, next calendar event
+              Tier 2 lists: routine checklist (tap →
+              existing /routines/{id}/complete), task
+              list (tap → new /tasks/{id}/complete)
+              Household scope only (per earlier decision —
+              personal items deferred)
+  [ ] HA-10 Manual DoD verification:
+              [ ] Aggregator returns valid JSON for both
+                  scope=household and scope=personal
+              [ ] One domain forced to error (e.g. bad
+                  db_path temporarily) → other domain's
+                  data still returns, error noted
+              [ ] Tablet shows live tiles updating within
+                  scan_interval
+              [ ] Tap routine checklist item → marks done,
+                  reflects within next poll
+              [ ] Tap task checklist item → marks done,
+                  reflects within next poll
+              [ ] Tap already-completed item again →
+                  no error, friendly idempotent response
+              [ ] Personal mobile via Cloudflare Access →
+                  login challenge appears, then dashboard
+                  loads after auth
+              [ ] HA container's REST sensor works via
+                  service token with NO interactive login
+              [ ] api-gateway stopped → tiles show
+                  "unavailable" gracefully, not a crash
+              [ ] All existing tests still pass
+
+### Deferred (Tier 3, explicit YAGNI per ADR 16.7)
+  [ ] HA-11 (deferred) Project status card (Tasks domain)
+  [ ] HA-12 (deferred) Calendar week view (Time domain)
+  [ ] HA-13 (deferred) Generic action dispatch endpoint
+              — only if a 3rd action type beyond
+              task_complete/routine_complete emerges
+  [ ] HA-14 (deferred) Personal-scope items on household
+              tablet — only household scope for now per
+              earlier decision
 
 ---
 
