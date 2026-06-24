@@ -4479,8 +4479,9 @@ to all subscribers matching the topic pattern.
                                               zero HA changes needed
     WC2  One domain's query throws         → try/except per domain,
                                               partial result + error field
-    WC3  Cloudflare Access blocks REST      → service token for
-         sensor (no interactive login)        machine traffic
+    WC3  Tablet loses access if LAN IP       → unified public hostname
+         changes (DHCP renewal)               home.mithra-app.com;
+                                              no LAN IP hardcoded anywhere
     WC4  Schema changes break old sensors   → additive-only payload
     WC5  Domain has no scope concept        → defaults to "household"
     WC6  Tablet polls too aggressively      → documented scan_interval
@@ -4530,8 +4531,8 @@ to all subscribers matching the topic pattern.
            routine_complete pattern)
     HA-06  Enable homeassistant container
            (compose.yaml profile adjustment)
-    HA-07  Cloudflare Access service token + policy
-           (manual Cloudflare dashboard steps)
+    HA-07  Add home.mithra-app.com tunnel route + Access
+           policy (manual Cloudflare dashboard steps)
     HA-08  HA REST sensors (Tier 1 tiles)
     HA-09  HA Lovelace dashboard (Tier 1 + Tier 2)
     HA-10  Manual DoD verification on personal tablet
