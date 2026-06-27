@@ -32,49 +32,92 @@ views:
             icon: mdi:repeat
 
       # ── Tier 2: Task slots ────────────────────────────────────────────────
+      # Sensor entity shows its own state (the task title) natively.
+      # tap_action calls the backend template button which holds the guard +
+      # REST command with correct task_id — frontend card Jinja is not evaluated.
       - type: entities
         title: Tasks — tap to complete
         entities:
-          - entity: button.complete_task_slot_1
-            name: "{{ states('sensor.mithra_task_slot_1') or '(empty)' }}"
+          - entity: sensor.mithra_task_slot_1
             icon: mdi:checkbox-blank-circle-outline
+            tap_action:
+              action: call-service
+              service: button.press
+              service_data:
+                entity_id: button.complete_task_slot_1
 
-          - entity: button.complete_task_slot_2
-            name: "{{ states('sensor.mithra_task_slot_2') or '(empty)' }}"
+          - entity: sensor.mithra_task_slot_2
             icon: mdi:checkbox-blank-circle-outline
+            tap_action:
+              action: call-service
+              service: button.press
+              service_data:
+                entity_id: button.complete_task_slot_2
 
-          - entity: button.complete_task_slot_3
-            name: "{{ states('sensor.mithra_task_slot_3') or '(empty)' }}"
+          - entity: sensor.mithra_task_slot_3
             icon: mdi:checkbox-blank-circle-outline
+            tap_action:
+              action: call-service
+              service: button.press
+              service_data:
+                entity_id: button.complete_task_slot_3
 
-          - entity: button.complete_task_slot_4
-            name: "{{ states('sensor.mithra_task_slot_4') or '(empty)' }}"
+          - entity: sensor.mithra_task_slot_4
             icon: mdi:checkbox-blank-circle-outline
+            tap_action:
+              action: call-service
+              service: button.press
+              service_data:
+                entity_id: button.complete_task_slot_4
 
-          - entity: button.complete_task_slot_5
-            name: "{{ states('sensor.mithra_task_slot_5') or '(empty)' }}"
+          - entity: sensor.mithra_task_slot_5
             icon: mdi:checkbox-blank-circle-outline
+            tap_action:
+              action: call-service
+              service: button.press
+              service_data:
+                entity_id: button.complete_task_slot_5
 
       # ── Tier 2: Routine slots ─────────────────────────────────────────────
       - type: entities
         title: Routines — tap to mark done
         entities:
-          - entity: button.complete_routine_slot_1
-            name: "{{ states('sensor.mithra_routine_slot_1') or '(empty)' }}"
+          - entity: sensor.mithra_routine_slot_1
             icon: mdi:repeat
+            tap_action:
+              action: call-service
+              service: button.press
+              service_data:
+                entity_id: button.complete_routine_slot_1
 
-          - entity: button.complete_routine_slot_2
-            name: "{{ states('sensor.mithra_routine_slot_2') or '(empty)' }}"
+          - entity: sensor.mithra_routine_slot_2
             icon: mdi:repeat
+            tap_action:
+              action: call-service
+              service: button.press
+              service_data:
+                entity_id: button.complete_routine_slot_2
 
-          - entity: button.complete_routine_slot_3
-            name: "{{ states('sensor.mithra_routine_slot_3') or '(empty)' }}"
+          - entity: sensor.mithra_routine_slot_3
             icon: mdi:repeat
+            tap_action:
+              action: call-service
+              service: button.press
+              service_data:
+                entity_id: button.complete_routine_slot_3
 
-          - entity: button.complete_routine_slot_4
-            name: "{{ states('sensor.mithra_routine_slot_4') or '(empty)' }}"
+          - entity: sensor.mithra_routine_slot_4
             icon: mdi:repeat
+            tap_action:
+              action: call-service
+              service: button.press
+              service_data:
+                entity_id: button.complete_routine_slot_4
 
-          - entity: button.complete_routine_slot_5
-            name: "{{ states('sensor.mithra_routine_slot_5') or '(empty)' }}"
+          - entity: sensor.mithra_routine_slot_5
             icon: mdi:repeat
+            tap_action:
+              action: call-service
+              service: button.press
+              service_data:
+                entity_id: button.complete_routine_slot_5

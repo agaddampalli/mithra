@@ -253,7 +253,7 @@ template:
       press:
         - condition: template
           value_template: "{{ state_attr('sensor.mithra_task_slot_1', 'task_id') not in ('', None) }}"
-        - service: rest_command.mithra_complete_task
+        - action: rest_command.mithra_complete_task
           data:
             task_id: "{{ state_attr('sensor.mithra_task_slot_1', 'task_id') }}"
 
@@ -262,7 +262,7 @@ template:
       press:
         - condition: template
           value_template: "{{ state_attr('sensor.mithra_task_slot_2', 'task_id') not in ('', None) }}"
-        - service: rest_command.mithra_complete_task
+        - action: rest_command.mithra_complete_task
           data:
             task_id: "{{ state_attr('sensor.mithra_task_slot_2', 'task_id') }}"
 
@@ -271,7 +271,7 @@ template:
       press:
         - condition: template
           value_template: "{{ state_attr('sensor.mithra_task_slot_3', 'task_id') not in ('', None) }}"
-        - service: rest_command.mithra_complete_task
+        - action: rest_command.mithra_complete_task
           data:
             task_id: "{{ state_attr('sensor.mithra_task_slot_3', 'task_id') }}"
 
@@ -280,7 +280,7 @@ template:
       press:
         - condition: template
           value_template: "{{ state_attr('sensor.mithra_task_slot_4', 'task_id') not in ('', None) }}"
-        - service: rest_command.mithra_complete_task
+        - action: rest_command.mithra_complete_task
           data:
             task_id: "{{ state_attr('sensor.mithra_task_slot_4', 'task_id') }}"
 
@@ -289,7 +289,7 @@ template:
       press:
         - condition: template
           value_template: "{{ state_attr('sensor.mithra_task_slot_5', 'task_id') not in ('', None) }}"
-        - service: rest_command.mithra_complete_task
+        - action: rest_command.mithra_complete_task
           data:
             task_id: "{{ state_attr('sensor.mithra_task_slot_5', 'task_id') }}"
 
@@ -299,7 +299,7 @@ template:
       press:
         - condition: template
           value_template: "{{ state_attr('sensor.mithra_routine_slot_1', 'routine_id') not in ('', None) }}"
-        - service: rest_command.mithra_complete_routine
+        - action: rest_command.mithra_complete_routine
           data:
             routine_id: "{{ state_attr('sensor.mithra_routine_slot_1', 'routine_id') }}"
 
@@ -308,7 +308,7 @@ template:
       press:
         - condition: template
           value_template: "{{ state_attr('sensor.mithra_routine_slot_2', 'routine_id') not in ('', None) }}"
-        - service: rest_command.mithra_complete_routine
+        - action: rest_command.mithra_complete_routine
           data:
             routine_id: "{{ state_attr('sensor.mithra_routine_slot_2', 'routine_id') }}"
 
@@ -317,7 +317,7 @@ template:
       press:
         - condition: template
           value_template: "{{ state_attr('sensor.mithra_routine_slot_3', 'routine_id') not in ('', None) }}"
-        - service: rest_command.mithra_complete_routine
+        - action: rest_command.mithra_complete_routine
           data:
             routine_id: "{{ state_attr('sensor.mithra_routine_slot_3', 'routine_id') }}"
 
@@ -326,7 +326,7 @@ template:
       press:
         - condition: template
           value_template: "{{ state_attr('sensor.mithra_routine_slot_4', 'routine_id') not in ('', None) }}"
-        - service: rest_command.mithra_complete_routine
+        - action: rest_command.mithra_complete_routine
           data:
             routine_id: "{{ state_attr('sensor.mithra_routine_slot_4', 'routine_id') }}"
 
@@ -335,6 +335,6 @@ template:
       press:
         - condition: template
           value_template: "{{ state_attr('sensor.mithra_routine_slot_5', 'routine_id') not in ('', None) }}"
-        - service: rest_command.mithra_complete_routine
+        - action: rest_command.mithra_complete_routine
           data:
             routine_id: "{{ state_attr('sensor.mithra_routine_slot_5', 'routine_id') }}"
