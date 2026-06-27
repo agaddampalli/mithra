@@ -249,7 +249,10 @@ template:
   - button:
     # ── Task completion buttons ───────────────────────────────────────────────
     - name: >-
-        {{ states('sensor.mithra_task_slot_1') }}
+        {{ states('sensor.mithra_task_slot_1')
+           if states('sensor.mithra_task_slot_1')
+              not in ['unknown', 'unavailable', None, '']
+           else 'Task Slot 1' }}
       unique_id: mithra_task_button_1
       press:
         - condition: template
@@ -259,7 +262,10 @@ template:
             task_id: "{{ state_attr('sensor.mithra_task_slot_1', 'task_id') }}"
 
     - name: >-
-        {{ states('sensor.mithra_task_slot_2') }}
+        {{ states('sensor.mithra_task_slot_2')
+           if states('sensor.mithra_task_slot_2')
+              not in ['unknown', 'unavailable', None, '']
+           else 'Task Slot 2' }}
       unique_id: mithra_task_button_2
       press:
         - condition: template
@@ -269,7 +275,10 @@ template:
             task_id: "{{ state_attr('sensor.mithra_task_slot_2', 'task_id') }}"
 
     - name: >-
-        {{ states('sensor.mithra_task_slot_3') }}
+        {{ states('sensor.mithra_task_slot_3')
+           if states('sensor.mithra_task_slot_3')
+              not in ['unknown', 'unavailable', None, '']
+           else 'Task Slot 3' }}
       unique_id: mithra_task_button_3
       press:
         - condition: template
@@ -279,7 +288,10 @@ template:
             task_id: "{{ state_attr('sensor.mithra_task_slot_3', 'task_id') }}"
 
     - name: >-
-        {{ states('sensor.mithra_task_slot_4') }}
+        {{ states('sensor.mithra_task_slot_4')
+           if states('sensor.mithra_task_slot_4')
+              not in ['unknown', 'unavailable', None, '']
+           else 'Task Slot 4' }}
       unique_id: mithra_task_button_4
       press:
         - condition: template
@@ -289,7 +301,10 @@ template:
             task_id: "{{ state_attr('sensor.mithra_task_slot_4', 'task_id') }}"
 
     - name: >-
-        {{ states('sensor.mithra_task_slot_5') }}
+        {{ states('sensor.mithra_task_slot_5')
+           if states('sensor.mithra_task_slot_5')
+              not in ['unknown', 'unavailable', None, '']
+           else 'Task Slot 5' }}
       unique_id: mithra_task_button_5
       press:
         - condition: template
@@ -300,7 +315,10 @@ template:
 
     # ── Routine completion buttons ────────────────────────────────────────────
     - name: >-
-        {{ states('sensor.mithra_routine_slot_1') }}
+        {{ states('sensor.mithra_routine_slot_1')
+           if states('sensor.mithra_routine_slot_1')
+              not in ['unknown', 'unavailable', None, '']
+           else 'Routine Slot 1' }}
       unique_id: mithra_routine_button_1
       press:
         - condition: template
@@ -310,7 +328,10 @@ template:
             routine_id: "{{ state_attr('sensor.mithra_routine_slot_1', 'routine_id') }}"
 
     - name: >-
-        {{ states('sensor.mithra_routine_slot_2') }}
+        {{ states('sensor.mithra_routine_slot_2')
+           if states('sensor.mithra_routine_slot_2')
+              not in ['unknown', 'unavailable', None, '']
+           else 'Routine Slot 2' }}
       unique_id: mithra_routine_button_2
       press:
         - condition: template
@@ -320,7 +341,10 @@ template:
             routine_id: "{{ state_attr('sensor.mithra_routine_slot_2', 'routine_id') }}"
 
     - name: >-
-        {{ states('sensor.mithra_routine_slot_3') }}
+        {{ states('sensor.mithra_routine_slot_3')
+           if states('sensor.mithra_routine_slot_3')
+              not in ['unknown', 'unavailable', None, '']
+           else 'Routine Slot 3' }}
       unique_id: mithra_routine_button_3
       press:
         - condition: template
@@ -330,7 +354,10 @@ template:
             routine_id: "{{ state_attr('sensor.mithra_routine_slot_3', 'routine_id') }}"
 
     - name: >-
-        {{ states('sensor.mithra_routine_slot_4') }}
+        {{ states('sensor.mithra_routine_slot_4')
+           if states('sensor.mithra_routine_slot_4')
+              not in ['unknown', 'unavailable', None, '']
+           else 'Routine Slot 4' }}
       unique_id: mithra_routine_button_4
       press:
         - condition: template
@@ -340,7 +367,10 @@ template:
             routine_id: "{{ state_attr('sensor.mithra_routine_slot_4', 'routine_id') }}"
 
     - name: >-
-        {{ states('sensor.mithra_routine_slot_5') }}
+        {{ states('sensor.mithra_routine_slot_5')
+           if states('sensor.mithra_routine_slot_5')
+              not in ['unknown', 'unavailable', None, '']
+           else 'Routine Slot 5' }}
       unique_id: mithra_routine_button_5
       press:
         - condition: template
