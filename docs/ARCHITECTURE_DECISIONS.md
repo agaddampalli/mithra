@@ -4537,3 +4537,126 @@ to all subscribers matching the topic pattern.
     HA-09  HA Lovelace dashboard (Tier 1 + Tier 2)
     HA-10  Manual DoD verification on personal tablet
            and personal mobile via Cloudflare
+
+## 17. Household Dashboard Visual Design Standards
+
+### 17.0 Status and Context
+
+    Status:  ACCEPTED
+    Date:    2026-06-27
+    Supersedes: Mockup v1 (dark sidebar, summary-tiles-
+               only Home — built from reference photos
+               before any UX research was done)
+    Scope:   Visual design and information architecture
+             for the household dashboard (HA-08/HA-09).
+             Does not change any backend contract from
+             ADR §16 (Dashboard Aggregation Layer).
+
+    Context:
+      The first dashboard mockup copied a dark sidebar
+      directly from reference photos without asking
+      whether mixing a dark sidebar with light content
+      was good UX. It was not researched. Five areas were
+      then researched properly — contrast/theme,
+      information hierarchy, touch target sizing,
+      navigation depth, and content shape (cards vs rows)
+      — and the design was revised twice in response to
+      findings, not preference. Full citations and the
+      three-mockup evolution are documented in
+      Mithra_Dashboard_Visual_Design.pdf.
+
+### 17.1 Decisions (LOCKED)
+
+    17.1.1 Single theme, shade-based zoning
+      ONE consistent light theme throughout. Navigation
+      distinguished from content via background-secondary
+      vs background-primary shades of the SAME theme —
+      never a different color family. A future night-mode
+      dark theme, if added, is a full-screen time-based
+      switch, not a permanent mixed-zone aesthetic.
+
+    17.1.2 Wide sidebar navigation on tablet-class screens
+      Persistent left sidebar for primary navigation
+      (Home, Tasks, Routines, Calendar, disabled
+      placeholders for future domains). Wide enough that
+      nav rows meet 17.1.3 sizing without forcing icon-
+      only items. Text labels mandatory alongside icons
+      on every nav item.
+
+    17.1.3 Kiosk-class touch targets
+      All interactive elements target 12-15mm physical
+      size per ISO 9241-411's public-kiosk classification
+      (the largest of three tiers: stationary desktop
+      7-8mm, mobile handheld 9-11mm, public kiosk 12-
+      15mm). Larger than the generic 44px phone-app
+      minimum.
+
+    17.1.4 Home carries real actionable content
+      Home answers "is everything okay" within 5 seconds
+      AND lets the user act immediately. Today's task and
+      routine rows, with tap-to-complete, live directly
+      on Home — not behind a nav tap into a domain page.
+      Anything overdue/urgent occupies the F-pattern
+      top-left hot zone with the most visual weight.
+      Calendar (read-only, lower-frequency) is demoted to
+      a single status line. Domain pages hold deeper,
+      less-frequent views: full lists, history, filters.
+
+    17.1.5 Content shape decides cards vs rows
+      Numerous, similar-shaped, checklist-style content
+      uses rows. Small sets of individually distinct,
+      infrequently-viewed records use cards. Evaluated
+      per content type when each new domain is built —
+      not assigned by domain name. See PDF Section 8 for
+      the current Shopping/Money/Travel/People analysis
+      (illustrative, not yet built).
+
+### 17.2 Rejected Alternatives
+
+      Dark sidebar + light content (mockup v1) — no
+      research basis; dark mode underperforms in the
+      bright ambient light a kitchen tablet experiences,
+      favors entertainment over reading-heavy content,
+      and a shared kiosk has no per-person toggle.
+
+      Top navigation bar (mockup v2) — correct for narrow
+      phones; wastes width on a tablet where a rail fits
+      more comfortably per Material/Apple large-screen
+      guidance.
+
+      Collapsible icon-only sidebar by default — removes
+      text labels (information scent), adds a tap for
+      zero benefit at this screen width, conflicts with
+      varied household icon literacy. Revisit only if the
+      expanded sidebar proves an actual nuisance.
+
+      Card-per-item for Tasks/Routines — every major
+      to-do app uses rows for this content shape; cards
+      cost more real estate per item and force earlier
+      scrolling on a small kiosk screen.
+
+      3-click navigation depth as a target — NN/g and the
+      original UIE study found no correlation between
+      click count and task success or satisfaction.
+      Information scent and frequency-based placement are
+      the actual drivers.
+
+### 17.3 Open Implementation Question (not yet resolved)
+
+    HA's native multi-view dashboards show views as TABS
+    by default, not a vertical rail. Mushroom is a content
+    card set, not a navigation/layout system. Two paths
+    exist to deliver 17.1.2's persistent sidebar:
+
+      Path A — HA's own native app sidebar with separate
+      dashboards for Home/Tasks/Routines/Calendar.
+      Simplest, no HACS dependency beyond Mushroom.
+
+      Path B — One additional HACS layout/navigation card
+      to replicate an exact persistent in-page rail on
+      every view. More mockup fidelity, one more
+      dependency.
+
+    Recommendation: attempt Path A first (see UI-01).
+    Escalate to Path B only if Path A cannot deliver
+    required navigation clarity.

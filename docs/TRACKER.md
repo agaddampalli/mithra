@@ -893,6 +893,74 @@ Last updated: 2026-06-27
 
 ---
 
+## Household Dashboard Visual Design
+
+### Overview
+  Implements ADR §17. Full research and rationale in
+  Mithra_Dashboard_Visual_Design.pdf. Builds on the
+  working HA-01 through HA-09 backend/Tier-1/Tier-2
+  foundation already deployed — this is a visual/
+  navigation rebuild, not new backend work.
+
+### Tasks
+  [x] UI-00 ADR §17 committed ← this commit
+  [ ] UI-01 Investigate Path A vs Path B (ADR 17.3)
+              Test against the actual deployed HA version:
+              - Does HA's native sidebar support multiple
+                dashboards cleanly with icons/badges?
+              - Can badge counts (e.g. "3" on Tasks) be
+                added to native sidebar entries, or does
+                that need a workaround?
+              Document findings before choosing a path.
+              Do NOT write dashboard YAML until this is
+              resolved.
+  [ ] UI-02 Install HACS in the homeassistant container
+              Confirm version compatible with deployed
+              HA core version (check first, do not assume).
+  [ ] UI-03 Install Mushroom Cards via HACS
+  [ ] UI-04 Rebuild household_tablet.yaml on single light
+              theme per ADR 17.1.1. Remove any dark-themed
+              elements from the current Tier 1/2 dashboard.
+  [ ] UI-05 Implement navigation per the path chosen in
+              UI-01. Text+icon labels, kiosk-class touch
+              targets per ADR 17.1.3.
+  [ ] UI-06 Move task/routine action rows onto Home per
+              ADR 17.1.4 — actionable, not just a summary.
+  [ ] UI-07 Urgent/overdue banner in the top-left hot zone
+              per ADR 17.1.4, highest visual weight when
+              something is overdue.
+  [ ] UI-08 Weather chip and quick-action buttons, sized
+              to ADR 17.1.3 (kiosk-class), not phone-
+              minimum.
+  [ ] UI-09 Manual DoD verification on the real tablet:
+              [ ] Touch targets feel right physically —
+                  12-15mm is a starting point, confirm on
+                  actual hardware, not just the mockup
+              [ ] Single theme holds in bright kitchen
+                  daylight AND dim evening light
+              [ ] Overdue task is the first thing noticed,
+                  unprompted, by someone glancing at the
+                  tablet from across the room
+              [ ] Completing a task/routine still works
+                  end to end after the rebuild (re-run the
+                  before/after curl proof from HA-10 —
+                  do not assume the rebuild preserved it)
+              [ ] All existing HA-01 through HA-09
+                  functionality unaffected (this is a
+                  visual rebuild on top of working backend,
+                  verify it stayed that way)
+
+### Deferred
+  [ ] UI-10 (deferred) Shopping/Money/Travel/People
+              dashboard pages — apply ADR 17.1.5's cards-
+              vs-rows rule when each domain is actually
+              built, per the PDF Section 8 analysis
+  [ ] UI-11 (deferred) Night-mode time-based dark theme —
+              legitimate future use of dark mode (ADR
+              17.1.1), not built now
+
+---
+
 ## Travel Domain (Phase 3 — after Documents)
   [ ] Gmail FlightReservation JSON-LD parsing
   [ ] Gmail LodgingReservation JSON-LD parsing
