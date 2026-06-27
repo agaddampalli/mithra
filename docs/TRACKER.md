@@ -1,15 +1,16 @@
-# Mithra — Work Tracker (Updated 2026-06-24)
+# Mithra — Work Tracker (Updated 2026-06-27)
 
 ## SESSION HANDOFF (update after each session)
 
-Last updated: 2026-06-21
+Last updated: 2026-06-27
 
 ### Current State
   Stack: Docker Compose on Windows laptop
   Household: hh_b76fef08
   Owner: usr_ba6d9199 (Abhiram)
   Wife: usr_4d03f6ea
-  Tunnel: assistant.mithra-app.com
+  Tunnels: assistant.mithra-app.com (api-gateway)
+           ha.mithra-app.com (homeassistant)
   Timezone: America/Chicago
 
 ### Completed
@@ -38,7 +39,7 @@ Last updated: 2026-06-21
               replay_failed() filters notification.* + error_count >= 3
               Verified: scheduler_log both members recorded, events table processed=1
               error_count=0, handler delivered to both chat_ids; 1196 tests passing
-  HA-01 to HA-06, HA-08, HA-09: COMPLETE 2026-06-24
+  HA-01 to HA-09: COMPLETE 2026-06-24/27
               DashboardAlert added; DashboardItem/DashboardData updated (ADR 16.2)
               Domain ABC signature changed: sync, context-based (scope_filter, viewer_user_id)
               TasksDomain + TimeDomain implementations updated
@@ -47,17 +48,24 @@ Last updated: 2026-06-21
               GET /api/v1/dashboard aggregator added (never 500)
               homeassistant container profiles:voice removed, config volume added
               homeassistant_config/configuration.yaml + dashboards/household_tablet.yaml created
+              HA-07: ha.mithra-app.com → homeassistant:8123 tunnel added; CF Access
+              application (email-based, long session). No service token needed —
+              HA REST sensors reach api-gateway via internal Docker DNS, never
+              cross Cloudflare. Verified end-to-end from cellular (phone + tablet).
+              HA-08/HA-09: tile tap-to-complete verified end-to-end via before/after
+              curl (task + routine completion, not just visual inspection).
+              Household local HA user created (Settings → Users, not People —
+              local-only kiosk account, no email required).
               1359 tests passing (43 pre-existing failures, no regressions)
 
 ### In Progress
-  HA-07 (manual Cloudflare steps) + HA-10 manual DoD verification
+  HA-10 manual DoD verification
 
 ### Immediate Next Steps
-  1. HA-07 Cloudflare tunnel + Access for home.mithra-app.com (manual)
-  2. HA-10 Manual DoD verification (tablet hardware test)
-  3. MES Phase 2 (MES-11 to MES-19, Gmail)
-  4. People domain
-  5. MES Phase 3 (MES-20-25, deferred cross-domain
+  1. HA-10 Manual DoD verification (tablet hardware test)
+  2. MES Phase 2 (MES-11 to MES-19, Gmail)
+  3. People domain
+  4. MES Phase 3 (MES-20-25, deferred cross-domain
      + Travel/Money handlers + WhatsApp)
 
 ### Key Decisions Made
@@ -78,29 +86,28 @@ Last updated: 2026-06-21
 ### Known Open Issues
   - llm-router health check flapping (low priority)
   - Docker cleanup automation (deferred to phase close)
+  - WSL portproxy rule for port 8123 (LAN testing, added during HA-07
+    debugging) is NOT in wsl-watchdog.ps1 and will silently break on
+    next WSL IP change / Windows reboot. Low urgency — ha.mithra-app.com
+    (Cloudflare) is the primary access path for tablet and mobile.
+    Revisit only if LAN-direct access is needed again for local debugging.
 
-### Manual steps required before HA-08/HA-09
-  (Cloudflare dashboard UI — cannot be automated by
-  Claude Code):
+### Cloudflare access for HA (HA-07) — COMPLETE 2026-06-27
+  Original plan (WRONG premise): create CF Access service token for
+  HA REST sensor headers. NOT NEEDED — HA REST sensors reach
+  api-gateway via http://api-gateway:8000 on the internal Docker
+  network, never crossing Cloudflare at all.
 
-    1. Cloudflare Zero Trust → Access → Applications
-       Create application for assistant.mithra-app.com
-       Path rules: /api/v1/dashboard*, /api/v1/routines*,
-                   /api/v1/tasks*
-       Policy 1 (human): Allow — Login with
-                          Google/email, your identity only
-       Policy 2 (machine): Service Auth — generate
-                            service token, copy Client ID
-                            and Client Secret
-
-    2. Add to ~/mithra/.env (NOT committed):
-         CF_ACCESS_CLIENT_ID=...
-         CF_ACCESS_CLIENT_SECRET=...
-
-    3. These two values go into HA's REST sensor
-       headers: block (HA-08) — Claude Code will
-       reference the env var names but cannot create
-       the actual Cloudflare token.
+  Actual implementation (Cloudflare dashboard, manual):
+    - New tunnel route added: ha.mithra-app.com →
+      http://homeassistant:8123
+      (existing assistant.mithra-app.com route untouched)
+    - CF Access application created for ha.mithra-app.com
+    - Policy: Allow, include rule on household member emails
+    - Session duration: maximum/long
+    - No service token. No CF headers in configuration.yaml.
+    - Verified end-to-end from cellular (off home WiFi), both
+      phone and personal tablet.
 
 ---
 
@@ -113,7 +120,8 @@ Last updated: 2026-06-21
   api-gateway:    running, healthy, port 9000
   llm-router:     running, port 4000
   vector-store:   running, port 8001
-  cloudflared:    running (assistant.mithra-app.com)
+  cloudflared:    running (assistant.mithra-app.com, ha.mithra-app.com)
+  homeassistant:  running, port 8123 (ha.mithra-app.com)
   healthmonitor:  running (Telegram alerts)
 
 ## What's Complete
@@ -331,7 +339,7 @@ Last updated: 2026-06-21
 
   Time domain closed: 2026-06-06. All DoD items verified end to end.
 
-## Current Focus → T9: HA REST sensor wiring for tablet tiles, then People domain
+## Current Focus → HA-10: Manual DoD verification, then MES Phase 2 (Gmail) and People domain
 
 ## Tasks Domain — COMPLETE 2026-06-13
 
@@ -812,34 +820,20 @@ Last updated: 2026-06-21
   [x] HA-06 Enable homeassistant container in compose.yaml
               profiles: [voice] removed.
               volumes: ./homeassistant_config:/config added.
-  [ ] HA-07 Unified Cloudflare access for HA's web UI
-              (MANUAL — Cloudflare dashboard + cloudflared
-              config, not Claude Code):
-              - Locate existing tunnel config:
-                  docker exec mithra-cloudflared-1 cat
-                  /etc/cloudflared/config.yml
-                (or Cloudflare dashboard → Zero Trust →
-                Networks → Tunnels → Public Hostname tab,
-                if dashboard-managed rather than file-based)
-              - ADD new route: home.mithra-app.com →
-                http://homeassistant:8123
-                Do NOT modify the existing
-                assistant.mithra-app.com → api-gateway route
-              - Cloudflare Access → Applications → create
-                for home.mithra-app.com
-                Policy: Allow — login with Google/email
-                Session duration: set to maximum/long
-              - Verify assistant.mithra-app.com STILL works
-                after the change (regression check)
-              - Verify home.mithra-app.com prompts Cloudflare
-                login from a device on cellular data (not
-                home WiFi), then loads HA's own login,
-                then the dashboard
-              - This can happen in parallel with / after
-                HA-01 through HA-06/08/09 — household tablet
-                can use http://<LAN-IP>:8123 temporarily
-                during development if HA-07 isn't done yet,
-                then switch to home.mithra-app.com once ready
+  [x] HA-07 Cloudflare tunnel + Access for ha.mithra-app.com
+              COMPLETE 2026-06-27 (MANUAL — Cloudflare dashboard)
+              CORRECTED from original plan: no service token needed.
+              HA REST sensors reach api-gateway via internal Docker
+              DNS (http://api-gateway:8000) — never cross Cloudflare.
+              CF Access only secures the HA web UI URL.
+              - New tunnel route: ha.mithra-app.com →
+                http://homeassistant:8123 (alongside existing
+                assistant.mithra-app.com, left untouched)
+              - CF Access application created for ha.mithra-app.com
+              - Policy: Allow, include household member emails
+              - Session duration: maximum/long
+              - Verified end-to-end from cellular data (off home
+                WiFi) on both phone and personal tablet
   [x] HA-08 homeassistant_config/configuration.yaml
               default_config, http trusted_proxies,
               lovelace: mode: yaml, rest sensors polling
@@ -885,6 +879,17 @@ Last updated: 2026-06-21
   [ ] HA-14 (deferred) Personal-scope items on household
               tablet — only household scope for now per
               earlier decision
+  [ ] HA-15 (deferred, folded into UI design session)
+              Conditional empty-slot hiding for Tier 2 lists.
+              Stock HA `conditional` card per slot, OR
+              revisit entirely if Mushroom/HACS dynamic list
+              approach is chosen during UI session instead.
+  [ ] HA-16 (deferred) Personal vs household dashboard
+              toggle on mobile. Backend already supports this
+              (aggregator scope=household|personal&user_id=
+              query params, ADR 16.3) — purely a frontend
+              design decision, folded into upcoming UI
+              session rather than decided ad hoc.
 
 ---
 

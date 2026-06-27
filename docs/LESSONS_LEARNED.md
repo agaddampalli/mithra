@@ -231,3 +231,127 @@ Fix/Prevention:
   READ-tier tools can fire immediately.
   Never publish DomainEvent from tool selection
   or before _run() executes.
+
+---
+
+## L-09: HA template entity_id stuck on "unknown" — name: template evaluating empty at cold boot
+Date: 2026-06-26/27
+Domain: Home Assistant config (homeassistant_config/)
+
+Symptom:
+  10 template button entities all registered as
+  button.unknown, button.unknown_2, etc. instead of
+  their intended slugs, despite unique_id being set
+  correctly on each.
+
+Root cause:
+  HA derives entity_id from the `name:` field AT FIRST
+  CREATION, not from unique_id (unique_id only prevents
+  duplicate registration and preserves history across
+  restarts). When name: is a Jinja template that
+  evaluates to empty/unavailable at the exact moment of
+  first boot (because a backing REST sensor hadn't
+  polled yet), the entity_id permanently falls back to a
+  generic "unknown" slug — and this is STICKY. It never
+  re-derives once the template starts returning real
+  values. This is a well-documented HA Community gotcha,
+  not specific to our setup.
+
+Fix:
+  Use the official `default_entity_id:` field (HA
+  template integration) to decouple entity_id generation
+  from the dynamic name template entirely:
+    name: >-
+      {{ states('sensor.x') if ... else 'Fallback' }}
+    unique_id: my_entity
+    default_entity_id: button.my_entity
+  default_entity_id is a fixed string controlling
+  entity_id deterministically on first creation,
+  regardless of what name: evaluates to at that moment.
+  Already-stuck entities (created before this fix) must
+  be renamed once via Settings → Entities → gear icon →
+  Entity ID field (safe, supported UI action) or via the
+  config/entity_registry/update WebSocket API command for
+  bulk renames — never edit core.entity_registry as a
+  JSON file directly while HA is running.
+
+Prevention:
+  ANY template entity (sensor, button, etc.) whose name:
+  depends on external/dynamic data (REST sensor, API
+  response) MUST also set default_entity_id: from the
+  start. Add this to the standard pattern for any new
+  Mithra-driven HA entity going forward — do not wait
+  for the bug to appear again.
+
+---
+
+## L-10: New Docker container ports need explicit WSL2 portproxy bridge — localhost forwarding is NOT enough
+Date: 2026-06-27
+Domain: Windows/WSL2 host networking
+
+Symptom:
+  HA (port 8123) reachable via `curl localhost:8123` from
+  Windows AND from WSL2, but completely unreachable from
+  any other device on the LAN (timeout, not refused).
+
+Root cause:
+  WSL2 automatically forwards localhost/127.0.0.1 from
+  Windows into the WSL2 VM, but does NOT bind new ports
+  onto Windows' actual LAN-facing network interface. This
+  is the identical root cause already solved for SSH
+  (port 2222) earlier in this project via netsh portproxy
+  + wsl-watchdog.ps1 — but the lesson wasn't generalized,
+  so it had to be rediscovered for port 8123.
+
+Fix:
+  netsh interface portproxy add v4tov4 listenport=8123 \
+    listenaddress=0.0.0.0 connectport=8123 \
+    connectaddress=<current WSL IP>
+  Plus a Windows Firewall inbound rule for the port.
+
+Prevention:
+  EVERY new service exposed in compose.yaml with a host
+  port mapping needs this same portproxy bridge if it
+  must be reachable from other LAN devices (not just from
+  Windows itself). This should be a standard checklist
+  item when adding any new container with published ports
+  — do not assume Docker's port publish alone makes it
+  LAN-reachable from a WSL2 host. Better long-term fix:
+  prefer Cloudflare tunnel routes (as we ultimately did
+  for HA) over LAN-IP access entirely, since tunnel
+  routes don't depend on WSL's IP at all and survive
+  reboots without any watchdog script.
+
+---
+
+## L-11: Cloudflare Access (email) and HA's own login (username/password) are independent layers — don't conflate them
+Date: 2026-06-27
+Domain: Cloudflare Access + Home Assistant auth
+
+Symptom/confusion:
+  After Cloudflare Access let a request through (email +
+  one-time code, successful), HA's OWN login screen still
+  appeared and rejected credentials — looked like a
+  failure, was actually two separate, both-working auth
+  layers in sequence.
+
+Clarification for future reference:
+  Cloudflare Access protects WHO can reach the hostname
+  at all (email-based, checked once per long session).
+  HA's own login protects WHICH HA USER is signed in
+  (username/password, completely local to HA, NO email
+  required or even possible to attach). A "wall tablet"
+  or "kiosk" HA user is HA's own documented pattern for
+  this ("a local-only account for a wall-mounted tablet
+  or kiosk" — home-assistant.io/docs/configuration/
+  user-configuration). This does NOT require a second
+  email address — it's a local username/password pair,
+  same category as a shared-device PIN, not a real
+  identity needing its own inbox.
+
+Prevention:
+  When debugging "login failed" after Cloudflare Access
+  succeeded, always check WHICH layer actually rejected
+  the request before assuming Cloudflare itself failed —
+  the two error messages look superficially similar but
+  come from entirely different systems.
