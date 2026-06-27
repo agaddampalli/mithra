@@ -32,27 +32,24 @@ views:
             icon: mdi:repeat
 
       # ── Tier 2: Task slots ────────────────────────────────────────────────
-      # Button name is templated at backend level (configuration.yaml
-      # template: button: name: >-) — shows task title AND is tappable.
-      # entity_ids derived from fallback name slug "Task Slot N":
-      # verify against Developer Tools → States after registry clear + restart.
+      # Button entity_ids pinned via default_entity_id in configuration.yaml.
+      # Button name template shows real task title once REST sensor polls;
+      # falls back to "Task Slot N" at cold boot — entity_id is stable either way.
       - type: entities
         title: Tasks — tap to complete
         entities:
-          - entity: button.task_slot_1
-          - entity: button.task_slot_2
-          - entity: button.task_slot_3
-          - entity: button.task_slot_4
-          - entity: button.task_slot_5
+          - entity: button.mithra_task_button_1
+          - entity: button.mithra_task_button_2
+          - entity: button.mithra_task_button_3
+          - entity: button.mithra_task_button_4
+          - entity: button.mithra_task_button_5
 
       # ── Tier 2: Routine slots ─────────────────────────────────────────────
-      # entity_ids derived from fallback name slug "Routine Slot N":
-      # verify against Developer Tools → States after registry clear + restart.
       - type: entities
         title: Routines — tap to mark done
         entities:
-          - entity: button.routine_slot_1
-          - entity: button.routine_slot_2
-          - entity: button.routine_slot_3
-          - entity: button.routine_slot_4
-          - entity: button.routine_slot_5
+          - entity: button.mithra_routine_button_1
+          - entity: button.mithra_routine_button_2
+          - entity: button.mithra_routine_button_3
+          - entity: button.mithra_routine_button_4
+          - entity: button.mithra_routine_button_5
