@@ -1,0 +1,8 @@
+# TEST ONLY — delete after UI-01 investigation
+title: Tasks
+views:
+  - title: Tasks
+    path: tasks
+    cards:
+      - type: markdown
+        content: "## Tasks (test placeholder)"

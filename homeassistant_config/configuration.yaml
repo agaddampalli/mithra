@@ -23,6 +23,25 @@ lovelace:
       filename: dashboards/household_tablet.yaml
       show_in_sidebar: true
       require_admin: false
+    # ── UI-01 TEST DASHBOARDS (delete after investigation) ────────────────────
+    test-tasks:
+      mode: yaml
+      title: Tasks
+      icon: mdi:checkbox-marked-outline
+      filename: dashboards/test_tasks.yaml
+      show_in_sidebar: true
+    test-routines:
+      mode: yaml
+      title: Routines
+      icon: mdi:repeat
+      filename: dashboards/test_routines.yaml
+      show_in_sidebar: true
+    test-calendar:
+      mode: yaml
+      title: Calendar
+      icon: mdi:calendar
+      filename: dashboards/test_calendar.yaml
+      show_in_sidebar: true
 
 # ── REST sensors — poll Mithra api-gateway via internal Docker DNS ───────────
 # HA REST sensors NEVER use the public Cloudflare hostname (ADR 16.5).
