@@ -1,8 +1,0 @@
-# TEST ONLY — delete after UI-01 investigation
-title: Calendar
-views:
-  - title: Calendar
-    path: calendar
-    cards:
-      - type: markdown
-        content: "## Calendar (test placeholder)"

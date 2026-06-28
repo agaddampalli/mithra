@@ -1,8 +1,0 @@
-# TEST ONLY — delete after UI-01 investigation
-title: Routines
-views:
-  - title: Routines
-    path: routines
-    cards:
-      - type: markdown
-        content: "## Routines (test placeholder)"
