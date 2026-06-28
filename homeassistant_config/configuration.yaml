@@ -19,6 +19,8 @@ lovelace:
   resources:
     - url: /local/community/lovelace-mushroom/mushroom.js
       type: module
+    - url: /local/community/ha-dashboard-sidebar/ha-dashboard-sidebar.js
+      type: module
   dashboards:
     household-tablet:
       mode: yaml

@@ -7,3 +7,15 @@ views:
         primary: "Mushroom test"
         secondary: "If this looks styled, it works"
         icon: mdi:check-circle
+      - type: custom:ha-dashboard-sidebar
+        title: "Sidebar Test"
+        mode: vertical
+        width: 200px
+        entities:
+          - type: button
+            name: "Home"
+            tap_action:
+              action: navigate
+              navigation_path: "/test_tasks/test"
+          - type: button
+            name: "Test Item 2"
