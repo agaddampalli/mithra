@@ -22,13 +22,4 @@ views:
               icon: mdi:home
               tap_action:
                 action: navigate
-                navigation_path: /test_tasks/test
-          - type: custom_card
-            collapsed: false
-            card:
-              type: custom:mushroom-template-card
-              primary: "Tasks"
-              icon: mdi:checkbox-marked-outline
-              tap_action:
-                action: navigate
                 navigation_path: /household-tablet/home
