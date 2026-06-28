@@ -16,6 +16,9 @@ http:
 # mode: yaml disables UI editing; all cards are defined in dashboard files.
 lovelace:
   resource_mode: yaml
+  resources:
+    - url: /local/community/lovelace-mushroom/mushroom.js
+      type: module
   dashboards:
     household-tablet:
       mode: yaml
