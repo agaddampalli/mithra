@@ -8,14 +8,27 @@ views:
         secondary: "If this looks styled, it works"
         icon: mdi:check-circle
       - type: custom:ha-dashboard-sidebar
-        title: "Sidebar Test"
+        title: "Mithra"
         mode: vertical
-        width: 200px
+        align: left
+        width: 230px
+        collapsed: false
         entities:
-          - type: button
-            name: "Home"
-            tap_action:
-              action: navigate
-              navigation_path: "/test_tasks/test"
-          - type: button
-            name: "Test Item 2"
+          - type: custom_card
+            collapsed: false
+            card:
+              type: custom:mushroom-template-card
+              primary: "Home"
+              icon: mdi:home
+              tap_action:
+                action: navigate
+                navigation_path: /test_tasks/test
+          - type: custom_card
+            collapsed: false
+            card:
+              type: custom:mushroom-template-card
+              primary: "Tasks"
+              icon: mdi:checkbox-marked-outline
+              tap_action:
+                action: navigate
+                navigation_path: /household-tablet/home
