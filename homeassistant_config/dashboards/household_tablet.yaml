@@ -1,25 +1,21 @@
-# Household tablet dashboard — wall-mounted kiosk view (UI-04)
+# Household tablet dashboard — wall-mounted kiosk view (UI-04/UI-15)
 # Path A navigation: HA's native sidebar, Mushroom content cards.
 #
 # Tier 1: summary glance row (tasks summary, calendar, routines count)
-# Tier 2: tap-to-complete rows (5 task slots, 5 routine slots)
+# Tier 2: tap-to-complete rows — conditional cards hide empty slots.
+#
+# Empty-state value: slot sensors return '' (empty string) when no item
+# is assigned (value_template: items[N].title ... else '').
+# conditional card uses state_not: "" to hide rows with empty state.
 #
 # Entity references:
-#   primary text  → sensor.mithra_task_slot_N / sensor.mithra_routine_slot_N
-#                   (state IS the title; button state is last-press timestamp)
-#   tap action    → button.mithra_task_button_N / button.mithra_routine_button_N
-#                   (template button handles completion + guard condition)
+#   condition/primary → sensor.mithra_task_slot_N / sensor.mithra_routine_slot_N
+#   tap action        → button.mithra_task_button_N / button.mithra_routine_button_N
 #
 # tap_action syntax: "perform-action" / "perform_action" is HA 2024.8+ canonical
-# form (renamed from call-service/service). VERIFY against deployed HA version
-# if buttons fail silently — the exact key names have been renamed before.
+# form. VERIFY against deployed HA version if buttons fail silently.
 #
-# Known limitation: 5 fixed slots always visible regardless of actual task count.
-# Empty slots show "" (blank state from sensor). Tracked as UI-15, deferred.
-#
-# Layout: task and routine sections each wrapped in vertical-stack so masonry
-# treats each group as ONE card instead of scattering individual rows across
-# page columns.
+# Layout: vertical-stack per section so masonry treats each group as one card.
 
 title: Household
 views:
@@ -47,114 +43,171 @@ views:
             secondary: "Routines"
             icon: mdi:repeat
 
-      # ── Weather + quick actions (Path A: Home-only content block) ─────────
-      # Per ADR 17.3: persistent sidebar weather not possible in Path A.
-      # Lives here as a content block on Home. Placeholder until weather
-      # entity is wired up.
+      # ── Weather placeholder (Path A: Home-only per ADR 17.3) ─────────────
       - type: custom:mushroom-template-card
         primary: "Weather"
         icon: mdi:weather-sunny
 
-      # ── Tier 2: task rows (vertical-stack keeps group together in masonry) ─
+      # ── Tier 2: task rows ─────────────────────────────────────────────────
       - type: vertical-stack
         cards:
           - type: heading
             heading: "Today's tasks"
             heading_style: subtitle
 
-          - type: custom:mushroom-template-card
-            primary: "{{ states('sensor.mithra_task_slot_1') }}"
-            icon: mdi:flag
-            tap_action:
-              action: perform-action
-              perform_action: button.press
-              target:
-                entity_id: button.mithra_task_button_1
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.mithra_task_slot_1
+                state_not: ""
+            card:
+              type: custom:mushroom-template-card
+              primary: "{{ states('sensor.mithra_task_slot_1') }}"
+              icon: mdi:flag
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.mithra_task_button_1
 
-          - type: custom:mushroom-template-card
-            primary: "{{ states('sensor.mithra_task_slot_2') }}"
-            icon: mdi:flag
-            tap_action:
-              action: perform-action
-              perform_action: button.press
-              target:
-                entity_id: button.mithra_task_button_2
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.mithra_task_slot_2
+                state_not: ""
+            card:
+              type: custom:mushroom-template-card
+              primary: "{{ states('sensor.mithra_task_slot_2') }}"
+              icon: mdi:flag
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.mithra_task_button_2
 
-          - type: custom:mushroom-template-card
-            primary: "{{ states('sensor.mithra_task_slot_3') }}"
-            icon: mdi:flag
-            tap_action:
-              action: perform-action
-              perform_action: button.press
-              target:
-                entity_id: button.mithra_task_button_3
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.mithra_task_slot_3
+                state_not: ""
+            card:
+              type: custom:mushroom-template-card
+              primary: "{{ states('sensor.mithra_task_slot_3') }}"
+              icon: mdi:flag
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.mithra_task_button_3
 
-          - type: custom:mushroom-template-card
-            primary: "{{ states('sensor.mithra_task_slot_4') }}"
-            icon: mdi:flag
-            tap_action:
-              action: perform-action
-              perform_action: button.press
-              target:
-                entity_id: button.mithra_task_button_4
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.mithra_task_slot_4
+                state_not: ""
+            card:
+              type: custom:mushroom-template-card
+              primary: "{{ states('sensor.mithra_task_slot_4') }}"
+              icon: mdi:flag
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.mithra_task_button_4
 
-          - type: custom:mushroom-template-card
-            primary: "{{ states('sensor.mithra_task_slot_5') }}"
-            icon: mdi:flag
-            tap_action:
-              action: perform-action
-              perform_action: button.press
-              target:
-                entity_id: button.mithra_task_button_5
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.mithra_task_slot_5
+                state_not: ""
+            card:
+              type: custom:mushroom-template-card
+              primary: "{{ states('sensor.mithra_task_slot_5') }}"
+              icon: mdi:flag
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.mithra_task_button_5
 
-      # ── Tier 2: routine rows (vertical-stack keeps group together in masonry)
+      # ── Tier 2: routine rows ──────────────────────────────────────────────
       - type: vertical-stack
         cards:
           - type: heading
             heading: "Today's routines"
             heading_style: subtitle
 
-          - type: custom:mushroom-template-card
-            primary: "{{ states('sensor.mithra_routine_slot_1') }}"
-            icon: mdi:repeat
-            tap_action:
-              action: perform-action
-              perform_action: button.press
-              target:
-                entity_id: button.mithra_routine_button_1
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.mithra_routine_slot_1
+                state_not: ""
+            card:
+              type: custom:mushroom-template-card
+              primary: "{{ states('sensor.mithra_routine_slot_1') }}"
+              icon: mdi:repeat
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.mithra_routine_button_1
 
-          - type: custom:mushroom-template-card
-            primary: "{{ states('sensor.mithra_routine_slot_2') }}"
-            icon: mdi:repeat
-            tap_action:
-              action: perform-action
-              perform_action: button.press
-              target:
-                entity_id: button.mithra_routine_button_2
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.mithra_routine_slot_2
+                state_not: ""
+            card:
+              type: custom:mushroom-template-card
+              primary: "{{ states('sensor.mithra_routine_slot_2') }}"
+              icon: mdi:repeat
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.mithra_routine_button_2
 
-          - type: custom:mushroom-template-card
-            primary: "{{ states('sensor.mithra_routine_slot_3') }}"
-            icon: mdi:repeat
-            tap_action:
-              action: perform-action
-              perform_action: button.press
-              target:
-                entity_id: button.mithra_routine_button_3
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.mithra_routine_slot_3
+                state_not: ""
+            card:
+              type: custom:mushroom-template-card
+              primary: "{{ states('sensor.mithra_routine_slot_3') }}"
+              icon: mdi:repeat
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.mithra_routine_button_3
 
-          - type: custom:mushroom-template-card
-            primary: "{{ states('sensor.mithra_routine_slot_4') }}"
-            icon: mdi:repeat
-            tap_action:
-              action: perform-action
-              perform_action: button.press
-              target:
-                entity_id: button.mithra_routine_button_4
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.mithra_routine_slot_4
+                state_not: ""
+            card:
+              type: custom:mushroom-template-card
+              primary: "{{ states('sensor.mithra_routine_slot_4') }}"
+              icon: mdi:repeat
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.mithra_routine_button_4
 
-          - type: custom:mushroom-template-card
-            primary: "{{ states('sensor.mithra_routine_slot_5') }}"
-            icon: mdi:repeat
-            tap_action:
-              action: perform-action
-              perform_action: button.press
-              target:
-                entity_id: button.mithra_routine_button_5
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: sensor.mithra_routine_slot_5
+                state_not: ""
+            card:
+              type: custom:mushroom-template-card
+              primary: "{{ states('sensor.mithra_routine_slot_5') }}"
+              icon: mdi:repeat
+              tap_action:
+                action: perform-action
+                perform_action: button.press
+                target:
+                  entity_id: button.mithra_routine_button_5
