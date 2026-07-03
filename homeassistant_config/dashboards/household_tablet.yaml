@@ -1,21 +1,29 @@
-# Household tablet dashboard — wall-mounted kiosk view (UI-04/UI-15)
+# Household tablet dashboard — wall-mounted kiosk view (UI-04/UI-15/UI-07/UI-08)
 # Path A navigation: HA's native sidebar, Mushroom content cards.
+# ADR §17 visual pass: pastel color coding, urgency banner, weather.
 #
-# Tier 1: summary glance row (tasks summary, calendar, routines count)
-# Tier 2: tap-to-complete rows — conditional cards hide empty slots.
+# Color scheme (icon_color only — card_mod not yet verified installed):
+#   Tasks:    icon_color "#993c1d" (terracotta)
+#   Routines: icon_color "#0f6e56" (dark teal)
+#   Calendar: icon_color "#534ab7" (medium purple)
+#   Urgent:   icon_color "#c0392b" (alert red)
+#   Background colors (#faece7/#e1f5ee/#eeedfe) require card_mod:
+#     - Verify: find homeassistant_config/www -name "*card-mod*"
+#     - If installed, add card_mod: style blocks per each card
 #
-# Empty-state value: slot sensors return '' (empty string) when no item
-# is assigned (value_template: items[N].title ... else '').
-# conditional card uses state_not: "" to hide rows with empty state.
+# Urgency banner: condition uses 'overdue' in summary string.
+#   Summary format confirmed from domain.py:
+#     "N urgent · N overdue · N/M routines done"   (parts joined by " · ")
+#     "All clear today! 🎉"                         (when nothing pending)
+#   The word "overdue" appears literally — lower() match is safe.
 #
-# Entity references:
-#   condition/primary → sensor.mithra_task_slot_N / sensor.mithra_routine_slot_N
-#   tap action        → button.mithra_task_button_N / button.mithra_routine_button_N
+# WEATHER_ENTITY_ID: replace with actual entity_id from HA Developer
+#   Tools → States after Open-Meteo integration is added (Part 1).
+#   Do NOT deploy with this placeholder in place.
 #
-# tap_action syntax: "perform-action" / "perform_action" is HA 2024.8+ canonical
-# form. VERIFY against deployed HA version if buttons fail silently.
-#
-# Layout: vertical-stack per section so masonry treats each group as one card.
+# tap_action: "perform-action"/"perform_action" is HA 2024.8+ syntax.
+# Empty slots: conditional state_not: "" hides rows (UI-15).
+# Layout: vertical-stack per section prevents masonry column scatter.
 
 title: Household
 views:
@@ -23,32 +31,53 @@ views:
     path: home
     icon: mdi:home
     cards:
+      # ── URGENCY BANNER — only renders when any task is overdue ────────────
+      # Confirmed: domain.py appends "N overdue" to summary when overdue_count > 0.
+      - type: conditional
+        conditions:
+          - condition: template
+            value_template: >-
+              {{ 'overdue' in states('sensor.mithra_tasks_summary') | lower }}
+        card:
+          type: custom:mushroom-template-card
+          primary: "{{ states('sensor.mithra_tasks_summary') }}"
+          secondary: "Tap a task below to complete it"
+          icon: mdi:alert-circle
+          icon_color: "#c0392b"
+
       # ── Tier 1: summary glance row ────────────────────────────────────────
       - type: grid
         columns: 3
         square: false
         cards:
           - type: custom:mushroom-template-card
-            primary: "{{ states('sensor.mithra_tasks_summary') }}"
+            primary: >-
+              {{ states('sensor.mithra_tasks_summary').split('·')[0].strip() }}
             secondary: "Tasks"
             icon: mdi:checkbox-marked-outline
+            icon_color: "#993c1d"
 
           - type: custom:mushroom-template-card
             primary: "{{ states('sensor.mithra_calendar_summary') }}"
             secondary: "Calendar"
             icon: mdi:calendar-clock
+            icon_color: "#534ab7"
 
           - type: custom:mushroom-template-card
             primary: "{{ states('sensor.mithra_routines') }}"
             secondary: "Routines"
             icon: mdi:repeat
+            icon_color: "#0f6e56"
 
-      # ── Weather placeholder (Path A: Home-only per ADR 17.3) ─────────────
-      - type: custom:mushroom-template-card
-        primary: "Weather"
-        icon: mdi:weather-sunny
+      # ── Weather — Open-Meteo real data ────────────────────────────────────
+      # Replace WEATHER_ENTITY_ID with entity confirmed in Part 1.
+      - type: weather-forecast
+        entity: WEATHER_ENTITY_ID
+        forecast_type: daily
+        show_current: true
+        show_forecast: false
 
-      # ── Tier 2: task rows ─────────────────────────────────────────────────
+      # ── Today's tasks ─────────────────────────────────────────────────────
       - type: vertical-stack
         cards:
           - type: heading
@@ -64,6 +93,7 @@ views:
               type: custom:mushroom-template-card
               primary: "{{ states('sensor.mithra_task_slot_1') }}"
               icon: mdi:flag
+              icon_color: "#993c1d"
               tap_action:
                 action: perform-action
                 perform_action: button.press
@@ -79,6 +109,7 @@ views:
               type: custom:mushroom-template-card
               primary: "{{ states('sensor.mithra_task_slot_2') }}"
               icon: mdi:flag
+              icon_color: "#993c1d"
               tap_action:
                 action: perform-action
                 perform_action: button.press
@@ -94,6 +125,7 @@ views:
               type: custom:mushroom-template-card
               primary: "{{ states('sensor.mithra_task_slot_3') }}"
               icon: mdi:flag
+              icon_color: "#993c1d"
               tap_action:
                 action: perform-action
                 perform_action: button.press
@@ -109,6 +141,7 @@ views:
               type: custom:mushroom-template-card
               primary: "{{ states('sensor.mithra_task_slot_4') }}"
               icon: mdi:flag
+              icon_color: "#993c1d"
               tap_action:
                 action: perform-action
                 perform_action: button.press
@@ -124,13 +157,14 @@ views:
               type: custom:mushroom-template-card
               primary: "{{ states('sensor.mithra_task_slot_5') }}"
               icon: mdi:flag
+              icon_color: "#993c1d"
               tap_action:
                 action: perform-action
                 perform_action: button.press
                 target:
                   entity_id: button.mithra_task_button_5
 
-      # ── Tier 2: routine rows ──────────────────────────────────────────────
+      # ── Today's routines ──────────────────────────────────────────────────
       - type: vertical-stack
         cards:
           - type: heading
@@ -146,6 +180,7 @@ views:
               type: custom:mushroom-template-card
               primary: "{{ states('sensor.mithra_routine_slot_1') }}"
               icon: mdi:repeat
+              icon_color: "#0f6e56"
               tap_action:
                 action: perform-action
                 perform_action: button.press
@@ -161,6 +196,7 @@ views:
               type: custom:mushroom-template-card
               primary: "{{ states('sensor.mithra_routine_slot_2') }}"
               icon: mdi:repeat
+              icon_color: "#0f6e56"
               tap_action:
                 action: perform-action
                 perform_action: button.press
@@ -176,6 +212,7 @@ views:
               type: custom:mushroom-template-card
               primary: "{{ states('sensor.mithra_routine_slot_3') }}"
               icon: mdi:repeat
+              icon_color: "#0f6e56"
               tap_action:
                 action: perform-action
                 perform_action: button.press
@@ -191,6 +228,7 @@ views:
               type: custom:mushroom-template-card
               primary: "{{ states('sensor.mithra_routine_slot_4') }}"
               icon: mdi:repeat
+              icon_color: "#0f6e56"
               tap_action:
                 action: perform-action
                 perform_action: button.press
@@ -206,6 +244,7 @@ views:
               type: custom:mushroom-template-card
               primary: "{{ states('sensor.mithra_routine_slot_5') }}"
               icon: mdi:repeat
+              icon_color: "#0f6e56"
               tap_action:
                 action: perform-action
                 perform_action: button.press
