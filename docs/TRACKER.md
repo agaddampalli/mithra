@@ -339,7 +339,7 @@ Last updated: 2026-06-27
 
   Time domain closed: 2026-06-06. All DoD items verified end to end.
 
-## Current Focus → HA-10: Manual DoD verification, then MES Phase 2 (Gmail) and People domain
+## Current Focus → UI-09: Manual DoD verification on real tablet, then MES Phase 2 (Gmail) and People domain
 
 ## Tasks Domain — COMPLETE 2026-06-13
 
@@ -879,11 +879,10 @@ Last updated: 2026-06-27
   [ ] HA-14 (deferred) Personal-scope items on household
               tablet — only household scope for now per
               earlier decision
-  [ ] HA-15 (deferred, folded into UI design session)
-              Conditional empty-slot hiding for Tier 2 lists.
-              Stock HA `conditional` card per slot, OR
-              revisit entirely if Mushroom/HACS dynamic list
-              approach is chosen during UI session instead.
+  [x] HA-15 Conditional empty-slot hiding implemented as
+              UI-15 using stock HA conditional card per slot,
+              conditioned on slot sensor state_not: "".
+              Verified end to end on real deployment.
   [ ] HA-16 (deferred) Personal vs household dashboard
               toggle on mobile. Backend already supports this
               (aggregator scope=household|personal&user_id=
@@ -903,29 +902,48 @@ Last updated: 2026-06-27
   navigation rebuild, not new backend work.
 
 ### Tasks
-  [x] UI-00 ADR §17 committed ← this commit
-  [ ] UI-01 Investigate Path A vs Path B (ADR 17.3)
-              Test against the actual deployed HA version:
-              - Does HA's native sidebar support multiple
-                dashboards cleanly with icons/badges?
-              - Can badge counts (e.g. "3" on Tasks) be
-                added to native sidebar entries, or does
-                that need a workaround?
-              Document findings before choosing a path.
-              Do NOT write dashboard YAML until this is
-              resolved.
-  [ ] UI-02 Install HACS in the homeassistant container
-              Confirm version compatible with deployed
-              HA core version (check first, do not assume).
-  [ ] UI-03 Install Mushroom Cards via HACS
-  [ ] UI-04 Rebuild household_tablet.yaml on single light
-              theme per ADR 17.1.1. Remove any dark-themed
-              elements from the current Tier 1/2 dashboard.
-  [ ] UI-05 Implement navigation per the path chosen in
-              UI-01. Text+icon labels, kiosk-class touch
-              targets per ADR 17.1.3.
-  [ ] UI-06 Move task/routine action rows onto Home per
-              ADR 17.1.4 — actionable, not just a summary.
+  [x] UI-00 ADR §17 committed
+  [x] UI-01 Path A vs Path B investigation complete.
+              Findings: Path A (HA native sidebar) delivers
+              navigation. Path B abandoned after two
+              confirmed bugs on real deployment:
+                DBuit/sidebar-card: failed HACS validation
+                  (v0.1.9.9 not compliant, could not install)
+                lotablet/ha-dashboard-sidebar: installed but
+                  all buttons navigate to same destination
+                  regardless of configured navigation_path
+                  (click handler binding bug in the card).
+              Path A retained. Documented in UI_01_findings.md
+              and L-13 in LESSONS_LEARNED.
+  [x] UI-02 HACS installed (v2.0.5) and active.
+              Files committed to repo under
+              homeassistant_config/custom_components/hacs/.
+  [x] UI-03 Mushroom Cards installed via HACS.
+              Resource registered manually in configuration.yaml
+              under lovelace: resources: — required because
+              resource_mode: yaml disables HACS auto-registration
+              and hides the Resources UI page entirely.
+              Documented in L-12 in LESSONS_LEARNED.
+  [x] UI-04 Home page rebuilt with Mushroom-styled cards
+              over existing proven entities. Path A (HA native
+              sidebar) retained. Vertical-stack containers
+              prevent masonry from scattering task/routine
+              cards across columns. Tap-to-complete verified
+              end to end with before/after curl proof.
+  [x] UI-05 Navigation: Path A (HA native sidebar, multiple
+              dashboards). Subsumed by UI-04 — native sidebar
+              proven working in UI-01, no additional work
+              required. Text + icon labels on Household entry.
+  [x] UI-06 Task/routine action rows on Home per ADR 17.1.4.
+              Subsumed by UI-04 — both sections live directly
+              on Home with tap-to-complete, verified end to end.
+  [x] UI-15 Conditional cards hide empty task/routine slot
+              rows. Empty-state confirmed as '' (empty string)
+              from sensor value_template (else '' branch).
+              state_not: "" condition applied to all 10 slot
+              cards. Verified: 0 tasks → 0 rows shown; add task
+              → row appears; tap → curl confirms completion →
+              row disappears. Routines: only active slots shown.
   [ ] UI-07 Urgent/overdue banner in the top-left hot zone
               per ADR 17.1.4, highest visual weight when
               something is overdue.

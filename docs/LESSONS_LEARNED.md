@@ -355,3 +355,81 @@ Prevention:
   the request before assuming Cloudflare itself failed —
   the two error messages look superficially similar but
   come from entirely different systems.
+
+---
+
+## L-12: HACS resource_mode: yaml disables auto-registration of custom card resources
+Date: 2026-07-03
+Domain: Home Assistant config
+
+Symptom:
+  Mushroom Cards installed successfully via HACS but
+  rendered as raw/unstyled error cards. HACS Resources
+  management UI page was also missing from
+  Settings → Dashboards.
+
+Root cause:
+  lovelace: resource_mode: yaml (set to keep dashboard
+  config git-versioned) disables HACS's automatic
+  resource registration AND hides the Resources UI page
+  entirely — by design. HA assumes you are managing
+  resources manually in YAML when this mode is active.
+
+Fix:
+  Manually add each HACS frontend card as a resource
+  entry in configuration.yaml under lovelace:
+    resources:
+      - url: /local/community/<card-name>/<card>.js
+        type: module
+  The www/ directory maps to /local/ in HA's URL space
+  automatically. Confirm the actual filename from:
+    find homeassistant_config/www -name "*.js" -not -name "*.gz"
+  before writing the URL.
+
+Prevention:
+  Any future HACS frontend card install requires this
+  manual step when resource_mode: yaml is active. Add
+  it as a standard checklist item whenever installing
+  a frontend card via HACS.
+
+---
+
+## L-13: Custom HA sidebar cards — two confirmed bugs, Path B abandoned
+Date: 2026-07-03
+Domain: Home Assistant HACS cards
+
+Symptom:
+  Both evaluated sidebar-navigation card alternatives had
+  show-stopping bugs when tested on the real deployment:
+    DBuit/sidebar-card: "Repository structure for 0.1.9.9
+      is not compliant" — failed HACS validation entirely,
+      could not install.
+    lotablet/ha-dashboard-sidebar: installed and rendered
+      correctly for single nav items, but all buttons
+      navigated to the same destination regardless of each
+      button's configured navigation_path (confirmed not a
+      config error — bug is in the card's click handler
+      binding).
+
+Root cause:
+  Both cards were selected from 2020-2021 era community
+  recommendations. Neither had been verified against
+  current HACS validation rules or current HA versions
+  before recommendation.
+
+Fix:
+  Reverted to Path A (HA's native multi-dashboard
+  sidebar, proven working in UI-01). Weather and quick-
+  action elements moved to the Home page content area
+  rather than a persistent sidebar (acceptable compromise
+  per ADR 17.3).
+
+Prevention:
+  Before recommending any HACS card, verify:
+  1. Last commit date — cards >2 years without updates
+     are at high risk of HACS non-compliance.
+  2. Star count and active issues — low-star projects
+     have no community to surface known bugs.
+  3. Install it on the real deployment first with a
+     minimal test config before rebuilding anything
+     that depends on it.
