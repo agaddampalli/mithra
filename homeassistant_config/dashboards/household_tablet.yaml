@@ -37,10 +37,10 @@ views:
         conditions:
           - condition: template
             value_template: >-
-              {{ 'overdue' in (states('sensor.mithra_tasks_summary') | lower) }}
+              {{ 'overdue' in (states('sensor.mithra_tasks_summary_text') | lower) }}
         card:
           type: custom:mushroom-template-card
-          primary: "{{ states('sensor.mithra_tasks_summary') }}"
+          primary: "{{ states('sensor.mithra_tasks_summary_text') }}"
           secondary: "Tap a task below to complete it"
           icon: mdi:alert-circle
           icon_color: "#c0392b"
@@ -52,7 +52,7 @@ views:
         cards:
           - type: custom:mushroom-template-card
             primary: >-
-              {{ states('sensor.mithra_tasks_summary').split('·')[0].strip() }}
+              {{ states('sensor.mithra_tasks_summary_text').split('·')[0].strip() }}
             secondary: "Tasks"
             icon: mdi:checkbox-marked-outline
             icon_color: "#993c1d"

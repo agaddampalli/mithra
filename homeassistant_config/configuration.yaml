@@ -86,6 +86,18 @@ template:
         {% set d = doms | selectattr('domain', 'equalto', 'time') | list | first | default({}) %}
         {{ d.get('summary', 'unavailable') if d else 'unavailable' }}
 
+    # ── Tasks summary text — used by urgency banner and Tier 1 tile ──────────
+    # Uses dot notation (tasks[0].summary) consistent with working slot sensors.
+    # mithra_tasks_summary above uses .get() which may not resolve in HA Jinja.
+    - name: Mithra Tasks Summary Text
+      unique_id: mithra_tasks_summary_text
+      default_entity_id: sensor.mithra_tasks_summary_text
+      state: >-
+        {% set doms = state_attr('sensor.mithra_dashboard', 'domains') %}
+        {% set doms = doms if doms is not none else [] %}
+        {% set tasks = doms | selectattr('domain', 'equalto', 'tasks') | list %}
+        {{ tasks[0].summary if tasks | length > 0 else '' }}
+
     # ── Tier 2: task slot sensors (fixed 5 slots) ────────────────────────────
     - name: Mithra Task Slot 1
       unique_id: mithra_task_slot_1
