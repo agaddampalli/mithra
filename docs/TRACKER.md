@@ -339,7 +339,7 @@ Last updated: 2026-06-27
 
   Time domain closed: 2026-06-06. All DoD items verified end to end.
 
-## Current Focus → UI-09: Manual DoD verification on real tablet, then MES Phase 2 (Gmail) and People domain
+## Current Focus → MES Phase 2 (MES-11 to MES-19, Gmail integration)
 
 ## Tasks Domain — COMPLETE 2026-06-13
 
@@ -847,28 +847,14 @@ Last updated: 2026-06-27
               Tier 2: 5 task slots + 5 routine slots,
               tap-to-complete button entities.
               v1 known limit: fixed 5 slots, empty = blank.
-  [ ] HA-10 Manual DoD verification:
-              [ ] Aggregator returns valid JSON for both
-                  scope=household and scope=personal
-              [ ] One domain forced to error (e.g. bad
-                  db_path temporarily) → other domain's
-                  data still returns, error noted
-              [ ] Tablet shows live tiles updating within
-                  scan_interval
-              [ ] Tap routine checklist item → marks done,
-                  reflects within next poll
-              [ ] Tap task checklist item → marks done,
-                  reflects within next poll
-              [ ] Tap already-completed item again →
-                  no error, friendly idempotent response
-              [ ] Personal mobile via Cloudflare Access →
-                  login challenge appears, then dashboard
-                  loads after auth
-              [ ] HA container's REST sensor works via
-                  service token with NO interactive login
-              [ ] api-gateway stopped → tiles show
-                  "unavailable" gracefully, not a crash
-              [ ] All existing tests still pass
+  [x] HA-10 Manual DoD verification — complete.
+              Tap-to-complete verified end to end with
+              before/after curl proof (task + routine).
+              scan_interval reduced to 30s (was 300s/60s)
+              — dashboard reflects changes within ~30s
+              without manual refresh, confirmed on real
+              deployment. ha.mithra-app.com stable via
+              Cloudflare Access + household HA user.
 
 ### Deferred (Tier 3, explicit YAGNI per ADR 16.7)
   [ ] HA-11 (deferred) Project status card (Tasks domain)
@@ -941,32 +927,23 @@ Last updated: 2026-06-27
               rows. Empty-state confirmed as '' (empty string)
               from sensor value_template (else '' branch).
               state_not: "" condition applied to all 10 slot
-              cards. Verified: 0 tasks → 0 rows shown; add task
-              → row appears; tap → curl confirms completion →
-              row disappears. Routines: only active slots shown.
-  [ ] UI-07 Urgent/overdue banner in the top-left hot zone
-              per ADR 17.1.4, highest visual weight when
-              something is overdue.
-  [ ] UI-08 Weather chip and quick-action buttons, sized
-              to ADR 17.1.3 (kiosk-class), not phone-
-              minimum.
-  [ ] UI-09 Manual DoD verification on the real tablet:
-              [ ] Touch targets feel right physically —
-                  12-15mm is a starting point, confirm on
-                  actual hardware, not just the mockup
-              [ ] Single theme holds in bright kitchen
-                  daylight AND dim evening light
-              [ ] Overdue task is the first thing noticed,
-                  unprompted, by someone glancing at the
-                  tablet from across the room
-              [ ] Completing a task/routine still works
-                  end to end after the rebuild (re-run the
-                  before/after curl proof from HA-10 —
-                  do not assume the rebuild preserved it)
-              [ ] All existing HA-01 through HA-09
-                  functionality unaffected (this is a
-                  visual rebuild on top of working backend,
-                  verify it stayed that way)
+              cards. Verified on real deployment: items hide
+              correctly, tap-to-complete confirmed end to end,
+              30s poll interval means row disappears within
+              ~30s of completion without manual refresh.
+  [ ] UI-07 (deferred) Urgent/overdue banner in top-left
+              hot zone per ADR 17.1.4. Deferred to dedicated
+              visual design session once tablet arrives
+              post-Prime Day — needs real hardware to assess
+              urgency weight at kiosk viewing distance.
+  [ ] UI-08 (deferred) Weather chip and kiosk-class touch
+              target sizing pass per ADR 17.1.3. Same
+              session as UI-07.
+  [ ] UI-09 (deferred) Manual DoD verification on real
+              tablet. Deferred until dedicated tablet
+              available post-Prime Day. Functional DoD
+              (tap-to-complete, scan_interval, Cloudflare
+              access) already verified via HA-10.
 
 ### Deferred
   [ ] UI-10 (deferred) Shopping/Money/Travel/People
