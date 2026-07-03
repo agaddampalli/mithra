@@ -72,10 +72,10 @@ views:
       # ── Weather — Open-Meteo real data ────────────────────────────────────
       # Replace WEATHER_ENTITY_ID with entity confirmed in Part 1.
       - type: weather-forecast
-        entity: WEATHER_ENTITY_ID
+        entity: weather.forecast_home
         forecast_type: daily
         show_current: true
-        show_forecast: false
+        show_forecast: true
 
       # ── Today's tasks ─────────────────────────────────────────────────────
       - type: vertical-stack
