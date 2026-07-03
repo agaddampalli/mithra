@@ -33,7 +33,7 @@ lovelace:
 # the shared mithra-net Docker network.
 rest:
   - resource: http://api-gateway:8000/api/v1/dashboard
-    scan_interval: 300
+    scan_interval: 30
     sensor:
       - name: Mithra Dashboard
         unique_id: mithra_dashboard
@@ -43,7 +43,7 @@ rest:
           - errors
 
   - resource: http://api-gateway:8000/api/v1/routines/today
-    scan_interval: 60
+    scan_interval: 30
     sensor:
       - name: Mithra Routines
         unique_id: mithra_routines
